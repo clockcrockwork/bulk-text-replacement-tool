@@ -99,7 +99,7 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
 
 - **ロジック**（`src/lib/`, `src/state/`）は Vitest。置換の意味論・表の入出力・ZIP のバイト列・
   保存データの正規化・reducer の遷移など、壊れると出力が変わるところを押さえる。
-  カバレッジ閾値（statements 95 / branches 85）があるので、ロジックを足すならテストも足す。
+  カバレッジ閾値（statements 96 / branches 87 / functions 98 / lines 98）があるので、ロジックを足すならテストも足す。
 - **画面**は Playwright（`e2e/`）。コンポーネント単体のテストは置かない。UI を変えたら
   該当する E2E を直す。狭い画面はレイアウトの前提が違うので `e2e/mobile/` に分ける。
 - **状態は `seedWorkspace` で仕込む**。アプリの初回サンプルを暗黙の fixture にすると、
