@@ -145,8 +145,8 @@ export function App(): JSX.Element {
   };
 
   const copyFile = async (file: ResultFile): Promise<void> => {
-    await copyText(file.text);
-    flash('コピーしました');
+    const copied = await copyText(file.text);
+    flash(copied ? 'コピーしました' : 'コピーできませんでした');
   };
 
   const exportRules = (delimiter: Delimiter): void => {

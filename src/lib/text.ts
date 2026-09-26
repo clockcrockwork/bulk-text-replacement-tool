@@ -15,3 +15,14 @@ export function stripBom(text: string): string {
 export function withBom(text: string): string {
   return BOM + text;
 }
+
+/**
+ * 半角の空白・タブ・改行だけを前後から落とす。
+ *
+ * `String.prototype.trim` は全角空白 U+3000 も落とすが、日本語の原稿では字下げに
+ * 全角空白を使うため、表のセルの値として意味を持つ。表の体裁合わせに使われるのは
+ * 半角空白なので、そこだけを対象にする。
+ */
+export function trimAscii(text: string): string {
+  return text.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '');
+}
