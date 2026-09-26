@@ -3,7 +3,9 @@
 複数のテキストを、**グループごとの置換ルール表**で一括変換するブラウザツールです。
 同じ原稿から「A用」「B用」といった別バージョンを一度に作ることを想定しています。
 
-すべてブラウザ内で完結し、サーバーへは何も送りません（状態は localStorage に保存）。
+処理はすべてブラウザ内で完結します。**入力したテキストとルールは外部へ送信されません**
+（状態はブラウザの localStorage にだけ保存されます）。外部へ出る通信は Google Fonts からの
+フォント配信だけで、これは E2E テストで固定してあります（`e2e/privacy.spec.ts`）。
 
 ## できること
 
@@ -17,18 +19,29 @@
 
 | 適用順 | 動き |
 | --- | --- |
-| **同時** | 連続する「同時」行をまとめて1回で適用する。元のテキストを一度だけ走査し、**長い一致を優先**する。置換で生まれた文字列は同じパス内では再走査しないので、ルールが**連鎖しない**。 |
-| **順次** | その行だけを単独で、**それまでの置換結果に対して**適用する。 |
+| **同時** | 連続する「同時」行をまとめて1回で適用する。そのパスの開始時点のテキストを一度だけ走査し、**長い一致を優先**する（同着ならルールの定義順）。置換で生まれた文字列は同じパス内では再走査しないので、ルールが**連鎖しない**。 |
+| **順次** | その行だけを単独のパスとして、**それまでの置換結果の全体に対して**適用する。前のパスの置換結果と周囲の文字列にまたがる一致も拾う。 |
 
 例: `a → b`, `b → c` の2行に `a` を入力すると、両方「同時」なら `b`、2行目が「順次」なら `c` になります。
+
+### 制限
+
+- **置換先を空にすると、その行は「削除」ではなく「そのグループでは何もしない」になります。**
+  グループごとに「この語は変えない」を表現するための仕様です。文字列を消す用途には使えません。
+
+## 対応ブラウザ
+
+スマートフォンでの利用を前提にしており、**Safari も保証対象**です。
+自動回帰は Chromium / WebKit（デスクトップ）と WebKit（iPhone エミュレーション）で回しています。
+Playwright の WebKit は Safari そのものではないので、リリース前の最終確認は実機で行ってください。
 
 ## 開発
 
 ```bash
 npm install
 npm run dev        # 開発サーバー
-npm run check      # lint + typecheck + test（コミット前にこれ）
-npm run test:e2e   # ブラウザでの E2E テスト（初回は npx playwright install chromium）
+npm run check      # lint + typecheck + test + build（コミット前にこれ）
+npm run test:e2e   # ブラウザでの E2E テスト（初回は npx playwright install chromium webkit）
 ```
 
 | コマンド | 内容 |
@@ -38,30 +51,36 @@ npm run test:e2e   # ブラウザでの E2E テスト（初回は npx playwright
 | `npm run preview` | ビルド結果の確認 |
 | `npm run lint` | Biome によるチェック（lint + フォーマット） |
 | `npm run lint:fix` | Biome の自動修正 |
-| `npm run typecheck` | `tsc --noEmit` |
+| `npm run typecheck` | `tsc --noEmit`（アプリ用と Node 側の2構成） |
 | `npm run test` | Vitest（ロジックのユニットテスト） |
+| `npm run coverage` | Vitest + カバレッジ（閾値つき） |
 | `npm run test:e2e` | Playwright（実ブラウザでの E2E テスト） |
-| `npm run check` | lint → typecheck → test をまとめて実行 |
+| `npm run check` | lint → typecheck → test → build をまとめて実行 |
+
+Node のバージョンは `.nvmrc` と `engines` で 22 に固定しています。
 
 ## 構成
 
 ```
 src/
 ├── lib/         ロジック（純粋関数・DOM非依存・テストあり）
-│   ├── replace.ts    置換エンジン（同時／順次、ヒット数、ハイライト断片）
+│   ├── replace.ts    置換エンジン（同時／順次、ヒット数、ハイライト範囲）
 │   ├── regex.ts      正規表現のコンパイルと $1 展開
 │   ├── table.ts      Markdown表 / CSV / TSV の入出力
 │   ├── zip.ts        依存なしの ZIP 生成
 │   ├── fileName.ts   ファイル名のサニタイズと重複解決
 │   ├── gridNav.ts    ルール表のキーボード移動
+│   ├── format.ts     画面とファイル名の書式
+│   ├── text.ts       BOM の付け外し
+│   ├── inputFiles.ts 取り込めるファイルの判定と読み込み
 │   ├── browser.ts    ダウンロード・クリップボード（唯一の副作用）
-│   └── storage.ts    localStorage
+│   └── storage.ts    localStorage（読み込み時に検証・正規化）
 ├── state/       useReducer による状態管理
 ├── hooks/       React フック
-├── components/  UI
+├── components/  UI（ErrorBoundary が復旧画面を持つ）
 ├── styles/      デザイントークンとコンポーネントCSS
 └── types.ts     ドメイン型
-e2e/             Playwright の E2E テスト
+e2e/             Playwright の E2E テスト（mobile/ は狭い画面専用）
 design/          元になった Claude Design のエクスポート（参照用）
 ```
 
@@ -69,8 +88,8 @@ design/          元になった Claude Design のエクスポート（参照用
 
 | 層 | ツール | 見るもの |
 | --- | --- | --- |
-| `src/lib/`, `src/state/` | Vitest | 置換の意味論、表の入出力、ZIP のバイト列、reducer の遷移 |
-| 画面全体 | Playwright | 変換の流れ、ファイル取り込み、モーダル、キーボード操作、永続化、ダウンロード |
+| `src/lib/`, `src/state/` | Vitest | 置換の意味論、表の入出力、ZIP のバイト列、保存データの正規化、reducer の遷移 |
+| 画面全体 | Playwright | 変換の流れ、ファイル取り込み、モーダルのフォーカス、キーボード操作、永続化、ダウンロード、狭い画面のレイアウト |
 
 コンポーネント単体のテストは置いていません。UI の振る舞いは E2E で、ロジックはユニットテストで見る、という分け方です。
 
@@ -78,6 +97,9 @@ design/          元になった Claude Design のエクスポート（参照用
 
 Vercel（`vercel.json` 済み）。完全な静的サイトなので、`dist/` をそのまま配信できる
 ホスティングであればどこでも動きます。
+
+ソースマップは本番にも出力しています（リポジトリが public なので秘匿するものが無く、
+実際に配信されている成果物をそのまま追えるほうが利点が大きいため）。
 
 ## ライセンス
 

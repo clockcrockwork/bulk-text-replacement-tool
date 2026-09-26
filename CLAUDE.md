@@ -6,7 +6,7 @@
 
 「一括置換ツール」— 複数のテキストを、グループごとの置換ルール表で一括変換する
 ブラウザ完結の静的アプリ。Vite + React 19 + TypeScript。サーバーは無く、状態は
-localStorage にだけ保存する。
+localStorage にだけ保存する。**スマートフォンと Safari も保証対象**。
 
 元は Claude Design で作られた `.dc.html`（独自テンプレート + CDN 実行時ランタイム）で、
 そのアーカイブが `design/` にある。**`design/` は参照用で、編集しても本体には反映されない。**
@@ -15,12 +15,14 @@ localStorage にだけ保存する。
 
 ```bash
 npm run dev            # 開発サーバー
-npm run check          # lint + typecheck + test（変更後は必ずこれを通す）
+npm run check          # lint + typecheck + test + build（変更後は必ずこれを通す）
 npm run lint:fix       # Biome の自動修正
 npm run test -- <path> # 単一テストファイルの実行
-npm run test:e2e       # Playwright（実ブラウザ。初回は npx playwright install chromium）
-npm run build          # 型チェック + 本番ビルド
+npm run coverage       # カバレッジ（閾値つき。ロジック層のみ計測）
+npm run test:e2e       # Playwright（初回は npx playwright install chromium webkit）
 ```
+
+E2E をブラウザ1つに絞るときは `npx playwright test --project=chromium`。
 
 ## アーキテクチャ
 
@@ -33,6 +35,7 @@ npm run build          # 型チェック + 本番ビルド
   新しい実体（ルール行・グループ・入力）が必要な action は、ID を含む完成済みのオブジェクトを
   payload で受け取る（`createEmptyRule()` などのファクトリは reducer の外）。
 - `src/components/` — 表示に専念。データ取得も永続化もしない。ハンドラは `App.tsx` から渡す。
+  `ErrorBoundary` だけは例外で、描画が落ちたときの復旧画面を自前で持つ。
 - `src/hooks/` — 再利用する副作用（スクロールロック、トースト、画面幅、永続化）。
 - `e2e/` — Playwright。本番ビルドを `npm run preview` で配信して検証する。
 
@@ -49,28 +52,52 @@ npm run build          # 型チェック + 本番ビルド
 - **コメント**: 日本語。「何をしているか」ではなく「なぜそうなっているか」を書く。
 - **型**: `any` 禁止。ドメイン型は `src/types.ts` に集約。`noUncheckedIndexedAccess` が有効なので
   配列アクセスは `undefined` を考慮する（`!` による非 null 表明は lint エラー）。
+  **外から来る値（localStorage・取り込んだ表）を `as` で通さない。** 検証して正規化する。
 - **lint の抑制**: `biome-ignore` は理由を必ず書く。a11y の指摘は、まず実装で直せないかを検討する
-  （例: モーダルはネイティブ `<dialog>`、トグル群は `<fieldset>` + `<legend>`）。
+  （例: モーダルはネイティブ `<dialog>`、トグル群は `ToggleGroup`）。
+- **不可視文字**: `﻿` のような文字をソースに直接書かない（見えないまま壊れる）。
+  BOM は `src/lib/text.ts` の `BOM` / `stripBom` / `withBom` を使う。
 
 ## 触るときに気をつけること
 
-- **置換の意味論**（`src/lib/replace.ts`）: 「同時」は連続する行をまとめて1パスで適用し、
-  長い一致を優先、同着ならルール定義順。置換結果は同じパス内で再走査しない。「順次」は
-  単独パスとして、それまでの結果に適用する。この挙動を変えると利用者の出力が変わるので、
-  変更時は `replace.test.ts` のケースを先に見直すこと。
-- **永続化**（`src/lib/storage.ts`）: キーは `bt-bulk-replace-v1`。保存する形（`PersistedWorkspace`）に
-  後方互換の無い変更を入れるなら、キーの版を上げて古いデータを読み飛ばす。
+- **置換の意味論**（`src/lib/replace.ts`）: テキストは1本の文字列として持ち、ハイライトは
+  範囲（オフセット）で覚える。各パスは**その時点のテキスト全体**を走査する。
+  「同時」は連続する行を1パスにまとめ、長い一致を優先、同着ならルール定義順。同じパス内で
+  置換結果を再走査しないので連鎖しない。「順次」は単独パスなので、前のパスの結果と周囲に
+  またがる一致も拾う。この挙動を変えると利用者の出力が変わるので、変更時は
+  `replace.test.ts` のケースを先に見直すこと。
+- **置換先が空の行**は「削除」ではなく「そのグループでは適用しない」。文字列の削除はできない。
+  これは仕様なので、変えるなら「適用しない」を別の形で表現する必要がある。
+- **永続化**（`src/lib/storage.ts`）: キーは `bt-bulk-replace-v1`。読み込み時に各要素を検証・
+  正規化しており、ここを緩めると壊れた保存データで起動時に落ち、リロードしても直らない
+  （復旧不能）状態を作れる。保存する形を後方互換なく変えるならキーの版を上げる。
 - **ZIP**（`src/lib/zip.ts`）: 無圧縮 store 形式の自前実装。ライブラリ追加より仕様に従う方を優先する。
-  オフセットの意味はコメント参照。
+  ファイル名は `sanitizeName` を通す（`..` を残すと展開先を抜け出せる）。
 - **IME**: ルール表のキーボード移動は、変換確定中の Enter を無視する必要がある
   （`isComposing` と keyCode 229 の両方を見ている）。ここを削らない。
+- **スマホ / Safari**: フォーム要素は狭幅・タッチ環境で **16px 以上**にする（iOS Safari が
+  16px 未満で自動ズームする）。`user-scalable=no` は使わない。
+- **選択状態**は色だけで表さない。トグルは `ToggleGroup`（`aria-pressed` 込み）を使い、
+  独自に組むなら `aria-pressed` / `aria-current` を付ける。
+- **外部通信**を増やさない。README で「入力とルールは外部へ送信しない」と約束しており、
+  `e2e/privacy.spec.ts` が許可した宛先以外への通信を落とす。
 
 ## テスト
 
 - **ロジック**（`src/lib/`, `src/state/`）は Vitest。置換の意味論・表の入出力・ZIP のバイト列・
-  reducer の遷移など、壊れると出力が変わるところを押さえる。
+  保存データの正規化・reducer の遷移など、壊れると出力が変わるところを押さえる。
+  カバレッジ閾値（statements 95 / branches 85）があるので、ロジックを足すならテストも足す。
 - **画面**は Playwright（`e2e/`）。コンポーネント単体のテストは置かない。UI を変えたら
-  該当する E2E を直す。
-- 要素の指定は、できるだけ `getByRole` / ラベルで行う。同じラベルのボタンが複数ある場合は
-  `.toolbar` などでスコープを絞る（クラス名への依存は最小限に）。
+  該当する E2E を直す。狭い画面はレイアウトの前提が違うので `e2e/mobile/` に分ける。
+- **状態は `seedWorkspace` で仕込む**。アプリの初回サンプルを暗黙の fixture にすると、
+  サンプル文言を変えただけで広範囲が壊れる。サンプル自体を見るテストだけ例外。
+- **要素の指定**: 操作（クリック・入力）は `getByRole` / ラベルで行う。レイアウトや構造の
+  検証（カード表示か表か、断片の数）はクラスセレクタでよい。同じラベルのボタンが複数ある
+  場合は `.toolbar` などでスコープを絞る。
 - 新しい振る舞いを足したら、ロジックならユニットテスト、画面の流れなら E2E を必ず1本足す。
+
+## CI
+
+`.github/workflows/ci.yml` の2ジョブ（`Lint / Types / Unit tests / Build` と `E2E (Playwright)`）。
+`push` は `main` のみ、他は `pull_request` で走る（同じコミットに同名チェックが2系統
+報告されると required status checks が不安定になるため）。失敗時だけレポートを回収する。
