@@ -18,6 +18,7 @@ npm run dev            # 開発サーバー
 npm run check          # lint + typecheck + test（変更後は必ずこれを通す）
 npm run lint:fix       # Biome の自動修正
 npm run test -- <path> # 単一テストファイルの実行
+npm run test:e2e       # Playwright（実ブラウザ。初回は npx playwright install chromium）
 npm run build          # 型チェック + 本番ビルド
 ```
 
@@ -33,6 +34,7 @@ npm run build          # 型チェック + 本番ビルド
   payload で受け取る（`createEmptyRule()` などのファクトリは reducer の外）。
 - `src/components/` — 表示に専念。データ取得も永続化もしない。ハンドラは `App.tsx` から渡す。
 - `src/hooks/` — 再利用する副作用（スクロールロック、トースト、画面幅、永続化）。
+- `e2e/` — Playwright。本番ビルドを `npm run preview` で配信して検証する。
 
 データの流れ: `App.tsx` が state を持ち、`src/lib/` の関数を呼んで結果を reducer に渡し、
 コンポーネントへ props で配る。
@@ -63,7 +65,12 @@ npm run build          # 型チェック + 本番ビルド
 - **IME**: ルール表のキーボード移動は、変換確定中の Enter を無視する必要がある
   （`isComposing` と keyCode 229 の両方を見ている）。ここを削らない。
 
-## 動作確認
+## テスト
 
-ロジックの変更はユニットテストで確認する。UI の変更は `npm run dev` で実際に触って確認する
-（UI の自動テストは入れていない）。
+- **ロジック**（`src/lib/`, `src/state/`）は Vitest。置換の意味論・表の入出力・ZIP のバイト列・
+  reducer の遷移など、壊れると出力が変わるところを押さえる。
+- **画面**は Playwright（`e2e/`）。コンポーネント単体のテストは置かない。UI を変えたら
+  該当する E2E を直す。
+- 要素の指定は、できるだけ `getByRole` / ラベルで行う。同じラベルのボタンが複数ある場合は
+  `.toolbar` などでスコープを絞る（クラス名への依存は最小限に）。
+- 新しい振る舞いを足したら、ロジックならユニットテスト、画面の流れなら E2E を必ず1本足す。

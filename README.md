@@ -28,6 +28,7 @@
 npm install
 npm run dev        # 開発サーバー
 npm run check      # lint + typecheck + test（コミット前にこれ）
+npm run test:e2e   # ブラウザでの E2E テスト（初回は npx playwright install chromium）
 ```
 
 | コマンド | 内容 |
@@ -39,6 +40,7 @@ npm run check      # lint + typecheck + test（コミット前にこれ）
 | `npm run lint:fix` | Biome の自動修正 |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run test` | Vitest（ロジックのユニットテスト） |
+| `npm run test:e2e` | Playwright（実ブラウザでの E2E テスト） |
 | `npm run check` | lint → typecheck → test をまとめて実行 |
 
 ## 構成
@@ -59,8 +61,18 @@ src/
 ├── components/  UI
 ├── styles/      デザイントークンとコンポーネントCSS
 └── types.ts     ドメイン型
+e2e/             Playwright の E2E テスト
 design/          元になった Claude Design のエクスポート（参照用）
 ```
+
+### テストの分担
+
+| 層 | ツール | 見るもの |
+| --- | --- | --- |
+| `src/lib/`, `src/state/` | Vitest | 置換の意味論、表の入出力、ZIP のバイト列、reducer の遷移 |
+| 画面全体 | Playwright | 変換の流れ、ファイル取り込み、モーダル、キーボード操作、永続化、ダウンロード |
+
+コンポーネント単体のテストは置いていません。UI の振る舞いは E2E で、ロジックはユニットテストで見る、という分け方です。
 
 ## デプロイ
 

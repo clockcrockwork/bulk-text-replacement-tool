@@ -5,3 +5,7 @@ coverage/
 .DS_Store
 .vite/
 .vercel/
+test-results/
+playwright-report/
+blob-report/
+.playwright/
