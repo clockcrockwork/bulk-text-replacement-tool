@@ -25,6 +25,17 @@ export function formatInputSummary(count: number): string {
   return `${count}件`;
 }
 
+/**
+ * タイトルを空のままにしたときに使われる出力ファイル名。
+ *
+ * 画面では空欄なのに出力だけ勝手に名前が付くと「空で保存したのに名前が付いた」に
+ * 見えるので、placeholder でその名前を先に見せる。`resolveFileNames` の
+ * フォールバックと同じ形にしておくこと。
+ */
+export function formatFallbackTitle(index: number): string {
+  return `text-${index + 1}.txt`;
+}
+
 /** 連番ラベル（01, 02, …）。 */
 export function formatIndex(index: number): string {
   return padTwo(index + 1);

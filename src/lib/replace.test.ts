@@ -243,3 +243,43 @@ describe('Unicode 正規化', () => {
     expect(result.groups[0]?.files[0]?.hits).toBe(1);
   });
 });
+
+describe('グループ名の一意化', () => {
+  it('同名のグループでも、タブ名と ZIP のディレクトリ名が一致し重ならない', () => {
+    const result = runConversion({
+      inputs: [{ id: 'i1', title: 'a.txt', text: 'アリス' }],
+      groups: [
+        { id: 'g1', name: 'A用' },
+        { id: 'g2', name: 'A用' },
+      ],
+      rules: [
+        {
+          id: 'r1',
+          src: 'アリス',
+          regex: false,
+          cs: true,
+          order: 'sim',
+          values: { g1: 'あー', g2: 'びー' },
+        },
+      ],
+    });
+    const names = result.groups.map((group) => group.name);
+    const dirs = result.groups.map((group) => group.dir);
+    expect(names).toEqual(['A用', 'A用 (2)']);
+    // 見えている名前と ZIP の中の名前がずれない。
+    expect(dirs).toEqual(names);
+    expect(new Set(dirs).size).toBe(2);
+  });
+
+  it('名前が空のグループにも連番の名前が付く', () => {
+    const result = runConversion({
+      inputs: [],
+      groups: [
+        { id: 'g1', name: '' },
+        { id: 'g2', name: '' },
+      ],
+      rules: [],
+    });
+    expect(result.groups.map((group) => group.name)).toEqual(['group-1', 'group-2']);
+  });
+});

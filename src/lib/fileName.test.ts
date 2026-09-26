@@ -100,6 +100,47 @@ describe('resolveDirNames', () => {
   });
 });
 
+describe('resolveFileNames（拡張子の扱い）', () => {
+  it('保証している拡張子はそのまま', () => {
+    expect(resolveFileNames(['a.txt', 'b.md', 'c.tex'])).toEqual(['a.txt', 'b.md', 'c.tex']);
+  });
+
+  it('大文字の拡張子も保証対象として扱う', () => {
+    expect(resolveFileNames(['A.MD'])).toEqual(['A.MD']);
+  });
+
+  it('保証していない拡張子は消さずに .txt を足す（中身はプレーンテキストなので）', () => {
+    expect(resolveFileNames(['title.html'])).toEqual(['title.html.txt']);
+    expect(resolveFileNames(['script.js'])).toEqual(['script.js.txt']);
+    expect(resolveFileNames(['data.exe'])).toEqual(['data.exe.txt']);
+  });
+
+  it('二重拡張子は最後だけを見る', () => {
+    expect(resolveFileNames(['story.part1.md'])).toEqual(['story.part1.md']);
+    expect(resolveFileNames(['title.html.txt'])).toEqual(['title.html.txt']);
+  });
+
+  it('拡張子が無ければ .txt', () => {
+    expect(resolveFileNames(['第一章'])).toEqual(['第一章.txt']);
+  });
+
+  it('日本語の拡張子は保証対象ではないので .txt を足す', () => {
+    expect(resolveFileNames(['第一章.小説'])).toEqual(['第一章.小説.txt']);
+  });
+});
+
+describe('resolveFileNames（名前であってパスではない）', () => {
+  it('区切りは階層にせず名前の一部として残す', () => {
+    expect(resolveFileNames(['第一章/序'])).toEqual(['第一章_序.txt']);
+  });
+
+  it('出力名に区切りは残らない（ZIPだけ階層になる食い違いを作らない）', () => {
+    for (const name of resolveFileNames(['a/b/c.md', '../x.txt'])) {
+      expect(name).not.toContain('/');
+    }
+  });
+});
+
 describe('resolveFileNames（Zip Slip）', () => {
   it('親ディレクトリへ抜ける名前を無害化する', () => {
     expect(resolveFileNames(['../../evil.txt'])).toEqual(['evil.txt']);

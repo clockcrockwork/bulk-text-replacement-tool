@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Group, Rule } from '../types';
-import { collectRuleErrors, findUnmatchedRules } from './diagnostics';
+import { collectRuleErrors, findDuplicateGroupNames, findUnmatchedRules } from './diagnostics';
 import { runConversion } from './replace';
 
 const GROUPS: Group[] = [
@@ -60,5 +60,31 @@ describe('findUnmatchedRules', () => {
     // g1 には置換先があり当たる。g2 は未設定なので 0 件だが、それは正常。
     const rules = [rule('r1', 'アリス', { g1: 'あー' })];
     expect(findUnmatchedRules(rules, GROUPS, convert(rules, 'アリス'))).toEqual([]);
+  });
+});
+
+describe('findDuplicateGroupNames', () => {
+  it('同じ名前を1回だけ返す', () => {
+    expect(
+      findDuplicateGroupNames([
+        { id: 'g1', name: 'A用' },
+        { id: 'g2', name: 'A用' },
+        { id: 'g3', name: 'A用' },
+        { id: 'g4', name: 'B用' },
+      ]),
+    ).toEqual(['A用']);
+  });
+
+  it('重複が無ければ空', () => {
+    expect(findDuplicateGroupNames(GROUPS)).toEqual([]);
+  });
+
+  it('空の名前どうしも重複として扱う', () => {
+    expect(
+      findDuplicateGroupNames([
+        { id: 'g1', name: '' },
+        { id: 'g2', name: '' },
+      ]),
+    ).toEqual(['']);
   });
 });

@@ -45,3 +45,20 @@ export function findUnmatchedRules(
     return applied.every((group) => (result.hitsByGroupRule[group.id]?.[rule.id] ?? 0) === 0);
   });
 }
+
+/**
+ * 同じ名前のグループ。
+ *
+ * 名前は出力先（タブ名・ZIP のディレクトリ名）の識別子になる。変換時に連番を振って
+ * 重ならないようにはするが、表の見出しは入力したままなので、どの列がどの出力に
+ * なるのか分からない状態になる。気づけるように名前を返す。
+ */
+export function findDuplicateGroupNames(groups: readonly Group[]): string[] {
+  const seen = new Set<string>();
+  const duplicated = new Set<string>();
+  for (const group of groups) {
+    if (seen.has(group.name)) duplicated.add(group.name);
+    seen.add(group.name);
+  }
+  return [...duplicated];
+}

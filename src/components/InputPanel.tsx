@@ -1,5 +1,10 @@
 import type { ChangeEvent, JSX, KeyboardEvent, MouseEvent, RefObject } from 'react';
-import { formatIndex, formatInputSummary, formatTextMeta } from '../lib/format';
+import {
+  formatFallbackTitle,
+  formatIndex,
+  formatInputSummary,
+  formatTextMeta,
+} from '../lib/format';
 import { ACCEPT_ATTRIBUTE, ACCEPTED_EXTENSIONS_LABEL } from '../lib/inputFiles';
 import type { InputText } from '../types';
 import { Icon } from './Icon';
@@ -94,8 +99,9 @@ export function InputPanel({
                 className="cell-input input-card__title"
                 value={input.title}
                 onChange={(event) => onRenameInput(input.id, event.target.value)}
-                placeholder="ファイル名（例：chapter1.md。拡張子が無ければ .txt）"
+                placeholder={`空欄なら ${formatFallbackTitle(index)}`}
                 aria-label="ファイル名"
+                title="拡張子が無ければ .txt を付けます（.md / .tex 以外も .txt を足します）"
               />
               <button
                 type="button"

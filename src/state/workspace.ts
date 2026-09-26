@@ -1,3 +1,4 @@
+import { uniqueName } from '../lib/fileName';
 import { createGroupId, createId } from '../lib/id';
 import { loadWorkspace, preferredTheme } from '../lib/storage';
 import type {
@@ -11,6 +12,16 @@ import type {
   Tab,
   Theme,
 } from '../types';
+
+/** 同名のグループが残らないよう、後から出てきた方に連番を振る。 */
+function dedupeGroupNames(groups: readonly Group[]): Group[] {
+  const used = new Set<string>();
+  return groups.map((group) => {
+    const name = uniqueName(group.name, used);
+    used.add(name);
+    return { ...group, name };
+  });
+}
 
 /** 出力ペインの本文表示モード。 */
 export type FileView = 'highlight' | 'plain';
@@ -202,6 +213,7 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
       return {
         ...state,
         ...action.workspace,
+        groups: dedupeGroupNames(action.workspace.groups),
         editingId: null,
         result: null,
         lastSignature: null,
@@ -209,8 +221,13 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
         fileViews: {},
       };
 
-    case 'groups/add':
-      return { ...state, groups: [...state.groups, action.group] };
+    case 'groups/add': {
+      // グループ名は出力先（タブ名・ZIP のディレクトリ名）の識別子になるので、
+      // 見た目が同じものを作らない。
+      const used = new Set(state.groups.map((group) => group.name));
+      const name = uniqueName(action.group.name, used);
+      return { ...state, groups: [...state.groups, { ...action.group, name }] };
+    }
 
     case 'groups/rename':
       return { ...state, groups: patchById(state.groups, action.id, { name: action.name }) };

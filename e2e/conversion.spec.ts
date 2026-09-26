@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { cell, goToTab, openApp, seedBasic } from './fixtures';
+import { readZipEntries } from './zipReader';
 
 test.beforeEach(async ({ page }) => {
   await seedBasic(page);
@@ -140,4 +141,55 @@ test.describe('変換前の点検', () => {
     // 警告なので結果は作られる。
     await expect(page.locator('.file-card__path')).toBeVisible();
   });
+});
+
+test.describe('出力名の契約', () => {
+  test('保証していない拡張子には .txt を足し、区切りは名前の一部にする', async ({ page }) => {
+    await page.locator('.input-card__title').fill('第一章/序.html');
+    await page.getByRole('button', { name: '変換', exact: true }).click();
+
+    // ZIP だけ階層になる食い違いを作らないので、グループ名の下は1階層。
+    await expect(page.locator('.file-card__path')).toHaveText('A用/第一章_序.html.txt');
+  });
+
+  test('個別保存のファイル名も同じ規則になる', async ({ page }) => {
+    // 保存名の検証は ASCII で行う。この実行環境の Chromium は、非 ASCII の
+    // download 属性を suggestedFilename に反映せず "download" を返す。
+    await page.locator('.input-card__title').fill('chapter/one.html');
+    await page.getByRole('button', { name: '変換', exact: true }).click();
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByRole('button', { name: 'このファイルを保存' }).first().click(),
+    ]);
+    expect(download.suggestedFilename()).toBe('chapter_one.html.txt');
+  });
+
+  test('タイトルが空でも、出力名が事前に分かる', async ({ page }) => {
+    const title = page.locator('.input-card__title');
+    await title.fill('');
+    await expect(title).toHaveAttribute('placeholder', '空欄なら text-1.txt');
+
+    await page.getByRole('button', { name: '変換', exact: true }).click();
+    await expect(page.locator('.file-card__path')).toHaveText('A用/text-1.txt');
+  });
+});
+
+test('同名のグループはタブ名とZIPの中で重ならない', async ({ page }) => {
+  await goToTab(page, 'ルール');
+  await page.locator('.rule-table__group-name').nth(1).fill('A用');
+  await expect(page.locator('.rules-warning')).toContainText('同じ名前のグループがあります');
+
+  await page.getByRole('button', { name: '変換', exact: true }).click();
+  await goToTab(page, '出力');
+  const tabs = page.locator('.out-tab');
+  await expect(tabs.nth(0)).toContainText('A用');
+  await expect(tabs.nth(1)).toContainText('A用 (2)');
+
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: 'ZIPですべて保存' }).click(),
+  ]);
+  const entries = await readZipEntries(await download.path());
+  expect(entries.map((entry) => entry.name)).toEqual(['A用/story.md', 'A用 (2)/story.md']);
 });

@@ -263,7 +263,8 @@ export function App(): JSX.Element {
     guard('ファイルの保存', () =>
       downloadBlob(
         new Blob([file.text], { type: 'text/plain;charset=utf-8' }),
-        file.title.split('/').pop() ?? file.title,
+        // resolveFileNames で区切りは潰してあるので、ここで basename を取る必要はない。
+        file.title,
       ),
     );
   };

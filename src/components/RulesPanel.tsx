@@ -1,5 +1,5 @@
 import { type JSX, type KeyboardEvent, useEffect, useMemo, useRef } from 'react';
-import { collectRuleErrors } from '../lib/diagnostics';
+import { collectRuleErrors, findDuplicateGroupNames } from '../lib/diagnostics';
 import { resolveGridNav } from '../lib/gridNav';
 import type { ConversionResult, Group, Rule } from '../types';
 import { Icon } from './Icon';
@@ -77,6 +77,8 @@ export function RulesPanel({
     });
   }, [rules, groups, result]);
 
+  const duplicateNames = useMemo(() => findDuplicateGroupNames(groups), [groups]);
+
   // 「最終行で Enter」で行を足したあと、増えた行にフォーカスを移す。
   const pendingFocus = useRef<{ row: number; col: number } | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: 行数が増えた描画のあとにだけ実行する
@@ -152,6 +154,15 @@ export function RulesPanel({
           <span>TSV書き出し</span>
         </button>
       </div>
+
+      {duplicateNames.length > 0 ? (
+        <p className="rules-warning" role="status">
+          同じ名前のグループがあります（
+          {duplicateNames.map((name) => name || '（無名）').join('・')}
+          ）。出力では「A用 (2)」のように連番が付きますが、どの列がどの出力になるか
+          分かりにくいので、名前を変えることをおすすめします。
+        </p>
+      ) : null}
 
       <div className="legend">
         <div className="legend__item">

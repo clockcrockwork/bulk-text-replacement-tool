@@ -1,4 +1,5 @@
 import type { Group, ImportMode, Rule } from '../types';
+import { uniqueName } from './fileName';
 import { createGroupId, createId } from './id';
 import { stripBom, trimAscii } from './text';
 
@@ -173,12 +174,7 @@ export function buildRulesFromTable({
     .map((title, index) => ({ title, index }))
     .filter(({ index }) => index > 0 && !optionColumns.includes(index))
     .map(({ title, index }) => {
-      let name = title || `グループ${groups.length + 1}`;
-      if (usedNames.has(name)) {
-        let suffix = 2;
-        while (usedNames.has(`${name} (${suffix})`)) suffix += 1;
-        name = `${name} (${suffix})`;
-      }
+      const name = uniqueName(title || `グループ${groups.length + 1}`, usedNames);
       usedNames.add(name);
       let group = groups.find((candidate) => candidate.name === name);
       if (!group) {
