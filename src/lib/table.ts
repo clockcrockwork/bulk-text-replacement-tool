@@ -122,6 +122,25 @@ export function parseTable(text: string): ParsedTable {
   };
 }
 
+/**
+ * 見出し行と列数が食い違うデータ行の番号（データ行の1始まり）。
+ *
+ * `buildRulesFromTable` は足りないセルを空として扱い、余ったセルは使わない。
+ * そのため区切りが壊れた表でも「読み込めた」ように見えて、一部だけ違うルールに
+ * なる。取り込む前に気づけるよう、食い違いを数える。
+ *
+ * 空行は `parseDelimited` が落としているので、ここには来ない。
+ */
+export function findRaggedRows(rows: readonly string[][]): number[] {
+  const header = rows[0];
+  if (!header) return [];
+  const ragged: number[] = [];
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i]?.length !== header.length) ragged.push(i);
+  }
+  return ragged;
+}
+
 /** 真偽値セルの表記ゆれを吸収する。 */
 function isTruthyCell(value: string | undefined): boolean {
   return /^(1|true|yes|y|on|○|◯|✓|はい)$/i.test(trimAscii(value ?? ''));
@@ -238,13 +257,15 @@ export function rulesToDelimited(
       rule.order === 'seq' ? '順次' : '同時',
     ]);
 
+  // 区切り・改行・引用符を含むセルはクォートする。CSV も TSV も同じ規則にする。
+  //
+  // 以前 TSV は「クォートを解釈しない実装が多い」として、タブと改行を空白へ潰していた。
+  // その結果、このアプリ自身が書き出した TSV を読み戻すと値が変わっていた。
+  // 他のツールとの受け渡しで CSV を勧めるのは構わないが、自分で出したものを
+  // 自分で失う状態は残さない（`parseDelimited` は両方ともクォートを解釈する）。
+  const needsQuote = delimiter === ',' ? /[",\n\r]/ : /["\t\n\r]/;
   const quote = (value: string): string =>
-    delimiter === ','
-      ? /[",\n\r]/.test(value)
-        ? `"${value.replace(/"/g, '""')}"`
-        : value
-      : // TSV はクォートを解釈しない実装が多いので、区切りになる文字を空白に潰す。
-        value.replace(/[\t\n\r]/g, ' ');
+    needsQuote.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 
   return [header, ...body].map((row) => row.map(quote).join(delimiter)).join('\r\n');
 }

@@ -3,6 +3,7 @@ import type { Group, Rule } from '../types';
 import {
   buildRulesFromTable,
   type Delimiter,
+  findRaggedRows,
   parseDelimited,
   parseTable,
   rulesToDelimited,
@@ -278,6 +279,63 @@ describe('書き出し → 読み込みの往復', () => {
     const back = roundTrip(groups, rules, ',');
     expect(back?.rules[0]?.src).toBe('foo\tbar');
   });
+
+  // 以前 TSV は区切り文字を空白へ潰していたため、自分で書き出したものを
+  // 読み戻すだけで値が変わっていた。
+  it.each([',', '\t'] as const)('区切り「%j」でも、値を変えずに往復できる', (delimiter) => {
+    const groups: Group[] = [{ id: 'g1', name: 'A用' }];
+    const rules: Rule[] = [
+      {
+        id: 'r1',
+        src: 'foo\tbar',
+        regex: false,
+        cs: true,
+        order: 'sim',
+        values: { g1: '一行目\n二行目' },
+      },
+      {
+        id: 'r2',
+        src: 'あ"い',
+        regex: false,
+        cs: true,
+        order: 'sim',
+        values: { g1: '\u3000字下げ' },
+      },
+    ];
+    const back = roundTrip(groups, rules, delimiter);
+    expect(back?.rules.map((rule) => rule.src)).toEqual(['foo\tbar', 'あ"い']);
+    expect(back?.rules.map((rule) => Object.values(rule.values)[0])).toEqual([
+      '一行目\n二行目',
+      '\u3000字下げ',
+    ]);
+  });
+});
+
+describe('findRaggedRows', () => {
+  it('見出しと列数が違う行を返す（データ行の1始まり）', () => {
+    expect(
+      findRaggedRows([
+        ['元テキスト', 'A用', 'B用'],
+        ['ア', 'あ', 'い'],
+        ['イ', 'う'],
+        ['ウ', 'え', 'お', '余り'],
+      ]),
+    ).toEqual([2, 3]);
+  });
+
+  it('揃っていれば空', () => {
+    expect(
+      findRaggedRows([
+        ['元テキスト', 'A用'],
+        ['ア', 'あ'],
+      ]),
+    ).toEqual([]);
+  });
+
+  it('見出しだけ・空の表では何も返さない', () => {
+    expect(findRaggedRows([['元テキスト', 'A用']])).toEqual([]);
+    expect(findRaggedRows([])).toEqual([]);
+  });
 });
 
 describe('rulesToDelimited', () => {
@@ -293,8 +351,17 @@ describe('rulesToDelimited', () => {
     );
   });
 
-  it('TSV では区切りになる文字を空白に潰す', () => {
+  it('TSV でも区切りを含むセルはクォートする（値を潰さない）', () => {
     const withTab: Rule[] = [{ ...(rules[0] as Rule), src: 'a\tb' }];
-    expect(rulesToDelimited(groups, withTab, '\t').split('\r\n')[1]).toBe('a b\tX\t1\t0\t順次');
+    expect(rulesToDelimited(groups, withTab, '\t').split('\r\n')[1]).toBe('"a\tb"\tX\t1\t0\t順次');
+  });
+
+  it('TSV でも改行と引用符を含むセルをクォートする', () => {
+    const tricky: Rule[] = [
+      { ...(rules[0] as Rule), src: '一行目\n二行目', values: { g1: 'あ"い' } },
+    ];
+    expect(rulesToDelimited(groups, tricky, '\t').split('\r\n')[1]).toBe(
+      '"一行目\n二行目"\t"あ""い"\t1\t0\t順次',
+    );
   });
 });

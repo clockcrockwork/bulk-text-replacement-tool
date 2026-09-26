@@ -208,3 +208,50 @@ test('補助漢字を分断しない（u フラグが効いている）', async 
   // u が無いと 'XX'（サロゲートペアが2文字として数えられる）になる。
   await expect(page.locator('.file-card__plain')).toHaveValue('X');
 });
+
+test.describe('列数が合わない表', () => {
+  test('ダイアログで知らせ、確認を通さないと取り込まない', async ({ page }) => {
+    await page.getByRole('button', { name: '表から読み込み' }).click();
+    // 2行目だけ列が足りない。
+    await page.locator('.dialog__textarea').fill('元テキスト,A用,B用\nア,あ,い\nイ,う');
+    await expect(page.locator('.dialog__error')).toContainText('見出しと列数が違う行があります');
+
+    await page.getByRole('button', { name: '読み込む' }).click();
+    const confirmDialog = page.locator('dialog.dialog--confirm[open]');
+    await expect(confirmDialog.getByRole('heading')).toHaveText('列数が合わない行があります');
+    await expect(confirmDialog.locator('.dialog__details')).toContainText('列数が合わない行 1行');
+
+    await confirmDialog.getByRole('button', { name: 'キャンセル' }).click();
+    await expect(cell(page, 0, 0)).toHaveValue('アリス');
+  });
+
+  test('列が揃っていれば確認は出ない', async ({ page }) => {
+    await page.getByRole('button', { name: '表から読み込み' }).click();
+    await page.locator('.dialog__textarea').fill('元テキスト,A用\nア,あ');
+    await expect(page.locator('.dialog__error')).toHaveCount(0);
+    await page.getByRole('button', { name: '読み込む' }).click();
+    await expect(page.locator('dialog.dialog--confirm')).toHaveCount(0);
+    await expect(page.locator('.toast')).toHaveText('1行を読み込みました');
+  });
+});
+
+test('TSV に書き出したルールは、そのまま読み戻せる', async ({ page }) => {
+  // タブと改行を含む値を入れておく。以前はここが空白へ潰れていた。
+  await cell(page, 2, 0).fill('foo\tbar');
+  await cell(page, 2, 1).fill('X');
+
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: 'TSV書き出し' }).click(),
+  ]);
+  const text = await readFile(await download.path(), 'utf8');
+
+  await page.getByRole('button', { name: '表から読み込み' }).click();
+  await page.getByRole('button', { name: '置き換える' }).click();
+  await page.locator('.dialog__textarea').fill(text.replace(BOM, ''));
+  await page.getByRole('button', { name: '読み込む' }).click();
+  await page.locator('dialog.dialog--confirm').getByRole('button', { name: '置き換える' }).click();
+
+  await expect(cell(page, 2, 0)).toHaveValue('foo\tbar');
+  await expect(cell(page, 2, 1)).toHaveValue('X');
+});

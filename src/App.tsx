@@ -30,7 +30,13 @@ import { collectRuleErrors, findUnmatchedRules } from './lib/diagnostics';
 import { timestampForFileName } from './lib/format';
 import { readInputFiles } from './lib/inputFiles';
 import { runConversion } from './lib/replace';
-import { buildRulesFromTable, type Delimiter, parseTable, rulesToDelimited } from './lib/table';
+import {
+  buildRulesFromTable,
+  type Delimiter,
+  findRaggedRows,
+  parseTable,
+  rulesToDelimited,
+} from './lib/table';
 import { decodeText, withBom } from './lib/text';
 import { createZip } from './lib/zip';
 import {
@@ -306,15 +312,29 @@ export function App(): JSX.Element {
       return;
     }
 
+    // 列数が食い違う表は、区切りが壊れている可能性が高い。足りないセルは空として
+    // 扱われるので「読み込めた」ように見えてしまう。確定させる前に見せる。
+    const ragged = findRaggedRows(parsedImport.rows);
+
     // 置き換えは、いま画面にあるルールとグループをまとめて捨てる。
     // 中身があるときだけ、何が失われるかを見せて確認する。
     const losing = state.rules.filter((rule) => rule.src !== '').length;
-    if (state.importMode === 'replace' && losing > 0) {
+    const replacing = state.importMode === 'replace' && losing > 0;
+
+    if (replacing || ragged.length > 0) {
+      const details = [
+        ...(ragged.length > 0 ? [`列数が合わない行 ${ragged.length}行`] : []),
+        ...(replacing
+          ? [`失われるルール ${losing}行`, `失われるグループ ${state.groups.length}件`]
+          : []),
+      ];
       const ok = await confirm.ask({
-        title: '現在のルール表を置き換える',
-        message: '取り消せません。書き出していないルールは失われます。',
-        details: [`ルール ${losing}行`, `グループ ${state.groups.length}件`],
-        confirmLabel: '置き換える',
+        title: replacing ? '現在のルール表を置き換える' : '列数が合わない行があります',
+        message: replacing
+          ? '取り消せません。書き出していないルールは失われます。'
+          : '区切りが壊れていると、一部だけ違うルールとして読み込まれます。',
+        details,
+        confirmLabel: replacing ? '置き換える' : 'このまま読み込む',
       });
       if (!ok) return;
     }
