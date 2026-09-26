@@ -78,7 +78,8 @@ export function ImportDialog({
       <div className="dialog__inner">
         <h2 className="dialog__title">表から読み込み</h2>
         <p className="dialog__lead">
-          Markdown表・CSV・TSVを貼り付けるか、ファイルを選択。1行目は見出しで、1列目が置換元（見出しは何でも構いません）、
+          Markdown
+          表・CSV・TSVを貼り付けるか、ファイルを選択。1行目は見出しで、1列目が置換元（見出しは何でも構いません）、
           残りの列がグループ名になります。見出しを「{OPTION_HEADERS.regex}」「{OPTION_HEADERS.cs}」
           「{OPTION_HEADERS.order}」にした列はグループではなく、その行の設定として読み込みます。
           置換先が空欄のセルは、そのグループでは置換しません（削除ではありません）。
@@ -106,9 +107,9 @@ export function ImportDialog({
           <span className="dialog__detect">{describe(parsed)}</span>
         </div>
         <div className="dialog__row">
-          <span className="hint">既存のルール</span>
+          <span className="hint">現在のルール表</span>
           <ToggleGroup
-            legend="既存のルールの扱い"
+            legend="現在のルール表の扱い"
             value={mode}
             options={IMPORT_MODE_OPTIONS}
             onChange={onChangeMode}

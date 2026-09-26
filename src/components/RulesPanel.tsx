@@ -145,11 +145,11 @@ export function RulesPanel({
         </button>
         <button type="button" className="btn" onClick={onExportCsv}>
           <Icon name="download" />
-          <span>CSV</span>
+          <span>CSV書き出し</span>
         </button>
         <button type="button" className="btn" onClick={onExportTsv}>
           <Icon name="download" />
-          <span>TSV</span>
+          <span>TSV書き出し</span>
         </button>
       </div>
 

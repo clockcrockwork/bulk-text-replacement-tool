@@ -33,7 +33,7 @@ test('本文をクリックすると全画面エディタが開き、編集が�
 
   await expect(page.locator('.editor')).toHaveCount(0);
   await expect(page.locator('.input-card__preview')).toHaveValue('書き換えた本文');
-  await expect(page.locator('.input-card__meta')).toHaveText('7 文字 · 1 行');
+  await expect(page.locator('.input-card__meta')).toHaveText('7文字 · 1行');
 });
 
 test('エディタは Escape でも閉じられる', async ({ page }) => {
@@ -128,7 +128,7 @@ test('テーマを切り替えると html の data-theme が変わり、リロ�
   page,
 }) => {
   const initial = await page.getAttribute('html', 'data-theme');
-  await page.getByRole('button', { name: 'テーマ切替' }).click();
+  await page.getByRole('button', { name: 'テーマを切り替える' }).click();
   const toggled = initial === 'dark' ? 'light' : 'dark';
   await expect(page.locator('html')).toHaveAttribute('data-theme', toggled);
 

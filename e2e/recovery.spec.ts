@@ -70,7 +70,7 @@ test('復旧画面から保存データを退避できる', async ({ page }) => 
 test('復旧画面から保存データを消せる', async ({ page }) => {
   await breakRendering(page);
   await page.goto('/');
-  await page.getByRole('button', { name: '保存データを消して再読み込み' }).click();
+  await page.getByRole('button', { name: '保存データを削除して初期状態に戻す' }).click();
   // reload 後も同じ init script で落ちるが、保存データは消えている。
   await expect(page.locator('.recovery')).toBeVisible();
   const saved = await page.evaluate((key) => localStorage.getItem(key), STORAGE_KEY);
@@ -84,7 +84,9 @@ test('保存データが無ければ退避も削除も押せない', async ({ pa
   await page.goto('/');
   await expect(page.locator('.recovery')).toBeVisible();
   await expect(page.getByRole('button', { name: '保存データをダウンロード' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: '保存データを消して再読み込み' })).toBeDisabled();
+  await expect(
+    page.getByRole('button', { name: '保存データを削除して初期状態に戻す' }),
+  ).toBeDisabled();
 });
 
 test('例外が起きなければ復旧画面は出ない', async ({ page }) => {

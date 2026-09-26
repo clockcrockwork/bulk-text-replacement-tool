@@ -40,7 +40,7 @@ function EmptyState({ onRun }: { onRun: () => void }): JSX.Element {
 }
 
 function summarize(result: ConversionResult, group: ResultGroup | undefined): string {
-  return `${formatTime(result.at)} 変換 · ${result.groups.length} グループ × ${group?.files.length ?? 0} ファイル`;
+  return `${formatTime(result.at)}に変換 · ${result.groups.length}グループ × ${group?.files.length ?? 0}ファイル`;
 }
 
 export function OutputPanel({

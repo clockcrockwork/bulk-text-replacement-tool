@@ -56,7 +56,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
         <p className="recovery__lead">
           保存されているデータが原因の場合、再読み込みしても同じ状態になります。
           保存データを消すと直ることがありますが、入力した原稿もルール表も一緒に失われます。
-          先に「保存データをダウンロード」で手元に落としてから消してください。
+          削除する前に「保存データをダウンロード」で手元に保存しておくことをおすすめします。
         </p>
         <pre className="recovery__detail">{error.message}</pre>
         <div className="recovery__actions">
@@ -73,7 +73,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           </button>
           {/* 取り返しのつかない操作なので、既定の見た目のまま最後に置く。 */}
           <button type="button" className="btn" onClick={this.handleReset} disabled={!hasSavedData}>
-            保存データを消して再読み込み
+            保存データを削除して初期状態に戻す
           </button>
         </div>
       </div>

@@ -97,7 +97,7 @@ export function InputPanel({
                 className="cell-input input-card__title"
                 value={input.title}
                 onChange={(event) => onRenameInput(input.id, event.target.value)}
-                placeholder="ファイル名（例: chapter1.md）"
+                placeholder="ファイル名（例：chapter1.md。拡張子が無ければ .txt）"
                 aria-label="ファイル名"
               />
               <button
@@ -116,13 +116,13 @@ export function InputPanel({
               value={input.text}
               onClick={handlePreviewClick(input.id)}
               onKeyDown={handlePreviewKey(input.id)}
-              placeholder="押して本文を入力・貼り付け"
-              aria-label="本文（押すと編集）"
+              placeholder="選択して本文を入力・貼り付け"
+              aria-label="本文を編集"
               spellCheck={false}
             />
             <div className="input-card__foot">
               <span className="input-card__meta">{formatTextMeta(input.text)}</span>
-              <span className="input-card__action-hint">押して編集</span>
+              <span className="input-card__action-hint">本文を編集</span>
             </div>
           </div>
         ))}

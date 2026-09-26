@@ -19,8 +19,8 @@ export function AppHeader({ theme, onToggleTheme, onRun }: AppHeaderProps): JSX.
         type="button"
         className="icon-btn"
         onClick={onToggleTheme}
-        title="テーマ切替"
-        aria-label="テーマ切替"
+        title="テーマを切り替える"
+        aria-label="テーマを切り替える"
       >
         <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={18} />
       </button>
