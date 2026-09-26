@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="_ds/modernist-9e2874b7-56bb-43da-9621-60fd0ee9deb0/styles.css">
+<script src="_ds/modernist-9e2874b7-56bb-43da-9621-60fd0ee9deb0/_ds_bundle.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f3f2f2;--sf:#eae9e9;--sf2:#e1dfdf;--tx:#201e1d;--mu:color-mix(in srgb,#201e1d 62%,transparent);--dv:color-mix(in srgb,#201e1d 40%,transparent);--dv1:color-mix(in srgb,#201e1d 16%,transparent);--ac:#ec3013;--ach:#dd2b0f;--act:#ae1800;--on:#f3f2f2;--hl:#ffe0d9;--hlt:#7c1405;--sh:0 12px 32px color-mix(in srgb,#2d2b2b 22%,transparent);--ff:"Archivo","Hiragino Kaku Gothic ProN","Noto Sans JP",system-ui,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Noto Sans Mono CJK JP",monospace}
+[data-bt="dark"]{--bg:#171514;--sf:#211f1e;--sf2:#2c2a29;--tx:#eeeae9;--mu:color-mix(in srgb,#eeeae9 62%,transparent);--dv:color-mix(in srgb,#eeeae9 36%,transparent);--dv1:color-mix(in srgb,#eeeae9 15%,transparent);--ac:#ff563c;--ach:#ff9783;--act:#ff9783;--on:#171514;--hl:#5a1c10;--hlt:#ffd2c8;--sh:0 12px 32px rgba(0,0,0,.6)}
+html,body{margin:0;padding:0;background:#f3f2f2}
+body:has([data-bt="dark"]){background:#171514}
+[data-bt] *,[data-bt] *::before,[data-bt] *::after{box-sizing:border-box}
+[data-bt] :focus{outline:none}
+[data-bt] :focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+[data-bt] ::selection{background:color-mix(in srgb,var(--ac) 30%,transparent)}
+[data-bt] ::placeholder{color:var(--mu);opacity:.75}
+a{color:var(--ac)} a:hover{color:var(--ach)}
+</style>
+</helmet>
+<div data-bt="{{ theme }}" onDragEnter="{{ onDragEnter }}" onDragOver="{{ onDragOver }}" onDragLeave="{{ onDragLeave }}" onDrop="{{ onDrop }}" style="min-height:100vh;background:var(--bg);color:var(--tx);font-family:var(--ff);font-size:15px;line-height:1.55;display:flex;flex-direction:column">
+
+  <div style="position:sticky;top:0;z-index:40;background:var(--bg)">
+  <header style="display:flex;align-items:center;gap:10px;padding:12px clamp(12px,3vw,32px);border-bottom:2px solid var(--dv)">
+    <div style="display:flex;align-items:center;gap:10px;margin-right:auto;min-width:0">
+      <span style="width:14px;height:14px;background:var(--ac);flex:none"></span>
+      <span style="font-weight:800;font-size:18px;letter-spacing:-0.01em;white-space:nowrap">一括置換</span>
+    </div>
+    <button onClick="{{ toggleTheme }}" title="テーマ切替" aria-label="テーマ切替" style="width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--dv);background:transparent;color:var(--tx);cursor:pointer;padding:0" style-hover="background:var(--sf)">
+      <sc-if value="{{ isDark }}" hint-placeholder-val="{{ false }}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>
+      </sc-if>
+      <sc-if value="{{ isLight }}" hint-placeholder-val="{{ true }}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
+      </sc-if>
+    </button>
+    <button onClick="{{ run }}" style="height:40px;display:inline-flex;align-items:center;gap:8px;padding:0 16px;border:1px solid var(--ac);background:var(--ac);color:var(--on);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none;justify-content:flex-start;min-width:112px" style-hover="background:var(--ach);border-color:var(--ach)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg>
+      <span>変換</span>
+    </button>
+  </header>
+
+  <nav style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px;background:var(--dv);border-bottom:2px solid var(--dv)">
+    <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="3">
+      <button onClick="{{ t.onClick }}" style="display:flex;align-items:baseline;gap:8px;padding:14px clamp(12px,3vw,32px);background:var(--bg);border:0;cursor:pointer;text-align:left;color:{{ t.color }};box-shadow:{{ t.bar }};font-family:var(--ff);min-width:0" style-hover="background:var(--sf)">
+        <span style="font-weight:800;font-size:15px">{{ t.label }}</span>
+        <span style="font-family:var(--mono);font-size:12px">{{ t.count }}</span>
+        <sc-if value="{{ t.badge }}" hint-placeholder-val="{{ false }}">
+          <span title="未反映の変更があります" style="width:8px;height:8px;background:var(--ac);align-self:center;flex:none"></span>
+        </sc-if>
+      </button>
+    </sc-for>
+  </nav>
+  </div>
+
+  <main style="flex:1;padding:clamp(12px,3vw,32px);display:flex;flex-direction:column;gap:20px;min-width:0">
+
+    <sc-if value="{{ isInput }}" hint-placeholder-val="{{ true }}">
+      <section data-screen-label="入力" style="display:flex;flex-direction:column;gap:20px">
+        <div style="border:2px dashed var(--dv);padding:20px;display:flex;flex-wrap:wrap;align-items:center;gap:16px">
+          <div style="flex:1 1 260px;min-width:0">
+            <div style="font-weight:800;font-size:20px;line-height:1.2">テキストを追加</div>
+            <div style="font-size:13px;color:var(--mu);margin-top:4px">ここにファイルをドラッグ＆ドロップ · .md / .txt / .tex · 複数可</div>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            <button onClick="{{ pickFiles }}" style="display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:0 14px;border:1px solid var(--ac);background:var(--ac);color:var(--on);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none" style-hover="background:var(--ach);border-color:var(--ach)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" x2="12" y1="3" y2="15"></line></svg>
+              <span>ファイルを選択</span>
+            </button>
+            <button onClick="{{ addInput }}" style="display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:0 14px;border:1px solid var(--dv);background:transparent;color:var(--tx);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none" style-hover="background:var(--sf)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>
+              <span>テキスト欄を追加</span>
+            </button>
+            <button disabled="{{ true }}" title="準備中" style="display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:0 14px;border:1px solid var(--dv);background:transparent;color:var(--tx);font:800 14px/1 var(--ff);cursor:not-allowed;white-space:nowrap;flex:none;opacity:.45">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"></path><path d="M9 18c-4.51 2-5-2-7-2"></path></svg>
+              <span>GitHubから取り込み</span>
+              <span style="font:600 11px/1 var(--ff);padding:3px 6px;border:1px solid var(--dv);white-space:nowrap">準備中</span>
+            </button>
+          </div>
+          <input ref="{{ fileRef }}" type="file" multiple="{{ true }}" accept=".md,.txt,.tex,text/plain,text/markdown" onChange="{{ onFilePicked }}" style="display:none">
+        </div>
+
+        <div style="display:flex;align-items:baseline;gap:12px;border-bottom:2px solid var(--dv);padding-bottom:8px">
+          <div style="font-weight:800;font-size:13px;letter-spacing:.08em">入力テキスト</div>
+          <div style="font-family:var(--mono);font-size:12px;color:var(--mu);margin-right:auto">{{ inputSummary }}</div>
+          <sc-if value="{{ hasInputs }}" hint-placeholder-val="{{ true }}">
+            <button onClick="{{ clearInputs }}" style="border:0;background:transparent;color:var(--act);font:600 13px/1 var(--ff);cursor:pointer;white-space:nowrap;padding:6px 4px" style-hover="background:var(--sf)">すべて削除</button>
+          </sc-if>
+        </div>
+
+        <sc-if value="{{ noInputs }}" hint-placeholder-val="{{ false }}">
+          <div style="padding:40px 0;color:var(--mu);font-size:14px">入力がありません。ファイルをドロップするか「テキスト欄を追加」を押してください。</div>
+        </sc-if>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,360px),1fr));gap:20px">
+          <sc-for list="{{ inputsView }}" as="inp" hint-placeholder-count="1">
+            <div data-input-id="{{ inp.id }}" style="display:flex;flex-direction:column;background:var(--sf);min-width:0">
+              <div style="display:flex;align-items:stretch;border-bottom:1px solid var(--dv1)">
+                <span style="display:flex;align-items:center;padding:0 12px;font-family:var(--mono);font-size:12px;color:var(--mu);border-right:1px solid var(--dv1)">{{ inp.num }}</span>
+                <input value="{{ inp.title }}" onChange="{{ inp.onTitle }}" placeholder="ファイル名（例: chapter1.md）" aria-label="ファイル名" style="flex:1;min-width:0;border:0;background:transparent;color:var(--tx);font:600 14px/1.2 var(--mono);padding:12px" style-focus="outline:2px solid var(--ac);outline-offset:-2px;background:var(--bg)">
+                <button onClick="{{ inp.onDel }}" title="削除" aria-label="削除" style="width:44px;display:inline-flex;align-items:center;justify-content:center;border:0;border-left:1px solid var(--dv1);background:transparent;color:var(--mu);cursor:pointer" style-hover="color:var(--ac);background:var(--sf2)">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>
+                </button>
+              </div>
+              <textarea readOnly="{{ true }}" value="{{ inp.text }}" onClick="{{ inp.onOpen }}" onKeyDown="{{ inp.onKey }}" placeholder="タップして本文を入力・貼り付け" aria-label="本文（クリックで編集）" spellCheck="{{ false }}" style="height:220px;resize:none;border:0;background:transparent;color:var(--tx);font:15px/1.9 var(--ff);padding:14px 16px;width:100%;cursor:text" style-hover="background:var(--bg)" style-focus="outline:2px solid var(--ac);outline-offset:-2px"></textarea>
+              <div style="display:flex;gap:12px;align-items:center;font-family:var(--mono);font-size:11px;color:var(--mu);padding:6px 12px;border-top:1px solid var(--dv1)"><span style="margin-right:auto">{{ inp.meta }}</span><span style="font-family:var(--ff)">クリックで編集</span></div>
+            </div>
+          </sc-for>
+        </div>
+      </section>
+    </sc-if>
+
+    <sc-if value="{{ isRules }}" hint-placeholder-val="{{ false }}">
+      <section data-screen-label="ルール" onKeyDown="{{ onRuleKey }}" style="display:flex;flex-direction:column;gap:16px;min-width:0">
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+          <button onClick="{{ addRule }}" style="display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:0 14px;border:1px solid var(--dv);background:transparent;color:var(--tx);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none" style-hover="background:var(--sf)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>
+            <span>行を追加</span>
+          </button>
+          <button onClick="{{ addGroup }}" style="display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:0 14px;border:1px solid var(--dv);background:transparent;color:var(--tx);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none" style-hover="background:var(--sf)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>
+            <span>グループ（列）を追加</span>
+          </button>
+          <div style="display:inline-flex;flex:none;border:1px solid var(--dv)" role="group" aria-label="表示形式">
+            <button onClick="{{ setViewTable }}" style="min-height:40px;padding:0 12px;border:0;background:{{ viewTableBg }};color:{{ viewTableFg }};font:600 13px/1 var(--ff);cursor:pointer;white-space:nowrap">表</button>
+            <button onClick="{{ setViewCard }}" style="min-height:40px;padding:0 12px;border:0;border-left:1px solid var(--dv);background:{{ viewCardBg }};color:{{ viewCardFg }};font:600 13px/1 var(--ff);cursor:pointer;white-space:nowrap">カード</button>
+          </div>
+          <span style="flex:1"></span>
+          <button onClick="{{ openImport }}" style="display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:0 14px;border:1px solid var(--dv);background:transparent;color:var(--tx);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none" style-hover="background:var(--sf)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"></path><rect width="18" height="18" x="3" y="3"></rect><path d="M3 9h18"></path><path d="M3 15h18"></path></svg>
+            <span>表から読み込み</span>
+          </button>
+          <button onClick="{{ exportCsv }}" style="display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:0 14px;border:1px solid var(--dv);background:transparent;color:var(--tx);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none" style-hover="background:var(--sf)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" x2="12" y1="15" y2="3"></line></svg>
+            <span>CSV</span>
+          </button>
+          <button onClick="{{ exportTsv }}" style="display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:0 14px;border:1px solid var(--dv);background:transparent;color:var(--tx);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none" style-hover="background:var(--sf)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" x2="12" y1="15" y2="3"></line></svg>
+            <span>TSV</span>
+          </button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:0;background:var(--bg);border-top:2px solid var(--dv);border-bottom:2px solid var(--dv);font-size:12px;color:var(--mu)">
+          <div style="background:var(--bg);padding:10px 12px 10px 0;display:flex;gap:8px;align-items:baseline"><b style="font-family:var(--mono);color:var(--tx)">.*</b><span>正規表現として扱う。置換先で $1 などが使えます</span></div>
+          <div style="background:var(--bg);padding:10px 12px;display:flex;gap:8px;align-items:baseline"><b style="font-family:var(--mono);color:var(--tx)">Aa</b><span>大文字・小文字を区別する</span></div>
+          <div style="background:var(--bg);padding:10px 12px;display:flex;gap:8px;align-items:baseline"><b style="color:var(--tx);white-space:nowrap">同時</b><span>連続する「同時」行はまとめて1回で置換（長い一致を優先・連鎖しない）</span></div>
+          <div style="background:var(--bg);padding:10px 12px;display:flex;gap:8px;align-items:baseline"><b style="color:var(--tx);white-space:nowrap">順次</b><span>それまでの置換結果に対して単独で適用。空欄のセルは置換しません</span></div>
+        </div>
+
+        <div style="font-size:12px;color:var(--mu);margin-bottom:-8px">{{ keyHint }}</div>
+        <sc-if value="{{ showCards }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="font-weight:800;font-size:11px;letter-spacing:.08em;color:var(--mu)">グループ（出力先）</div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,160px),1fr));gap:2px;background:var(--bg);border-top:2px solid var(--dv);border-bottom:2px solid var(--dv);padding:2px 0">
+              <sc-for list="{{ groupsView }}" as="g" hint-placeholder-count="2">
+                <div style="display:flex;align-items:stretch;background:var(--sf)">
+                  <input value="{{ g.name }}" onChange="{{ g.onName }}" aria-label="グループ名" placeholder="グループ名" style="flex:1;min-width:0;border:0;background:transparent;color:var(--tx);font:800 15px/1.2 var(--ff);padding:12px" style-focus="outline:2px solid var(--ac);outline-offset:-2px;background:var(--bg)">
+                  <button onClick="{{ g.onDel }}" disabled="{{ g.delDisabled }}" title="このグループを削除" aria-label="このグループを削除" style="width:44px;flex:none;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--mu);cursor:pointer" style-hover="color:var(--ac)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>
+                  </button>
+                </div>
+              </sc-for>
+              <button onClick="{{ addGroup }}" style="display:flex;align-items:center;gap:8px;min-height:44px;padding:0 12px;border:0;background:var(--bg);color:var(--ac);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap" style-hover="background:var(--sf)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>
+                <span>グループを追加</span>
+              </button>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <sc-for list="{{ rulesView }}" as="r" hint-placeholder-count="2">
+              <div style="background:var(--sf);border-top:2px solid var(--dv);display:flex;flex-direction:column">
+                <div style="display:flex;align-items:stretch;border-bottom:1px solid var(--dv1)">
+                  <span style="flex:none;display:flex;align-items:center;padding:0 10px;font:600 12px/1 var(--mono);color:var(--mu);border-right:1px solid var(--dv1)">{{ r.num }}</span>
+                  <input data-cell="{{ r.cell0 }}" value="{{ r.src }}" onChange="{{ r.onSrc }}" placeholder="置換元" aria-label="置換元" style="flex:1;min-width:0;border:0;background:transparent;color:var(--tx);font:800 16px/1.3 var(--ff);padding:12px" style-focus="outline:2px solid var(--ac);outline-offset:-2px;background:var(--bg)">
+                </div>
+                <sc-if value="{{ r.hasError }}" hint-placeholder-val="{{ false }}">
+                  <div style="padding:6px 12px;font-size:12px;color:var(--act);border-bottom:1px solid var(--dv1)">{{ r.error }}</div>
+                </sc-if>
+                <sc-for list="{{ r.cells }}" as="c" hint-placeholder-count="2">
+                  <label style="display:grid;grid-template-columns:minmax(64px,30%) minmax(0,1fr) auto;align-items:center;border-bottom:1px solid var(--dv1);background:var(--bg)">
+                    <span style="padding:0 10px;font:600 12px/1.3 var(--ff);color:var(--mu);word-break:break-all">{{ c.groupName }}</span>
+                    <input data-cell="{{ c.cell }}" value="{{ c.value }}" onChange="{{ c.onChange }}" placeholder="（置換しない）" aria-label="置換先" style="min-width:0;border:0;border-left:1px solid var(--dv1);background:transparent;color:var(--tx);font:16px/1.3 var(--ff);padding:12px" style-focus="outline:2px solid var(--ac);outline-offset:-2px">
+                    <span style="padding:0 10px;font:600 11px/1 var(--mono);color:{{ c.hitColor }}">{{ c.hitShort }}</span>
+                  </label>
+                </sc-for>
+                <div style="display:flex;align-items:center;gap:4px;padding:6px 6px 6px 12px">
+                  <button onClick="{{ r.onRegex }}" title="正規表現" aria-label="正規表現" style="min-width:44px;height:40px;padding:0 10px;border:1px solid var(--dv1);background:{{ r.regexBg }};color:{{ r.regexFg }};font:700 13px/1 var(--mono);cursor:pointer">.*</button>
+                  <button onClick="{{ r.onCs }}" title="大文字・小文字を区別" aria-label="大文字・小文字を区別" style="min-width:44px;height:40px;padding:0 10px;border:1px solid var(--dv1);background:{{ r.csBg }};color:{{ r.csFg }};font:700 13px/1 var(--mono);cursor:pointer">Aa</button>
+                  <button onClick="{{ r.onOrder }}" title="適用順：同時／順次" aria-label="適用順" style="min-width:52px;height:40px;padding:0 10px;border:1px solid var(--dv1);background:{{ r.orderBg }};color:{{ r.orderFg }};font:700 13px/1 var(--ff);cursor:pointer;text-align:left;white-space:nowrap">{{ r.orderLabel }}</button>
+                  <span style="flex:1"></span>
+                  <button onClick="{{ r.onUp }}" disabled="{{ r.upDisabled }}" title="上へ" aria-label="上へ" style="width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--mu);cursor:pointer" style-hover="background:var(--sf2);color:var(--tx)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg>
+                  </button>
+                  <button onClick="{{ r.onDown }}" disabled="{{ r.downDisabled }}" title="下へ" aria-label="下へ" style="width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--mu);cursor:pointer" style-hover="background:var(--sf2);color:var(--tx)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"></path><path d="m19 12-7 7-7-7"></path></svg>
+                  </button>
+                  <button onClick="{{ r.onDel }}" title="行を削除" aria-label="行を削除" style="width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--mu);cursor:pointer" style-hover="background:var(--sf2);color:var(--ac)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+                  </button>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+        <sc-if value="{{ showTable }}" hint-placeholder-val="{{ true }}">
+        <div style="overflow-x:auto;border:1px solid var(--dv1);max-width:100%">
+          <table style="border-collapse:collapse;width:100%;font-size:14px">
+            <thead>
+              <tr>
+                <th style="position:sticky;left:0;z-index:2;background:var(--sf);min-width:170px;text-align:left;padding:0;border-bottom:2px solid var(--dv);border-right:2px solid var(--dv)">
+                  <div style="padding:12px;font-size:11px;letter-spacing:.08em;color:var(--mu);font-weight:800">元テキスト</div>
+                </th>
+                <sc-for list="{{ groupsView }}" as="g" hint-placeholder-count="2">
+                  <th style="min-width:170px;text-align:left;padding:0;background:var(--sf);border-bottom:2px solid var(--dv);border-right:1px solid var(--dv1)">
+                    <div style="display:flex;align-items:stretch">
+                      <input value="{{ g.name }}" onChange="{{ g.onName }}" aria-label="グループ名" placeholder="グループ名" style="flex:1;min-width:0;border:0;background:transparent;color:var(--tx);font:800 13px/1.2 var(--ff);padding:12px" style-focus="outline:2px solid var(--ac);outline-offset:-2px;background:var(--bg)">
+                      <button onClick="{{ g.onDel }}" disabled="{{ g.delDisabled }}" title="この列を削除" aria-label="この列を削除" style="width:36px;flex:none;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--mu);cursor:pointer" style-hover="color:var(--ac)">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>
+                      </button>
+                    </div>
+                  </th>
+                </sc-for>
+                <th style="min-width:48px;width:48px;padding:0;background:var(--sf);border-bottom:2px solid var(--dv);border-right:1px solid var(--dv1)">
+                  <button onClick="{{ addGroup }}" title="グループ（列）を追加" aria-label="グループ（列）を追加" style="width:100%;height:44px;display:flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--ac);cursor:pointer" style-hover="background:var(--sf2)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>
+                  </button>
+                </th>
+                <th style="min-width:150px;text-align:left;padding:12px;background:var(--sf);border-bottom:2px solid var(--dv);border-right:1px solid var(--dv1);font-size:11px;letter-spacing:.08em;color:var(--mu);font-weight:800">オプション</th>
+                <th style="min-width:120px;text-align:left;padding:12px;background:var(--sf);border-bottom:2px solid var(--dv);font-size:11px;letter-spacing:.08em;color:var(--mu);font-weight:800">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <sc-for list="{{ rulesView }}" as="r" hint-placeholder-count="3">
+                <tr>
+                  <td style="position:sticky;left:0;z-index:1;background:var(--bg);padding:0;border-bottom:1px solid var(--dv1);border-right:2px solid var(--dv);vertical-align:top">
+                    <input data-cell="{{ r.cell0 }}" value="{{ r.src }}" onChange="{{ r.onSrc }}" placeholder="置換元" aria-label="置換元" style="width:100%;border:0;background:transparent;color:var(--tx);font:14px/1.3 var(--mono);padding:12px" style-focus="outline:2px solid var(--ac);outline-offset:-2px">
+                    <sc-if value="{{ r.hasError }}" hint-placeholder-val="{{ false }}">
+                      <div style="padding:0 12px 8px;font-size:11px;color:var(--act);line-height:1.3">{{ r.error }}</div>
+                    </sc-if>
+                  </td>
+                  <sc-for list="{{ r.cells }}" as="c" hint-placeholder-count="2">
+                    <td style="padding:0;border-bottom:1px solid var(--dv1);border-right:1px solid var(--dv1);vertical-align:top">
+                      <div style="display:flex;align-items:center">
+                        <input data-cell="{{ c.cell }}" value="{{ c.value }}" onChange="{{ c.onChange }}" placeholder="—" aria-label="置換先" style="flex:1;min-width:0;border:0;background:transparent;color:var(--tx);font:14px/1.3 var(--mono);padding:12px" style-focus="outline:2px solid var(--ac);outline-offset:-2px">
+                        <sc-if value="{{ c.hasHit }}" hint-placeholder-val="{{ false }}">
+                          <span title="ヒット件数（全入力の合計）" style="flex:none;padding-right:10px;font:600 11px/1 var(--mono);color:{{ c.hitColor }}">{{ c.hitLabel }}</span>
+                        </sc-if>
+                      </div>
+                    </td>
+                  </sc-for>
+                  <td style="border-bottom:1px solid var(--dv1);border-right:1px solid var(--dv1)"></td>
+                  <td style="padding:6px 8px;border-bottom:1px solid var(--dv1);border-right:1px solid var(--dv1);vertical-align:top">
+                    <div style="display:flex;gap:4px">
+                      <button onClick="{{ r.onRegex }}" title="正規表現" aria-label="正規表現" style="min-width:36px;height:32px;padding:0 8px;border:1px solid var(--dv1);background:{{ r.regexBg }};color:{{ r.regexFg }};font:700 12px/1 var(--mono);cursor:pointer">.*</button>
+                      <button onClick="{{ r.onCs }}" title="大文字・小文字を区別" aria-label="大文字・小文字を区別" style="min-width:36px;height:32px;padding:0 8px;border:1px solid var(--dv1);background:{{ r.csBg }};color:{{ r.csFg }};font:700 12px/1 var(--mono);cursor:pointer">Aa</button>
+                      <button onClick="{{ r.onOrder }}" title="適用順：同時／順次" aria-label="適用順" style="min-width:48px;height:32px;padding:0 8px;border:1px solid var(--dv1);background:{{ r.orderBg }};color:{{ r.orderFg }};font:700 12px/1 var(--ff);cursor:pointer;text-align:left">{{ r.orderLabel }}</button>
+                    </div>
+                  </td>
+                  <td style="padding:6px 8px;border-bottom:1px solid var(--dv1);vertical-align:top">
+                    <div style="display:flex;gap:2px">
+                      <button onClick="{{ r.onUp }}" disabled="{{ r.upDisabled }}" title="上へ" aria-label="上へ" style="width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--mu);cursor:pointer" style-hover="background:var(--sf);color:var(--tx)">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg>
+                      </button>
+                      <button onClick="{{ r.onDown }}" disabled="{{ r.downDisabled }}" title="下へ" aria-label="下へ" style="width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--mu);cursor:pointer" style-hover="background:var(--sf);color:var(--tx)">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"></path><path d="m19 12-7 7-7-7"></path></svg>
+                      </button>
+                      <button onClick="{{ r.onDel }}" title="行を削除" aria-label="行を削除" style="width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--mu);cursor:pointer" style-hover="background:var(--sf);color:var(--ac)">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </div>
+        </sc-if>
+        <button onClick="{{ addRule }}" style="display:flex;align-items:center;gap:8px;min-height:44px;padding:0 12px;border:1px dashed var(--dv);background:transparent;color:var(--tx);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none;justify-content:flex-start;margin-top:-8px" style-hover="background:var(--sf)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>
+          <span>行を追加</span>
+        </button>
+      </section>
+    </sc-if>
+
+    <sc-if value="{{ isOutput }}" hint-placeholder-val="{{ false }}">
+      <section data-screen-label="出力" style="display:flex;flex-direction:column;gap:16px;min-width:0">
+        <sc-if value="{{ noResult }}" hint-placeholder-val="{{ true }}">
+          <div style="display:flex;flex-direction:column;align-items:flex-start;gap:12px;padding:40px 0">
+            <div style="font-weight:800;font-size:25px;line-height:1.15">まだ変換していません</div>
+            <div style="font-size:14px;color:var(--mu)">入力とルールを確認したら「変換」を押してください。</div>
+            <button onClick="{{ run }}" style="display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0 16px;border:1px solid var(--ac);background:var(--ac);color:var(--on);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none" style-hover="background:var(--ach)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg>
+              <span>変換する</span>
+            </button>
+          </div>
+        </sc-if>
+        <sc-if value="{{ hasResult }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+            <div style="font-family:var(--mono);font-size:12px;color:var(--mu)">{{ resultSummary }}</div>
+            <sc-if value="{{ stale }}" hint-placeholder-val="{{ false }}">
+              <span style="font:600 11px/1 var(--ff);padding:4px 8px;background:var(--hl);color:var(--hlt)">未反映の変更があります</span>
+            </sc-if>
+            <span style="flex:1"></span>
+            <sc-if value="{{ stale }}" hint-placeholder-val="{{ false }}">
+              <button onClick="{{ run }}" style="display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:0 14px;border:1px solid var(--dv);background:transparent;color:var(--tx);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none" style-hover="background:var(--sf)">再変換</button>
+            </sc-if>
+            <button onClick="{{ downloadZip }}" style="display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:0 14px;border:1px solid var(--ac);background:var(--ac);color:var(--on);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none" style-hover="background:var(--ach);border-color:var(--ach)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" x2="12" y1="15" y2="3"></line></svg>
+              <span>ZIPで全て保存</span>
+            </button>
+          </div>
+
+          <div style="display:flex;gap:2px;overflow-x:auto;border-bottom:2px solid var(--dv)">
+            <sc-for list="{{ outTabs }}" as="ot" hint-placeholder-count="2">
+              <button onClick="{{ ot.onClick }}" style="flex:none;display:flex;align-items:baseline;gap:8px;padding:10px 16px;border:0;background:{{ ot.bg }};color:{{ ot.fg }};font:800 14px/1.2 var(--ff);cursor:pointer;text-align:left">
+                <span>{{ ot.name }}</span>
+                <span style="font:600 11px/1 var(--mono);opacity:.75">{{ ot.n }}</span>
+              </button>
+            </sc-for>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:20px">
+            <sc-for list="{{ outFiles }}" as="f" hint-placeholder-count="1">
+              <div style="background:var(--sf);display:flex;flex-direction:column;min-width:0">
+                <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 8px 8px 12px;border-bottom:1px solid var(--dv1)">
+                  <span style="font:600 14px/1.3 var(--mono);word-break:break-all;min-width:0">{{ f.path }}</span>
+                  <span style="font:600 11px/1 var(--ff);padding:4px 8px;background:var(--hl);color:var(--hlt);white-space:nowrap">{{ f.nLabel }}</span>
+                  <span style="flex:1"></span>
+                  <div style="display:inline-flex;flex:none;border:1px solid var(--dv)">
+                    <button onClick="{{ f.onHl }}" style="min-height:36px;padding:0 12px;border:0;background:{{ f.hlBg }};color:{{ f.hlFg }};font:600 13px/1 var(--ff);cursor:pointer;white-space:nowrap">ハイライト</button>
+                    <button onClick="{{ f.onPlain }}" style="min-height:36px;padding:0 12px;border:0;border-left:1px solid var(--dv);background:{{ f.plainBg }};color:{{ f.plainFg }};font:600 13px/1 var(--ff);cursor:pointer;white-space:nowrap">テキスト</button>
+                  </div>
+                  <button onClick="{{ f.onCopy }}" style="display:inline-flex;align-items:center;gap:6px;min-height:38px;padding:0 12px;border:1px solid var(--dv);background:transparent;color:var(--tx);font:800 13px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none" style-hover="background:var(--sf2)">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+                    <span>コピー</span>
+                  </button>
+                  <button onClick="{{ f.onDownload }}" title="このファイルを保存" aria-label="このファイルを保存" style="width:38px;height:38px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--dv);background:transparent;color:var(--tx);cursor:pointer" style-hover="background:var(--sf2)">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" x2="12" y1="15" y2="3"></line></svg>
+                  </button>
+                </div>
+                <sc-if value="{{ f.isHl }}" hint-placeholder-val="{{ true }}">
+                  <div style="white-space:pre-wrap;word-break:break-word;font:15px/1.9 var(--ff);padding:14px 16px;max-height:520px;overflow:auto;min-height:120px"><sc-for list="{{ f.segs }}" as="s"><sc-if value="{{ s.hit }}"><mark style="background:var(--hl);color:var(--hlt);padding:0 1px">{{ s.t }}</mark></sc-if><sc-if value="{{ s.plain }}"><span>{{ s.t }}</span></sc-if></sc-for></div>
+                </sc-if>
+                <sc-if value="{{ f.isPlain }}" hint-placeholder-val="{{ false }}">
+                  <textarea readOnly="{{ true }}" value="{{ f.text }}" spellCheck="{{ false }}" style="min-height:260px;resize:vertical;border:0;background:transparent;color:var(--tx);font:15px/1.9 var(--ff);padding:14px 16px;width:100%" style-focus="outline:2px solid var(--ac);outline-offset:-2px"></textarea>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+      </section>
+    </sc-if>
+  </main>
+
+  <sc-if value="{{ dragging }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;inset:0;z-index:50;background:color-mix(in srgb,var(--bg) 88%,transparent);display:flex;align-items:flex-end;padding:clamp(12px,3vw,32px);pointer-events:none">
+      <div style="border:2px solid var(--ac);padding:24px;background:var(--bg);width:100%">
+        <div style="font-weight:800;font-size:32px;line-height:1.1;color:var(--ac)">ドロップして追加</div>
+        <div style="font-size:14px;color:var(--mu);margin-top:6px">.md / .txt / .tex · 複数ファイル可</div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ editorOpen }}" hint-placeholder-val="{{ false }}">
+    <div role="dialog" aria-label="本文の編集" onKeyDown="{{ onEditorKey }}" style="position:fixed;left:0;right:0;top:0;height:100dvh;z-index:80;background:var(--bg);display:flex;flex-direction:column">
+      <div style="flex:none;display:flex;align-items:stretch;border-bottom:2px solid var(--dv);background:var(--sf)">
+        <span style="flex:none;display:flex;align-items:center;padding:0 12px;background:var(--ac);color:var(--on);font:800 14px/1 var(--mono)">{{ ed.num }}</span>
+        <input value="{{ ed.title }}" onChange="{{ ed.onTitle }}" placeholder="ファイル名" aria-label="ファイル名" style="flex:1;min-width:0;border:0;background:transparent;color:var(--tx);font:800 15px/1.2 var(--mono);padding:12px" style-focus="outline:2px solid var(--ac);outline-offset:-2px;background:var(--bg)">
+        <button onClick="{{ ed.onPrev }}" disabled="{{ ed.prevDisabled }}" title="前のテキスト" aria-label="前のテキスト" style="flex:none;width:44px;display:inline-flex;align-items:center;justify-content:center;border:0;border-left:1px solid var(--dv1);background:transparent;color:var(--tx);cursor:pointer" style-hover="background:var(--sf2)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg>
+        </button>
+        <button onClick="{{ ed.onNext }}" disabled="{{ ed.nextDisabled }}" title="次のテキスト" aria-label="次のテキスト" style="flex:none;width:44px;display:inline-flex;align-items:center;justify-content:center;border:0;border-left:1px solid var(--dv1);background:transparent;color:var(--tx);cursor:pointer" style-hover="background:var(--sf2)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"></path><path d="m19 12-7 7-7-7"></path></svg>
+        </button>
+        <button onClick="{{ closeEditor }}" style="flex:none;display:inline-flex;align-items:center;gap:6px;padding:0 16px;border:0;background:var(--tx);color:var(--bg);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap" style-hover="background:var(--ac);color:var(--on)">完了</button>
+      </div>
+      <div style="flex:none;display:flex;gap:12px;align-items:center;padding:6px 12px;border-bottom:1px solid var(--dv1);font-family:var(--mono);font-size:11px;color:var(--mu)">
+        <span style="margin-right:auto">{{ ed.meta }}</span>
+        <span style="font-family:var(--ff)">{{ ed.pos }}</span>
+      </div>
+      <textarea ref="{{ editorRef }}" value="{{ ed.text }}" onChange="{{ ed.onText }}" placeholder="ここにテキストを入力・貼り付け" spellCheck="{{ false }}" style="flex:1;min-height:0;width:100%;resize:none;border:0;background:var(--bg);color:var(--tx);font:16px/1.9 var(--ff);padding:16px clamp(16px,6vw,96px);overscroll-behavior:contain" style-focus="outline:none"></textarea>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ importOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closeImport }}" style="position:fixed;inset:0;z-index:60;display:grid;place-items:center;padding:16px;background:color-mix(in srgb,#2d2b2b 50%,transparent)">
+      <div onClick="{{ stop }}" role="dialog" aria-label="表から読み込み" style="width:min(640px,100%);max-height:calc(100vh - 32px);overflow:auto;display:flex;flex-direction:column;gap:14px;padding:20px;background:var(--sf);box-shadow:var(--sh);border-top:4px solid var(--ac)">
+        <div style="font-weight:800;font-size:20px">表から読み込み</div>
+        <div style="font-size:13px;color:var(--mu)">Markdown表・CSV・TSVを貼り付けるか、ファイルを選択。1行目は見出し（1列目＝元テキスト、2列目以降＝グループ名）。</div>
+        <textarea value="{{ importText }}" onChange="{{ onImportText }}" spellCheck="{{ false }}" placeholder="| 元テキスト | A用置換 | B用置換 |&#10;| --- | --- | --- |&#10;| アリス | あーちゃん | びーちゃん |" style="min-height:180px;resize:vertical;border:1px solid var(--dv);background:var(--bg);color:var(--tx);font:13px/1.6 var(--mono);padding:10px;width:100%" style-focus="border-color:var(--ac);outline:none"></textarea>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+          <button onClick="{{ pickTableFile }}" style="display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 12px;border:1px solid var(--dv);background:transparent;color:var(--tx);font:800 13px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none" style-hover="background:var(--sf2)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" x2="12" y1="3" y2="15"></line></svg>
+            <span>ファイルを選択</span>
+          </button>
+          <input ref="{{ tableFileRef }}" type="file" accept=".csv,.tsv,.md,.txt" onChange="{{ onTableFile }}" style="display:none">
+          <span style="font-family:var(--mono);font-size:12px;color:var(--mu)">{{ importDetect }}</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+          <span style="font-size:12px;color:var(--mu)">既存のルール</span>
+          <div style="display:inline-flex;flex:none;border:1px solid var(--dv)">
+            <button onClick="{{ setModeReplace }}" style="min-height:36px;padding:0 12px;border:0;background:{{ modeReplaceBg }};color:{{ modeReplaceFg }};font:600 13px/1 var(--ff);cursor:pointer;white-space:nowrap">置き換える</button>
+            <button onClick="{{ setModeAppend }}" style="min-height:36px;padding:0 12px;border:0;border-left:1px solid var(--dv);background:{{ modeAppendBg }};color:{{ modeAppendFg }};font:600 13px/1 var(--ff);cursor:pointer;white-space:nowrap">末尾に追加</button>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">
+          <button onClick="{{ closeImport }}" style="min-height:40px;padding:0 14px;border:1px solid var(--dv);background:transparent;color:var(--tx);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none" style-hover="background:var(--sf2)">キャンセル</button>
+          <button onClick="{{ applyImport }}" style="min-height:40px;padding:0 16px;border:1px solid var(--ac);background:var(--ac);color:var(--on);font:800 14px/1 var(--ff);cursor:pointer;white-space:nowrap;flex:none" style-hover="background:var(--ach)">読み込む</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ hasToast }}" hint-placeholder-val="{{ false }}">
+    <div role="status" style="position:fixed;left:clamp(12px,3vw,32px);bottom:clamp(12px,3vw,32px);z-index:70;max-width:calc(100vw - 24px);padding:12px 16px;background:var(--tx);color:var(--bg);font:600 14px/1.3 var(--ff);box-shadow:var(--sh)">{{ toast }}</div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = this.init();
+  fileRef = React.createRef();
+  tableFileRef = React.createRef();
+  dragDepth = 0;
+
+  uid() { return Math.random().toString(36).slice(2, 10); }
+
+  init() {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem('bt-bulk-replace-v1') || 'null'); } catch (e) {}
+    const dark = typeof matchMedia !== 'undefined' && matchMedia('(prefers-color-scheme: dark)').matches;
+    const g1 = 'g' + this.uid(), g2 = 'g' + this.uid();
+    const def = {
+      inputs: [{ id: this.uid(), title: 'chapter1.md', text: '# 第一章\n\nアリスは川辺でビルと並んで座っていた。\nビルが「アリス、あれを見て」と言うと、アリスは顔を上げた。\n' }],
+      groups: [{ id: g1, name: 'A用' }, { id: g2, name: 'B用' }],
+      rules: [
+        { id: this.uid(), src: 'アリス', regex: false, cs: true, order: 'sim', values: { [g1]: 'あーちゃん', [g2]: 'びーちゃん' } },
+        { id: this.uid(), src: 'ビル', regex: false, cs: true, order: 'sim', values: { [g1]: 'びる', [g2]: 'れいちゃん' } },
+        { id: this.uid(), src: '', regex: false, cs: true, order: 'sim', values: {} },
+      ],
+      theme: dark ? 'dark' : 'light',
+    };
+    const base = s && Array.isArray(s.groups) && s.groups.length
+      ? { inputs: s.inputs || [], groups: s.groups, rules: s.rules || [], theme: s.theme || def.theme }
+      : def;
+    return { ...base, tab: 'input', result: null, lastSig: null, outGroup: null, views: {}, dragging: false, toast: null, importOpen: false, importText: '', importMode: 'replace' };
+  }
+
+  componentDidUpdate(pp, ps) {
+    const s = this.state;
+    if (ps.inputs !== s.inputs || ps.groups !== s.groups || ps.rules !== s.rules || ps.theme !== s.theme) {
+      clearTimeout(this._save);
+      this._save = setTimeout(() => {
+        try { localStorage.setItem('bt-bulk-replace-v1', JSON.stringify({ inputs: s.inputs, groups: s.groups, rules: s.rules, theme: s.theme })); } catch (e) {}
+      }, 400);
+    }
+  }
+  componentDidMount() {
+    this._rs = () => { const n = window.innerWidth < 720; if (n !== this.state.narrow) this.setState({ narrow: n }); };
+    this._rs(); window.addEventListener('resize', this._rs);
+  }
+  componentWillUnmount() { clearTimeout(this._save); clearTimeout(this._t); this.lockScroll(false); window.removeEventListener('resize', this._rs); }
+
+  focusCell(r, c) {
+    const el = document.querySelector(`[data-cell="${r}:${c}"]`);
+    if (el) { el.focus(); try { const n = el.value.length; el.setSelectionRange(n, n); } catch (e) {} }
+    return !!el;
+  }
+  onRuleKey = e => {
+    const cell = e.target && e.target.dataset && e.target.dataset.cell;
+    if (!cell || e.isComposing || e.keyCode === 229 || e.altKey || e.ctrlKey || e.metaKey) return;
+    const [r, c] = cell.split(':').map(Number);
+    const rows = this.state.rules.length, cols = this.state.groups.length + 1;
+    const cards = this.state.ruleView ? this.state.ruleView === 'card' : this.state.narrow;
+    const lin = r * cols + c, last = rows * cols - 1;
+    const go = (nr, nc) => { e.preventDefault(); this.focusCell(nr, nc); };
+    const step = d => { const t = lin + d; if (t < 0 || t > last) return false; go(Math.floor(t / cols), t % cols); return true; };
+    const addAndFocus = col => { e.preventDefault(); this.setState(st => ({ rules: [...st.rules, this.newRule()] }), () => this.focusCell(rows, col)); };
+    const el = e.target, atStart = el.selectionStart === 0 && el.selectionEnd === 0, atEnd = el.selectionStart === el.value.length;
+    switch (e.key) {
+      case 'Tab':
+        if (e.shiftKey) { step(-1); } else if (!step(1)) addAndFocus(0);
+        break;
+      case 'Enter':
+        if (cards) { if (e.shiftKey) step(-1); else if (!step(1)) addAndFocus(0); }
+        else if (e.shiftKey) { if (r > 0) go(r - 1, c); }
+        else if (r < rows - 1) go(r + 1, c); else addAndFocus(c);
+        break;
+      case 'ArrowDown':
+        if (cards) step(1); else if (r < rows - 1) go(r + 1, c);
+        break;
+      case 'ArrowUp':
+        if (cards) step(-1); else if (r > 0) go(r - 1, c);
+        break;
+      case 'ArrowRight':
+        if (!cards && atEnd && c < cols - 1) go(r, c + 1);
+        break;
+      case 'ArrowLeft':
+        if (!cards && atStart && c > 0) { go(r, c - 1); }
+        break;
+    }
+  };
+  editorRef = React.createRef();
+  lockScroll(on) {
+    if (on && !this._locked) {
+      this._locked = { y: window.scrollY, b: document.body.style.cssText, h: document.documentElement.style.overflow };
+      document.documentElement.style.overflow = 'hidden';
+      Object.assign(document.body.style, { position: 'fixed', top: `-${this._locked.y}px`, left: '0', right: '0', overflow: 'hidden' });
+    } else if (!on && this._locked) {
+      const l = this._locked; this._locked = null;
+      document.body.style.cssText = l.b; document.documentElement.style.overflow = l.h;
+      window.scrollTo(0, l.y);
+    }
+  }
+  openEditor(id, caret, ratio) {
+    this.lockScroll(true);
+    this._caret = { caret: caret || 0, ratio: ratio || 0 };
+    this.setState({ editId: id }, () => {
+      const ta = this.editorRef.current; if (!ta) return;
+      const c = this._caret;
+      ta.focus({ preventScroll: true });
+      try { ta.setSelectionRange(c.caret, c.caret); } catch (e) {}
+      const lh = parseFloat(getComputedStyle(ta).lineHeight) || 30;
+      const before = ta.value.slice(0, c.caret).split('\n').length - 1;
+      const byLine = before * lh - ta.clientHeight / 3;
+      ta.scrollTop = Math.max(0, c.caret ? byLine : c.ratio * ta.scrollHeight);
+    });
+  }
+  closeEditor = () => {
+    const id = this.state.editId;
+    this.setState({ editId: null }, () => {
+      this.lockScroll(false);
+      const el = document.querySelector(`[data-input-id="${id}"]`);
+      if (el) { const top = el.getBoundingClientRect().top + window.scrollY - 130; window.scrollTo({ top: Math.max(0, top) }); }
+    });
+  };
+
+  sig() { const s = this.state; return JSON.stringify([s.inputs.map(i => [i.title, i.text]), s.groups, s.rules]); }
+  flash(msg) { this.setState({ toast: msg }); clearTimeout(this._t); this._t = setTimeout(() => this.setState({ toast: null }), 2400); }
+  upd(key, id, patch) { this.setState(s => ({ [key]: s[key].map(x => x.id === id ? { ...x, ...patch } : x) })); }
+  setCell(rid, gid, v) { this.setState(s => ({ rules: s.rules.map(r => r.id === rid ? { ...r, values: { ...r.values, [gid]: v } } : r) })); }
+  moveRule(i, d) { this.setState(s => { const a = [...s.rules]; const j = i + d; if (j < 0 || j >= a.length) return null; [a[i], a[j]] = [a[j], a[i]]; return { rules: a }; }); }
+  newRule() { return { id: this.uid(), src: '', regex: false, cs: true, order: 'sim', values: {} }; }
+
+  async addFiles(list) {
+    const files = [...(list || [])];
+    if (!files.length) return;
+    const ok = files.filter(f => /\.(md|txt|tex)$/i.test(f.name));
+    const bad = files.length - ok.length;
+    const items = await Promise.all(ok.map(async f => ({ id: this.uid(), title: f.name, text: (await f.text()).replace(/^\ufeff/, '') })));
+    this.setState(s => {
+      let inputs = s.inputs;
+      if (items.length && inputs.length === 1 && !inputs[0].text.trim()) inputs = [];
+      return { inputs: [...inputs, ...items], tab: 'input' };
+    });
+    this.flash(`${items.length}件のファイルを追加しました` + (bad ? ` · ${bad}件は非対応形式のためスキップ` : ''));
+  }
+
+  esc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  compile(r) {
+    if (!r.src) return { skip: true };
+    try { return { re: new RegExp(r.regex ? r.src : this.esc(r.src), 'g' + (r.cs ? '' : 'i')) }; }
+    catch (e) { return { error: '正規表現エラー: ' + e.message.replace(/^Invalid regular expression: /, '') }; }
+  }
+  expand(rep, m) {
+    return rep.replace(/\$(\$|&|\d{1,2}|<[^>]+>)/g, (all, k) => {
+      if (k === '$') return '$';
+      if (k === '&') return m[0];
+      if (k[0] === '<') return (m.groups && m.groups[k.slice(1, -1)]) || '';
+      const n = +k; return n < m.length ? (m[n] ?? '') : all;
+    });
+  }
+  applyBatch(segs, batch, hits, fh) {
+    const out = [];
+    for (const seg of segs) {
+      const t = seg.t, cands = [];
+      batch.forEach((it, order) => {
+        it.re.lastIndex = 0; let m;
+        while ((m = it.re.exec(t))) {
+          if (!m[0].length) { it.re.lastIndex++; continue; }
+          cands.push({ s: m.index, e: m.index + m[0].length, it, m, order });
+        }
+      });
+      if (!cands.length) { out.push(seg); continue; }
+      cands.sort((a, b) => a.s - b.s || (b.e - b.s) - (a.e - a.s) || a.order - b.order);
+      let pos = 0;
+      for (const c of cands) {
+        if (c.s < pos) continue;
+        if (c.s > pos) out.push({ t: t.slice(pos, c.s), h: seg.h });
+        const r = c.it.isRegex ? this.expand(c.it.rep, c.m) : c.it.rep;
+        if (r) out.push({ t: r, h: 1 });
+        hits[c.it.id] = (hits[c.it.id] || 0) + 1; fh.n++;
+        pos = c.e;
+      }
+      if (pos < t.length) out.push({ t: t.slice(pos), h: seg.h });
+    }
+    return out;
+  }
+  merge(segs) {
+    const o = [];
+    for (const s of segs) { if (!s.t) continue; const l = o[o.length - 1]; if (l && l.h === s.h) l.t += s.t; else o.push({ ...s }); }
+    return o;
+  }
+  clean(s, slash) { return s.replace(slash ? /[\\/:*?"<>|]/g : /[\\:*?"<>|]/g, '_').replace(/^\/+/, '').trim(); }
+  dedupe(names) {
+    const seen = {};
+    return names.map(n => {
+      if (!seen[n]) { seen[n] = 1; return n; }
+      const m = n.match(/^(.*?)(\.[^./]+)?$/); let k = ++seen[n], c = `${m[1]} (${k})${m[2] || ''}`;
+      while (seen[c]) c = `${m[1]} (${++k})${m[2] || ''}`;
+      seen[c] = 1; return c;
+    });
+  }
+
+  run = () => {
+    const { inputs, groups, rules } = this.state;
+    if (!inputs.length) { this.flash('入力テキストがありません'); this.setState({ tab: 'input' }); return; }
+    const comp = rules.map(r => this.compile(r));
+    const titles = this.dedupe(inputs.map((inp, i) => { let t = this.clean(inp.title || '') || `text-${i + 1}.txt`; if (!/\.[a-z0-9]+$/i.test(t)) t += '.txt'; return t; }));
+    const dirs = this.dedupe(groups.map((g, i) => this.clean(g.name || '', true) || `group-${i + 1}`));
+    const hits = {};
+    const rgroups = groups.map((g, gi) => {
+      const h = {}; hits[g.id] = h;
+      rules.forEach(r => { if (r.src) h[r.id] = 0; });
+      const batches = []; let cur = null;
+      rules.forEach((r, i) => {
+        const c = comp[i], rep = (r.values || {})[g.id];
+        const usable = !!c.re && rep !== undefined && rep !== '';
+        const item = usable ? { re: c.re, rep, isRegex: r.regex, id: r.id } : null;
+        if (r.order === 'seq') { cur = null; if (item) batches.push([item]); }
+        else if (item) { if (!cur) { cur = []; batches.push(cur); } cur.push(item); }
+      });
+      const files = inputs.map((inp, i) => {
+        let segs = [{ t: inp.text, h: 0 }]; const fh = { n: 0 };
+        for (const b of batches) segs = this.applyBatch(segs, b, h, fh);
+        segs = this.merge(segs);
+        return { title: titles[i], text: segs.map(s => s.t).join(''), segs, n: fh.n };
+      });
+      return { id: g.id, name: g.name || dirs[gi], dir: dirs[gi], files, n: files.reduce((a, f) => a + f.n, 0) };
+    });
+    this.setState(s => ({ result: { at: new Date(), groups: rgroups, hits }, lastSig: this.sig(), tab: 'output', outGroup: rgroups.some(g => g.id === s.outGroup) ? s.outGroup : (rgroups[0] && rgroups[0].id) }));
+  };
+
+  download(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+  async copy(text) {
+    try { await navigator.clipboard.writeText(text); }
+    catch (e) { const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } catch (_) {} ta.remove(); }
+    this.flash('コピーしました');
+  }
+  crc32(u8) {
+    let t = this._crc;
+    if (!t) { t = this._crc = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } }
+    let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = t[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  makeZip(files) {
+    const enc = new TextEncoder(), parts = [], central = []; let off = 0;
+    const d = new Date();
+    const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+    const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+    for (const f of files) {
+      const name = enc.encode(f.name), data = enc.encode(f.text), crc = this.crc32(data);
+      const h = new DataView(new ArrayBuffer(30));
+      h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(8, 0, true);
+      h.setUint16(10, time, true); h.setUint16(12, date, true); h.setUint32(14, crc, true);
+      h.setUint32(18, data.length, true); h.setUint32(22, data.length, true); h.setUint16(26, name.length, true); h.setUint16(28, 0, true);
+      parts.push(h.buffer, name, data);
+      const c = new DataView(new ArrayBuffer(46));
+      c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(10, 0, true);
+      c.setUint16(12, time, true); c.setUint16(14, date, true); c.setUint32(16, crc, true);
+      c.setUint32(20, data.length, true); c.setUint32(24, data.length, true); c.setUint16(28, name.length, true);
+      c.setUint32(42, off, true);
+      central.push(c.buffer, name);
+      off += 30 + name.length + data.length;
+    }
+    const cd = central.reduce((a, b) => a + b.byteLength, 0);
+    const e = new DataView(new ArrayBuffer(22));
+    e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true); e.setUint32(12, cd, true); e.setUint32(16, off, true);
+    return new Blob([...parts, ...central, e.buffer], { type: 'application/zip' });
+  }
+  downloadZip = () => {
+    const r = this.state.result; if (!r) return;
+    const files = [];
+    r.groups.forEach(g => g.files.forEach(f => files.push({ name: `${g.dir}/${f.title}`, text: f.text })));
+    const d = r.at, p = n => String(n).padStart(2, '0');
+    this.download(this.makeZip(files), `converted-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.zip`);
+    this.flash(`${files.length}ファイルをZIPで保存しました`);
+  };
+
+  parseDelimited(t, d) {
+    const rows = []; let row = [], f = '', q = false;
+    for (let i = 0; i < t.length; i++) {
+      const ch = t[i];
+      if (q) { if (ch === '"') { if (t[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += ch; continue; }
+      if (ch === '"' && f === '') q = true;
+      else if (ch === d) { row.push(f); f = ''; }
+      else if (ch === '\n') { row.push(f); rows.push(row); row = []; f = ''; }
+      else f += ch;
+    }
+    row.push(f); rows.push(row);
+    return rows.filter(r => r.some(c => c !== ''));
+  }
+  parseTable(text) {
+    const t = (text || '').replace(/^\ufeff/, '').replace(/\r\n?/g, '\n').trim();
+    if (!t) return { rows: [], kind: '' };
+    const lines = t.split('\n').filter(l => l.trim());
+    if (lines.every(l => l.trim().startsWith('|'))) {
+      const rows = lines.map(l => {
+        let s = l.trim().slice(1); if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1);
+        return s.split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, '|'));
+      }).filter(r => !r.every(c => c === '' || /^:?-+:?$/.test(c)));
+      return { rows, kind: 'Markdown' };
+    }
+    const d = t.includes('\t') ? '\t' : ',';
+    return { rows: this.parseDelimited(t, d), kind: d === '\t' ? 'TSV' : 'CSV' };
+  }
+  applyImport = () => {
+    const { rows } = this.parseTable(this.state.importText);
+    if (rows.length < 2) { this.flash('見出し行＋1行以上の表が必要です'); return; }
+    const header = rows[0], body = rows.slice(1);
+    const oi = { regex: header.indexOf('正規表現'), cs: header.indexOf('大小区別'), order: header.indexOf('適用順') };
+    const optCols = Object.values(oi).filter(i => i >= 0);
+    const mode = this.state.importMode;
+    let groups = mode === 'replace' ? [] : [...this.state.groups];
+    const colG = header.map((h, i) => ({ h, i })).filter(x => x.i > 0 && !optCols.includes(x.i)).map(({ h, i }) => {
+      const name = h || `グループ${groups.length + 1}`;
+      let g = groups.find(g => g.name === name);
+      if (!g) { g = { id: 'g' + this.uid(), name }; groups.push(g); }
+      return { i, gid: g.id };
+    });
+    const yes = v => /^(1|true|yes|y|on|○|◯|✓|はい)$/i.test((v || '').trim());
+    const nr = body.filter(r => (r[0] || '') !== '').map(r => ({
+      id: this.uid(), src: r[0],
+      regex: oi.regex >= 0 && yes(r[oi.regex]),
+      cs: oi.cs >= 0 ? yes(r[oi.cs]) : true,
+      order: oi.order >= 0 && /順次|seq/i.test(r[oi.order] || '') ? 'seq' : 'sim',
+      values: Object.fromEntries(colG.map(c => [c.gid, r[c.i] ?? ''])),
+    }));
+    if (!groups.length) groups = [{ id: 'g' + this.uid(), name: 'グループ1' }];
+    const rules = mode === 'replace' ? nr : [...this.state.rules.filter(r => r.src || Object.values(r.values || {}).some(v => v)), ...nr];
+    this.setState({ groups, rules, importOpen: false, importText: '' });
+    this.flash(`${nr.length}行を読み込みました`);
+  };
+  exportTable(delim) {
+    const { groups, rules } = this.state;
+    const head = ['元テキスト', ...groups.map(g => g.name), '正規表現', '大小区別', '適用順'];
+    const rows = rules.filter(r => r.src).map(r => [r.src, ...groups.map(g => (r.values || {})[g.id] || ''), r.regex ? '1' : '0', r.cs ? '1' : '0', r.order === 'seq' ? '順次' : '同時']);
+    const q = v => delim === ',' ? (/[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v) : v.replace(/[\t\n\r]/g, ' ');
+    const txt = [head, ...rows].map(r => r.map(q).join(delim)).join('\r\n');
+    this.download(new Blob(['\ufeff' + txt], { type: delim === ',' ? 'text/csv' : 'text/tab-separated-values' }), delim === ',' ? 'rules.csv' : 'rules.tsv');
+  }
+
+  renderVals() {
+    const s = this.state;
+    const { inputs, groups, rules, result, tab } = s;
+    const stale = !!result && this.sig() !== s.lastSig;
+    const showCards = s.ruleView ? s.ruleView === 'card' : s.narrow;
+    const on = (a) => a ? { bg: 'var(--tx)', fg: 'var(--bg)' } : { bg: 'transparent', fg: 'var(--mu)' };
+    const tabs = [['input', '入力', inputs.length], ['rules', 'ルール', rules.filter(r => r.src).length], ['output', '出力', result ? result.groups.length : '—']].map(([k, l, c]) => ({
+      label: l, count: c, onClick: () => this.setState({ tab: k }),
+      color: tab === k ? 'var(--tx)' : 'var(--mu)', bar: tab === k ? 'inset 0 -4px 0 var(--ac)' : 'none', badge: k === 'output' && stale,
+    }));
+    const totalChars = inputs.reduce((a, i) => a + i.text.length, 0);
+    const inputsView = inputs.map((inp, i) => ({
+      num: String(i + 1).padStart(2, '0'), title: inp.title, text: inp.text,
+      onTitle: e => this.upd('inputs', inp.id, { title: e.target.value }),
+      onText: e => this.upd('inputs', inp.id, { text: e.target.value }),
+      onDel: () => this.setState(st => ({ inputs: st.inputs.filter(x => x.id !== inp.id) })),
+      meta: `${inp.text.length.toLocaleString()} 文字 · ${inp.text ? inp.text.split('\n').length : 0} 行`,
+      id: inp.id,
+      onOpen: e => this.openEditor(inp.id, e.target.selectionStart, e.target.scrollTop / Math.max(1, e.target.scrollHeight)),
+      onKey: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.openEditor(inp.id, e.target.selectionStart, 0); } },
+    }));
+    const ei = inputs.findIndex(x => x.id === s.editId), ein = inputs[ei];
+    const ed = ein ? {
+      num: String(ei + 1).padStart(2, '0'), title: ein.title, text: ein.text,
+      onTitle: e => this.upd('inputs', ein.id, { title: e.target.value }),
+      onText: e => this.upd('inputs', ein.id, { text: e.target.value }),
+      meta: `${ein.text.length.toLocaleString()} 文字 · ${ein.text ? ein.text.split('\n').length : 0} 行`,
+      pos: `${ei + 1} / ${inputs.length}`,
+      prevDisabled: ei <= 0, nextDisabled: ei >= inputs.length - 1,
+      onPrev: () => ei > 0 && this.openEditor(inputs[ei - 1].id, 0, 0),
+      onNext: () => ei < inputs.length - 1 && this.openEditor(inputs[ei + 1].id, 0, 0),
+    } : {};
+    const groupsView = groups.map(g => ({
+      name: g.name, delDisabled: groups.length <= 1,
+      onName: e => this.upd('groups', g.id, { name: e.target.value }),
+      onDel: () => this.setState(st => st.groups.length <= 1 ? null : { groups: st.groups.filter(x => x.id !== g.id) }),
+    }));
+    const rulesView = rules.map((r, ri) => {
+      const c = r.regex && r.src ? this.compile(r) : {};
+      const rx = on(r.regex), cs = on(r.cs), od = on(r.order === 'seq');
+      return {
+        num: String(ri + 1).padStart(2, '0'), cell0: `${ri}:0`,
+        src: r.src, hasError: !!c.error, error: c.error || '',
+        onSrc: e => this.upd('rules', r.id, { src: e.target.value }),
+        cells: groups.map((g, gi) => {
+          const h = result && r.src && result.hits[g.id] ? result.hits[g.id][r.id] : undefined;
+          return {
+            value: (r.values || {})[g.id] || '', onChange: e => this.setCell(r.id, g.id, e.target.value),
+            cell: `${ri}:${gi + 1}`, groupName: g.name || '（無名）', hitShort: h !== undefined ? `${h}件` : '',
+            hasHit: h !== undefined, hitLabel: `${h}件`, hitColor: h > 0 ? 'var(--act)' : 'var(--mu)',
+          };
+        }),
+        regexBg: rx.bg, regexFg: rx.fg, csBg: cs.bg, csFg: cs.fg, orderBg: od.bg, orderFg: od.fg,
+        orderLabel: r.order === 'seq' ? '順次' : '同時',
+        onRegex: () => this.upd('rules', r.id, { regex: !r.regex }),
+        onCs: () => this.upd('rules', r.id, { cs: !r.cs }),
+        onOrder: () => this.upd('rules', r.id, { order: r.order === 'seq' ? 'sim' : 'seq' }),
+        onUp: () => this.moveRule(ri, -1), onDown: () => this.moveRule(ri, 1),
+        upDisabled: ri === 0, downDisabled: ri === rules.length - 1,
+        onDel: () => this.setState(st => ({ rules: st.rules.filter(x => x.id !== r.id) })),
+      };
+    });
+
+    let outTabs = [], outFiles = [], resultSummary = '';
+    if (result) {
+      const og = result.groups.find(g => g.id === s.outGroup) || result.groups[0];
+      const p = n => String(n).padStart(2, '0');
+      resultSummary = `${p(result.at.getHours())}:${p(result.at.getMinutes())} 変換 · ${result.groups.length} グループ × ${og ? og.files.length : 0} ファイル`;
+      outTabs = result.groups.map(g => { const a = og && g.id === og.id; return { name: g.name, n: `${g.n}件`, bg: a ? 'var(--tx)' : 'transparent', fg: a ? 'var(--bg)' : 'var(--mu)', onClick: () => this.setState({ outGroup: g.id }) }; });
+      if (og) outFiles = og.files.map((f, i) => {
+        const key = og.id + ':' + i, hl = (s.views[key] || 'hl') === 'hl';
+        const setV = v => this.setState(st => ({ views: { ...st.views, [key]: v } }));
+        return {
+          path: `${og.dir}/${f.title}`, nLabel: `${f.n}箇所を置換`, text: f.text,
+          isHl: hl, isPlain: !hl,
+          segs: hl ? f.segs.map(x => ({ t: x.t, hit: !!x.h, plain: !x.h })) : [],
+          hlBg: on(hl).bg, hlFg: on(hl).fg, plainBg: on(!hl).bg, plainFg: on(!hl).fg,
+          onHl: () => setV('hl'), onPlain: () => setV('plain'),
+          onCopy: () => this.copy(f.text),
+          onDownload: () => this.download(new Blob([f.text], { type: 'text/plain;charset=utf-8' }), f.title.split('/').pop()),
+        };
+      });
+    }
+    const pt = s.importOpen ? this.parseTable(s.importText) : { rows: [] };
+    const importDetect = pt.rows.length ? `${pt.kind} · 見出し＋${pt.rows.length - 1}行 · ${Math.max(0, (pt.rows[0] || []).length - 1)}列` : '未入力';
+    const mr = on(s.importMode === 'replace'), ma = on(s.importMode === 'append');
+
+    return {
+      theme: s.theme, isDark: s.theme === 'dark', isLight: s.theme !== 'dark',
+      toggleTheme: () => this.setState(st => ({ theme: st.theme === 'dark' ? 'light' : 'dark' })),
+      run: this.run, tabs,
+      isInput: tab === 'input', isRules: tab === 'rules', isOutput: tab === 'output',
+      fileRef: this.fileRef, tableFileRef: this.tableFileRef,
+      pickFiles: () => this.fileRef.current && this.fileRef.current.click(),
+      onFilePicked: e => { this.addFiles(e.target.files); e.target.value = ''; },
+      addInput: () => { const id = this.uid(); this.setState(st => ({ inputs: [...st.inputs, { id, title: `text-${st.inputs.length + 1}.txt`, text: '' }] }), () => this.openEditor(id, 0, 0)); },
+      clearInputs: () => { if (confirm('入力テキストをすべて削除しますか？')) this.setState({ inputs: [] }); },
+      showCards, showTable: !showCards, onRuleKey: this.onRuleKey,
+      keyHint: showCards ? '↑↓ / Tab で前後の欄へ · Enter で次の欄（最後の欄なら行を追加）' : '↑↓ / Enter で上下の行へ · ← → / Tab で左右の欄へ · 最終行で Enter を押すと行を追加',
+      viewTableBg: on(!showCards).bg, viewTableFg: on(!showCards).fg, viewCardBg: on(showCards).bg, viewCardFg: on(showCards).fg,
+      setViewTable: () => this.setState({ ruleView: 'table' }), setViewCard: () => this.setState({ ruleView: 'card' }),
+      editorOpen: !!ein, ed, editorRef: this.editorRef, closeEditor: this.closeEditor,
+      onEditorKey: e => { if (e.key === 'Escape') { e.preventDefault(); this.closeEditor(); } },
+      inputsView, hasInputs: inputs.length > 0, noInputs: inputs.length === 0,
+      inputSummary: `${inputs.length} 件 · ${totalChars.toLocaleString()} 文字`,
+      groupsView, rulesView,
+      addRule: () => this.setState(st => ({ rules: [...st.rules, this.newRule()] })),
+      addGroup: () => this.setState(st => ({ groups: [...st.groups, { id: 'g' + this.uid(), name: `グループ${st.groups.length + 1}` }] })),
+      exportCsv: () => this.exportTable(','), exportTsv: () => this.exportTable('\t'),
+      openImport: () => this.setState({ importOpen: true }),
+      closeImport: () => this.setState({ importOpen: false }),
+      stop: e => e.stopPropagation(),
+      importOpen: s.importOpen, importText: s.importText, importDetect,
+      onImportText: e => this.setState({ importText: e.target.value }),
+      pickTableFile: () => this.tableFileRef.current && this.tableFileRef.current.click(),
+      onTableFile: async e => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) this.setState({ importText: (await f.text()).replace(/^\ufeff/, '') }); },
+      setModeReplace: () => this.setState({ importMode: 'replace' }), setModeAppend: () => this.setState({ importMode: 'append' }),
+      modeReplaceBg: mr.bg, modeReplaceFg: mr.fg, modeAppendBg: ma.bg, modeAppendFg: ma.fg,
+      applyImport: this.applyImport,
+      noResult: !result, hasResult: !!result, stale, resultSummary, outTabs, outFiles,
+      downloadZip: this.downloadZip,
+      dragging: s.dragging, hasToast: !!s.toast, toast: s.toast || '',
+      onDragEnter: e => { if (![...(e.dataTransfer.types || [])].includes('Files')) return; this.dragDepth++; if (!this.state.dragging) this.setState({ dragging: true }); },
+      onDragOver: e => { if ([...(e.dataTransfer.types || [])].includes('Files')) e.preventDefault(); },
+      onDragLeave: e => { if (![...(e.dataTransfer.types || [])].includes('Files')) return; this.dragDepth = Math.max(0, this.dragDepth - 1); if (!this.dragDepth) this.setState({ dragging: false }); },
+      onDrop: e => { if (!e.dataTransfer.files || !e.dataTransfer.files.length) return; e.preventDefault(); this.dragDepth = 0; this.setState({ dragging: false }); this.addFiles(e.dataTransfer.files); },
+    };
+  }
+}
+</script>
+</body>
+</html>
