@@ -28,18 +28,22 @@ export interface ReadFilesResult {
   inputs: InputText[];
   /** 拡張子が対象外でスキップした件数。 */
   skipped: number;
+  /** UTF-8 として読めず Shift_JIS とみなしたファイル名。推測なので画面で知らせる。 */
+  guessedShiftJis: string[];
 }
 
 /** ドロップ／選択されたファイルを読み込んで入力テキストに変換する。BOM は落とす。 */
 export async function readInputFiles(fileList: FileList | File[] | null): Promise<ReadFilesResult> {
   const files = [...(fileList ?? [])];
   const accepted = files.filter((file) => isAcceptedFile(file.name));
-  const inputs = await Promise.all(
-    accepted.map(async (file) => ({
-      id: createId(),
-      title: file.name,
-      text: decodeText(await file.arrayBuffer()),
-    })),
+  const decoded = await Promise.all(
+    accepted.map(async (file) => ({ file, ...decodeText(await file.arrayBuffer()) })),
   );
-  return { inputs, skipped: files.length - accepted.length };
+  return {
+    inputs: decoded.map(({ file, text }) => ({ id: createId(), title: file.name, text })),
+    skipped: files.length - accepted.length,
+    guessedShiftJis: decoded
+      .filter(({ encoding }) => encoding === 'shift_jis')
+      .map(({ file }) => file.name),
+  };
 }

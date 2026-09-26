@@ -52,7 +52,7 @@ describe('isAcceptedFile', () => {
 
 describe('readInputFiles', () => {
   it('null を渡しても空で返る', async () => {
-    expect(await readInputFiles(null)).toEqual({ inputs: [], skipped: 0 });
+    expect(await readInputFiles(null)).toEqual({ inputs: [], skipped: 0, guessedShiftJis: [] });
   });
 
   it('対応ファイルを読み込み、対象外は数えてスキップする', async () => {
@@ -81,5 +81,15 @@ describe('readInputFiles', () => {
   it('元の順序を保つ', async () => {
     const { inputs } = await readInputFiles([new File(['1'], 'z.md'), new File(['2'], 'a.md')]);
     expect(inputs.map((input) => input.title)).toEqual(['z.md', 'a.md']);
+  });
+
+  it('Shift_JIS として読んだファイルは名前を返す（推測だと分かるように）', async () => {
+    const cp932 = new Uint8Array([0x96, 0xbc, 0x91, 0x4f]); // 「名前」
+    const result = await readInputFiles([
+      new File([cp932], 'old.txt'),
+      new File(['ふつうの UTF-8'], 'new.txt'),
+    ]);
+    expect(result.guessedShiftJis).toEqual(['old.txt']);
+    expect(result.inputs[0]?.text).toBe('名前');
   });
 });

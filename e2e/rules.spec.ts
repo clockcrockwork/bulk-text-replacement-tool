@@ -185,3 +185,26 @@ test.describe('取り込みは既定で非破壊', () => {
     await expect(cell(page, 0, 0)).toHaveValue('川辺');
   });
 });
+
+test('u フラグで不正になる書き方はエラーにする（黙って意味を変えない）', async ({ page }) => {
+  await cell(page, 2, 0).fill('[a-\\d]');
+  await page.getByRole('button', { name: '正規表現' }).nth(2).click();
+  await expect(page.locator('.rule-table__error')).toContainText('正規表現エラー');
+});
+
+test('補助漢字を分断しない（u フラグが効いている）', async ({ page }) => {
+  await cell(page, 2, 0).fill('.');
+  await cell(page, 2, 1).fill('X');
+  await page.getByRole('button', { name: '正規表現' }).nth(2).click();
+  await expect(page.locator('.rule-table__error')).toHaveCount(0);
+
+  await goToTab(page, '入力');
+  await page.locator('.input-card__preview').click();
+  await page.locator('.editor__textarea').fill('\u{20BB7}');
+  await page.getByRole('button', { name: '完了' }).click();
+
+  await page.getByRole('button', { name: '変換', exact: true }).click();
+  await page.getByRole('button', { name: 'テキスト', exact: true }).click();
+  // u が無いと 'XX'（サロゲートペアが2文字として数えられる）になる。
+  await expect(page.locator('.file-card__plain')).toHaveValue('X');
+});

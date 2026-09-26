@@ -27,18 +27,36 @@ export function trimAscii(text: string): string {
   return text.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '');
 }
 
+/** 読み取りに使った文字コード。 */
+export type TextEncoding = 'utf-8' | 'shift_jis';
+
+export interface DecodedText {
+  text: string;
+  encoding: TextEncoding;
+}
+
 /**
- * バイト列を文字列にする。
+ * バイト列を文字列にする。使った文字コードも返す。
  *
  * `File.text()` は UTF-8 決め打ちなので、Shift_JIS / Windows-31J で保存された古い原稿や
  * Excel が書き出した CSV が文字化けする。まず UTF-8 として厳密に読み、壊れていれば
  * Shift_JIS として読み直す。BOM は落とす。
+ *
+ * どちらで読んだかを返すのは、Shift_JIS として読めても**推測**でしかないため。
+ * 他の文字コードのファイルが偶然 Shift_JIS として読めてしまうと、文字化けした
+ * 原稿がそのまま置換対象になる。画面で知らせて、目で確かめてもらう。
  */
-export function decodeText(buffer: ArrayBuffer): string {
+export function decodeText(buffer: ArrayBuffer): DecodedText {
   try {
-    return stripBom(new TextDecoder('utf-8', { fatal: true }).decode(buffer));
+    return {
+      text: stripBom(new TextDecoder('utf-8', { fatal: true }).decode(buffer)),
+      encoding: 'utf-8',
+    };
   } catch {
     // UTF-8 として不正なバイト列 → 日本語環境で最も多い Shift_JIS とみなす。
-    return stripBom(new TextDecoder('shift_jis').decode(buffer));
+    return {
+      text: stripBom(new TextDecoder('shift_jis').decode(buffer)),
+      encoding: 'shift_jis',
+    };
   }
 }

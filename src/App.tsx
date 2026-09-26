@@ -109,7 +109,8 @@ export function App(): JSX.Element {
     // 同じファイルを選び直せるように、読み取り前に値を空へ戻す。
     event.target.value = '';
     if (!file) return;
-    const parsed = parseBackup(decodeText(await file.arrayBuffer()));
+    // 作業データは自分が書き出した UTF-8 なので、文字コードの推測は気にしない。
+    const parsed = parseBackup(decodeText(await file.arrayBuffer()).text);
     if (parsed.kind === 'ok') {
       setPendingWorkspace(parsed.workspace);
       setBackupCandidate({ kind: 'ok', fileName: file.name, summary: parsed.summary });
@@ -157,11 +158,16 @@ export function App(): JSX.Element {
 
   const addFiles = async (list: FileList | null): Promise<void> => {
     if (!list || list.length === 0) return;
-    const { inputs, skipped } = await readInputFiles(list);
+    const { inputs, skipped, guessedShiftJis } = await readInputFiles(list);
     dispatch({ type: 'inputs/addMany', inputs });
     flash(
       `${inputs.length}件のファイルを追加しました` +
-        (skipped ? ` · ${skipped}件は非対応形式のためスキップ` : ''),
+        (skipped ? ` · ${skipped}件は非対応形式のためスキップ` : '') +
+        // Shift_JIS は「UTF-8 として読めなかった」だけの推測なので、
+        // 黙って取り込まず、目で確かめてもらう。
+        (guessedShiftJis.length > 0
+          ? ` · ${guessedShiftJis.length}件は Shift_JIS として読み込みました（文字化けが無いか確認してください）`
+          : ''),
     );
   };
 
@@ -394,7 +400,11 @@ export function App(): JSX.Element {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    dispatch({ type: 'import/setText', text: decodeText(await file.arrayBuffer()) });
+    const { text, encoding } = decodeText(await file.arrayBuffer());
+    dispatch({ type: 'import/setText', text });
+    if (encoding === 'shift_jis') {
+      flash(`${file.name} を Shift_JIS として読み込みました。文字化けが無いか確かめてください`);
+    }
   };
 
   const editingIndex = state.inputs.findIndex((input) => input.id === state.editingId);

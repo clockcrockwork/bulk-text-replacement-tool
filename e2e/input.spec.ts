@@ -204,3 +204,15 @@ test.describe('破壊操作の確認', () => {
     await expect(page.locator('.empty')).toContainText('入力がありません');
   });
 });
+
+test('Shift_JIS のファイルは読めるが、推測であることを知らせる', async ({ page }) => {
+  // CP932 の「名前,太郎」。UTF-8 としては不正なので Shift_JIS とみなされる。
+  const cp932 = Buffer.from([0x96, 0xbc, 0x91, 0x4f, 0x2c, 0x91, 0xbe, 0x98, 0x59]);
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles([{ name: 'old.txt', mimeType: 'text/plain', buffer: cp932 }]);
+
+  await expect(page.locator('.toast')).toContainText('Shift_JIS として読み込みました');
+  await expect(page.locator('.input-card__preview').nth(1)).toHaveValue('名前,太郎');
+});
