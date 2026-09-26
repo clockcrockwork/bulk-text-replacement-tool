@@ -1,0 +1,47 @@
+name: バグ報告
+description: 変換結果がおかしい、画面が壊れる、など
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: 何が起きたか
+      description: 実際の挙動と、期待していた挙動を並べて書いてください。
+      placeholder: |
+        実際: 「順次」にしたルールが適用されない
+        期待: それまでの置換結果に対して適用される
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      placeholder: |
+        1. 入力タブに「アリスちゃん」を貼る
+        2. ルールタブで アリス→あー（同時）、あーちゃん→X（順次）を設定する
+        3. 「変換」を押す
+    validations:
+      required: true
+
+  - type: textarea
+    id: rules
+    attributes:
+      label: 再現に使ったルール表（任意）
+      description: ルールタブの「CSV」ボタンで書き出したものを貼れます。原稿の本文は貼らないでください。
+      render: csv
+
+  - type: input
+    id: environment
+    attributes:
+      label: ブラウザ / OS
+      placeholder: Chrome 131 / macOS 15
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 確認
+      options:
+        - label: localStorage を消しても再現する（保存データ起因でないことの切り分け）
+        - label: 同じ内容の Issue が無いか探した

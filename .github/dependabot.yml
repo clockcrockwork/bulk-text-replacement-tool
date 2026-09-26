@@ -1,0 +1,42 @@
+# 依存更新の自動PR。public リポジトリなので Actions の実行枠は無制限だが、
+# レビュー回数を抑えるため patch/minor はまとめて1本のPRにする。
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore
+    groups:
+      # 破壊的変更が入りにくい範囲は1本に束ねる。major は個別PRのまま残す。
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Tokyo
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        update-types:
+          - major
+          - minor
+          - patch
