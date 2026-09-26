@@ -60,6 +60,7 @@ export function createZip(entries: readonly ZipEntry[], now: Date = new Date()):
   const centralParts: BlobPart[] = [];
   const { time, date } = toDosDateTime(now);
   let offset = 0;
+  let centralSize = 0;
 
   for (const entry of entries) {
     const name = encoder.encode(entry.name);
@@ -96,13 +97,9 @@ export function createZip(entries: readonly ZipEntry[], now: Date = new Date()):
     centralParts.push(central.buffer, name);
 
     offset += LOCAL_HEADER_SIZE + name.length + data.length;
+    centralSize += CENTRAL_HEADER_SIZE + name.length;
   }
 
-  const centralSize = centralParts.reduce(
-    (sum, part) =>
-      sum + (part instanceof ArrayBuffer ? part.byteLength : (part as Uint8Array).byteLength),
-    0,
-  );
   const end = new DataView(new ArrayBuffer(END_OF_CENTRAL_DIR_SIZE));
   end.setUint32(0, END_OF_CENTRAL_DIR_SIGNATURE, true);
   end.setUint16(8, entries.length, true);

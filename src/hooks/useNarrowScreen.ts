@@ -4,18 +4,18 @@ import { useEffect, useState } from 'react';
 export const NARROW_BREAKPOINT = 720;
 
 /** 画面が狭いかどうかを購読する。 */
-export function useNarrowScreen(breakpoint: number = NARROW_BREAKPOINT): boolean {
+export function useNarrowScreen(): boolean {
   const [narrow, setNarrow] = useState(() =>
-    typeof window === 'undefined' ? false : window.innerWidth < breakpoint,
+    typeof window === 'undefined' ? false : window.innerWidth < NARROW_BREAKPOINT,
   );
 
   useEffect(() => {
-    const query = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
+    const query = window.matchMedia(`(max-width: ${NARROW_BREAKPOINT - 1}px)`);
     const update = (): void => setNarrow(query.matches);
     update();
     query.addEventListener('change', update);
     return () => query.removeEventListener('change', update);
-  }, [breakpoint]);
+  }, []);
 
   return narrow;
 }

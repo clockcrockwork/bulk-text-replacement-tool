@@ -1,4 +1,4 @@
-import { type JSX, type KeyboardEvent, useEffect, useRef } from 'react';
+import { type JSX, type KeyboardEvent, useEffect, useMemo, useRef } from 'react';
 import { resolveGridNav } from '../lib/gridNav';
 import { compileRule } from '../lib/regex';
 import type { ConversionResult, Group, Rule } from '../types';
@@ -6,9 +6,15 @@ import { Icon } from './Icon';
 import { RuleCards } from './RuleCards';
 import { RuleTable } from './RuleTable';
 import type { GroupHandlers, RuleHandlers, RuleRow } from './ruleTypes';
+import { ToggleGroup, type ToggleOption } from './ToggleGroup';
 
 /** IME 変換確定中の Enter を表す keyCode。移動に使ってしまうと変換が中断される。 */
 const IME_KEY_CODE = 229;
+
+const VIEW_OPTIONS: readonly ToggleOption<'table' | 'card'>[] = [
+  { value: 'table', label: '表' },
+  { value: 'card', label: 'カード' },
+];
 
 const KEY_HINT_CARDS = '↑↓ / Tab で前後の欄へ · Enter で次の欄（最後の欄なら行を追加）';
 const KEY_HINT_TABLE =
@@ -51,20 +57,25 @@ export function RulesPanel({
   onExportCsv,
   onExportTsv,
 }: RulesPanelProps): JSX.Element {
-  const rows: RuleRow[] = rules.map((rule, index) => {
-    const compiled = rule.regex && rule.src ? compileRule(rule) : null;
-    return {
-      rule,
-      index,
-      error: compiled?.kind === 'error' ? compiled.message : null,
-      hits: Object.fromEntries(
-        groups.map((group) => [
-          group.id,
-          rule.src ? result?.hitsByGroupRule[group.id]?.[rule.id] : undefined,
-        ]),
-      ),
-    };
-  });
+  // 正規表現ルールの数だけ new RegExp が走るので、打鍵のたびには作り直さない。
+  const rows: RuleRow[] = useMemo(
+    () =>
+      rules.map((rule, index) => {
+        const compiled = rule.regex && rule.src ? compileRule(rule) : null;
+        return {
+          rule,
+          index,
+          error: compiled?.kind === 'error' ? compiled.message : null,
+          hits: Object.fromEntries(
+            groups.map((group) => [
+              group.id,
+              rule.src ? result?.hitsByGroupRule[group.id]?.[rule.id] : undefined,
+            ]),
+          ),
+        };
+      }),
+    [rules, groups, result],
+  );
 
   // 「最終行で Enter」で行を足したあと、増えた行にフォーカスを移す。
   const pendingFocus = useRef<{ row: number; col: number } | null>(null);
@@ -120,25 +131,13 @@ export function RulesPanel({
           <Icon name="plus" />
           <span>グループ（列）を追加</span>
         </button>
-        <fieldset className="toggle-group">
-          <legend className="visually-hidden">表示形式</legend>
-          <button
-            type="button"
-            className={`toggle toggle--tall${cards ? '' : ' is-active'}`}
-            aria-pressed={!cards}
-            onClick={() => onSetView('table')}
-          >
-            表
-          </button>
-          <button
-            type="button"
-            className={`toggle toggle--tall${cards ? ' is-active' : ''}`}
-            aria-pressed={cards}
-            onClick={() => onSetView('card')}
-          >
-            カード
-          </button>
-        </fieldset>
+        <ToggleGroup
+          legend="ルールの表示形式"
+          value={cards ? 'card' : 'table'}
+          options={VIEW_OPTIONS}
+          onChange={onSetView}
+          tall
+        />
         <span className="spacer" />
         <button type="button" className="btn" onClick={onOpenImport}>
           <Icon name="table" />

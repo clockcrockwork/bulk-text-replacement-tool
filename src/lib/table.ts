@@ -1,5 +1,6 @@
 import type { Group, ImportMode, Rule } from '../types';
 import { createGroupId, createId } from './id';
+import { stripBom } from './text';
 
 export type Delimiter = ',' | '\t';
 export type TableKind = 'markdown' | 'csv' | 'tsv';
@@ -75,7 +76,9 @@ export function parseDelimited(text: string, delimiter: Delimiter): string[][] {
  * 全行が `|` 始まりなら Markdown 表、タブを含めば TSV、それ以外は CSV とみなす。
  */
 export function parseTable(text: string): ParsedTable {
-  const normalized = (text || '').replace(/^﻿/, '').replace(/\r\n?/g, '\n').trim();
+  const normalized = stripBom(text || '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
   if (!normalized) return { rows: [], kind: null };
 
   const lines = normalized.split('\n').filter((line) => line.trim());

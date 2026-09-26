@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
+import { BOM } from '../src/lib/text';
 import { cell, goToTab, openApp } from './fixtures';
 
 test.beforeEach(async ({ page }) => {
@@ -111,7 +112,7 @@ test('CSV に書き出すとオプション列つきの表になる', async ({ p
 
   const text = await readFile(await download.path(), 'utf8');
   expect(text).toBe(
-    '﻿元テキスト,A用,B用,正規表現,大小区別,適用順\r\n' +
+    `${BOM}元テキスト,A用,B用,正規表現,大小区別,適用順\r\n` +
       'アリス,あーちゃん,びーちゃん,0,1,同時\r\n' +
       'ビル,びる,れいちゃん,0,1,同時',
   );

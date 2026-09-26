@@ -26,6 +26,11 @@ export interface WorkspaceState {
   ruleView: RuleView;
   /** 編集中の入力テキスト ID。null なら全画面エディタは閉じている。 */
   editingId: string | null;
+  /**
+   * エディタを開くときにプレビューから引き継ぐ表示位置。
+   * ref をレンダー中に読むのは React の原則に反するので、状態として持つ。
+   */
+  editorCaret: { caret: number; scrollRatio: number };
   result: ConversionResult | null;
   /** `result` を作ったときの入力の指紋。現在値と違えば「未反映の変更」バッジを出す。 */
   lastSignature: string | null;
@@ -54,7 +59,7 @@ export type WorkspaceAction =
   | { type: 'rules/setValue'; ruleId: string; groupId: string; value: string }
   | { type: 'rules/move'; index: number; delta: number }
   | { type: 'rules/remove'; id: string }
-  | { type: 'editor/open'; id: string }
+  | { type: 'editor/open'; id: string; caret: number; scrollRatio: number }
   | { type: 'editor/close' }
   | { type: 'import/open' }
   | { type: 'import/close' }
@@ -124,6 +129,7 @@ export function initWorkspace(): WorkspaceState {
     tab: 'input',
     ruleView: 'auto',
     editingId: null,
+    editorCaret: { caret: 0, scrollRatio: 0 },
     result: null,
     lastSignature: null,
     outGroupId: null,
@@ -242,7 +248,11 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
       return { ...state, rules: state.rules.filter((rule) => rule.id !== action.id) };
 
     case 'editor/open':
-      return { ...state, editingId: action.id };
+      return {
+        ...state,
+        editingId: action.id,
+        editorCaret: { caret: action.caret, scrollRatio: action.scrollRatio },
+      };
 
     case 'editor/close':
       return { ...state, editingId: null };

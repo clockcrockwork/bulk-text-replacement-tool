@@ -33,9 +33,3 @@ export async function copyText(text: string): Promise<void> {
     textarea.remove();
   }
 }
-
-/** ダウンロードしたファイル名に使う `YYYYMMDD-HHmm`。 */
-export function timestampForFileName(date: Date): string {
-  const pad = (value: number): string => String(value).padStart(2, '0');
-  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`;
-}

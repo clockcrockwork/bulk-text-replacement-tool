@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Group, Rule } from '../types';
 import { buildRulesFromTable, parseDelimited, parseTable, rulesToDelimited } from './table';
+import { BOM } from './text';
 
 describe('parseDelimited', () => {
   it('クォートの中の区切りと改行を保つ', () => {
@@ -46,7 +47,7 @@ describe('parseTable', () => {
   });
 
   it('それ以外は CSV とみなし、BOM と CRLF を吸収する', () => {
-    const parsed = parseTable('﻿a,b\r\n1,2\r\n');
+    const parsed = parseTable(`${BOM}a,b\r\n1,2\r\n`);
     expect(parsed.kind).toBe('csv');
     expect(parsed.rows).toEqual([
       ['a', 'b'],

@@ -44,7 +44,7 @@ export function EditorOverlay({
 }: EditorOverlayProps): JSX.Element {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  useScrollLock(true);
+  useScrollLock();
 
   useEffect(() => {
     const dialog = dialogRef.current;

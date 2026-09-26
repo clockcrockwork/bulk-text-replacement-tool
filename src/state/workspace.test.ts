@@ -27,6 +27,7 @@ function state(overrides: Partial<WorkspaceState> = {}): WorkspaceState {
     tab: 'input',
     ruleView: 'auto',
     editingId: null,
+    editorCaret: { caret: 0, scrollRatio: 0 },
     result: null,
     lastSignature: null,
     outGroupId: null,

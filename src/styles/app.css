@@ -1103,18 +1103,6 @@
   align-items: center;
 }
 
-/* fieldset で組んだ行の既定装飾を消す。 */
-.dialog__row--fieldset {
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.dialog__row--fieldset > legend {
-  padding: 0;
-}
-
 .dialog__detect {
   color: var(--color-muted);
   font-size: 12px;

@@ -2,12 +2,18 @@ import { type ChangeEvent, type JSX, type RefObject, useEffect, useRef } from 'r
 import { type ParsedTable, TABLE_KIND_LABEL } from '../lib/table';
 import type { ImportMode } from '../types';
 import { Icon } from './Icon';
+import { ToggleGroup, type ToggleOption } from './ToggleGroup';
 
 const PLACEHOLDER = [
   '| 元テキスト | A用置換 | B用置換 |',
   '| --- | --- | --- |',
   '| アリス | あーちゃん | びーちゃん |',
 ].join('\n');
+
+const IMPORT_MODE_OPTIONS: readonly ToggleOption<ImportMode>[] = [
+  { value: 'replace', label: '置き換える' },
+  { value: 'append', label: '末尾に追加' },
+];
 
 /** 解析結果を1行の説明文にする。 */
 function describe(parsed: ParsedTable): string {
@@ -96,27 +102,15 @@ export function ImportDialog({
           />
           <span className="dialog__detect">{describe(parsed)}</span>
         </div>
-        <fieldset className="dialog__row dialog__row--fieldset">
-          <legend className="hint">既存のルール</legend>
-          <div className="toggle-group">
-            <button
-              type="button"
-              className={`toggle${mode === 'replace' ? ' is-active' : ''}`}
-              aria-pressed={mode === 'replace'}
-              onClick={() => onChangeMode('replace')}
-            >
-              置き換える
-            </button>
-            <button
-              type="button"
-              className={`toggle${mode === 'append' ? ' is-active' : ''}`}
-              aria-pressed={mode === 'append'}
-              onClick={() => onChangeMode('append')}
-            >
-              末尾に追加
-            </button>
-          </div>
-        </fieldset>
+        <div className="dialog__row">
+          <span className="hint">既存のルール</span>
+          <ToggleGroup
+            legend="既存のルールの扱い"
+            value={mode}
+            options={IMPORT_MODE_OPTIONS}
+            onChange={onChangeMode}
+          />
+        </div>
         <div className="dialog__actions">
           <button type="button" className="btn" onClick={onClose}>
             キャンセル

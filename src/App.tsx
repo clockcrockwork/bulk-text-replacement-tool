@@ -21,10 +21,12 @@ import { Toast } from './components/Toast';
 import { useNarrowScreen } from './hooks/useNarrowScreen';
 import { usePersistedWorkspace } from './hooks/usePersistedWorkspace';
 import { useToast } from './hooks/useToast';
-import { copyText, downloadBlob, timestampForFileName } from './lib/browser';
+import { copyText, downloadBlob } from './lib/browser';
+import { timestampForFileName } from './lib/format';
 import { readInputFiles } from './lib/inputFiles';
 import { runConversion } from './lib/replace';
 import { buildRulesFromTable, type Delimiter, parseTable, rulesToDelimited } from './lib/table';
+import { stripBom, withBom } from './lib/text';
 import { createZip } from './lib/zip';
 import {
   createEmptyRule,
@@ -51,8 +53,6 @@ export function App(): JSX.Element {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const tableFileInputRef = useRef<HTMLInputElement>(null);
-  /** エディタを開くときに引き継ぐキャレット位置。 */
-  const caretRef = useRef({ caret: 0, ratio: 0 });
   /** dragenter / dragleave が子要素でも飛ぶので、深さを数えて判定する。 */
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
@@ -63,7 +63,12 @@ export function App(): JSX.Element {
     document.documentElement.dataset.theme = state.theme;
   }, [state.theme]);
 
-  const signature = workspaceSignature(state);
+  // 全入力の本文を JSON 化するので、打鍵のたびに走らせない。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 指紋の材料は入力・グループ・ルールだけ
+  const signature = useMemo(
+    () => workspaceSignature(state),
+    [state.inputs, state.groups, state.rules],
+  );
   const stale = state.result !== null && signature !== state.lastSignature;
   const cards = state.ruleView === 'auto' ? narrow : state.ruleView === 'card';
 
@@ -90,9 +95,8 @@ export function App(): JSX.Element {
     );
   };
 
-  const openEditor = (id: string, caret: number, ratio: number): void => {
-    caretRef.current = { caret, ratio };
-    dispatch({ type: 'editor/open', id });
+  const openEditor = (id: string, caret: number, scrollRatio: number): void => {
+    dispatch({ type: 'editor/open', id, caret, scrollRatio });
   };
 
   const closeEditor = (): void => {
@@ -149,8 +153,7 @@ export function App(): JSX.Element {
     const text = rulesToDelimited(state.groups, state.rules, delimiter);
     const csv = delimiter === ',';
     downloadBlob(
-      // Excel が UTF-8 と判定できるよう BOM を付ける。
-      new Blob([`﻿${text}`], {
+      new Blob([withBom(text)], {
         type: csv ? 'text/csv' : 'text/tab-separated-values',
       }),
       csv ? 'rules.csv' : 'rules.tsv',
@@ -181,28 +184,36 @@ export function App(): JSX.Element {
 
   // ---- 子コンポーネントへ渡すハンドラ --------------------------------------
 
-  const ruleHandlers: RuleHandlers = {
-    onChangeSrc: (id, src) => dispatch({ type: 'rules/update', id, patch: { src } }),
-    onChangeValue: (ruleId, groupId, value) =>
-      dispatch({ type: 'rules/setValue', ruleId, groupId, value }),
-    onToggleRegex: (rule) =>
-      dispatch({ type: 'rules/update', id: rule.id, patch: { regex: !rule.regex } }),
-    onToggleCase: (rule) =>
-      dispatch({ type: 'rules/update', id: rule.id, patch: { cs: !rule.cs } }),
-    onToggleOrder: (rule) => {
-      const order: RuleOrder = rule.order === 'seq' ? 'sim' : 'seq';
-      dispatch({ type: 'rules/update', id: rule.id, patch: { order } });
-    },
-    onMove: (index, delta) => dispatch({ type: 'rules/move', index, delta }),
-    onRemove: (id) => dispatch({ type: 'rules/remove', id }),
-  };
+  const groupCount = state.groups.length;
 
-  const groupHandlers: GroupHandlers = {
-    onRename: (id, name) => dispatch({ type: 'groups/rename', id, name }),
-    onRemove: (id) => dispatch({ type: 'groups/remove', id }),
-    onAdd: () =>
-      dispatch({ type: 'groups/add', group: createGroup(`グループ${state.groups.length + 1}`) }),
-  };
+  const ruleHandlers: RuleHandlers = useMemo(
+    () => ({
+      onChangeSrc: (id, src) => dispatch({ type: 'rules/update', id, patch: { src } }),
+      onChangeValue: (ruleId, groupId, value) =>
+        dispatch({ type: 'rules/setValue', ruleId, groupId, value }),
+      onToggleRegex: (rule) =>
+        dispatch({ type: 'rules/update', id: rule.id, patch: { regex: !rule.regex } }),
+      onToggleCase: (rule) =>
+        dispatch({ type: 'rules/update', id: rule.id, patch: { cs: !rule.cs } }),
+      onToggleOrder: (rule) => {
+        const order: RuleOrder = rule.order === 'seq' ? 'sim' : 'seq';
+        dispatch({ type: 'rules/update', id: rule.id, patch: { order } });
+      },
+      onMove: (index, delta) => dispatch({ type: 'rules/move', index, delta }),
+      onRemove: (id) => dispatch({ type: 'rules/remove', id }),
+    }),
+    [],
+  );
+
+  const groupHandlers: GroupHandlers = useMemo(
+    () => ({
+      onRename: (id, name) => dispatch({ type: 'groups/rename', id, name }),
+      onRemove: (id) => dispatch({ type: 'groups/remove', id }),
+      onAdd: () =>
+        dispatch({ type: 'groups/add', group: createGroup(`グループ${groupCount + 1}`) }),
+    }),
+    [groupCount],
+  );
 
   // ---- ドラッグ＆ドロップ --------------------------------------------------
 
@@ -222,6 +233,20 @@ export function App(): JSX.Element {
     if (dragDepth.current === 0) setDragging(false);
   };
 
+  // ウィンドウの外でドロップされると dragleave が対で飛ばず、案内が出たままになる。
+  useEffect(() => {
+    const reset = (): void => {
+      dragDepth.current = 0;
+      setDragging(false);
+    };
+    window.addEventListener('dragend', reset);
+    window.addEventListener('drop', reset);
+    return () => {
+      window.removeEventListener('dragend', reset);
+      window.removeEventListener('drop', reset);
+    };
+  }, []);
+
   const onDrop = (event: DragEvent<HTMLDivElement>): void => {
     if (!event.dataTransfer.files || event.dataTransfer.files.length === 0) return;
     event.preventDefault();
@@ -239,7 +264,7 @@ export function App(): JSX.Element {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    dispatch({ type: 'import/setText', text: (await file.text()).replace(/^﻿/, '') });
+    dispatch({ type: 'import/setText', text: stripBom(await file.text()) });
   };
 
   const editingIndex = state.inputs.findIndex((input) => input.id === state.editingId);
@@ -327,8 +352,8 @@ export function App(): JSX.Element {
           input={editing}
           index={editingIndex}
           total={state.inputs.length}
-          initialCaret={caretRef.current.caret}
-          initialScrollRatio={caretRef.current.ratio}
+          initialCaret={state.editorCaret.caret}
+          initialScrollRatio={state.editorCaret.scrollRatio}
           onChangeTitle={(title) =>
             dispatch({ type: 'inputs/update', id: editing.id, patch: { title } })
           }

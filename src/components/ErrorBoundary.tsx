@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
-import { downloadBlob, timestampForFileName } from '../lib/browser';
+import { downloadBlob } from '../lib/browser';
+import { timestampForFileName } from '../lib/format';
 import { clearWorkspace, readRawWorkspace } from '../lib/storage';
 
 interface ErrorBoundaryProps {

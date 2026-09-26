@@ -3,6 +3,7 @@ import { formatTime } from '../lib/format';
 import type { FileView } from '../state/workspace';
 import type { ConversionResult, ResultFile, ResultGroup } from '../types';
 import { Icon } from './Icon';
+import { ToggleGroup, type ToggleOption } from './ToggleGroup';
 
 export interface OutputPanelProps {
   result: ConversionResult | null;
@@ -19,6 +20,11 @@ export interface OutputPanelProps {
   onCopyFile: (file: ResultFile) => void;
   onDownloadFile: (file: ResultFile) => void;
 }
+
+const BODY_VIEW_OPTIONS: readonly ToggleOption<FileView>[] = [
+  { value: 'highlight', label: 'ハイライト' },
+  { value: 'plain', label: 'テキスト' },
+];
 
 function EmptyState({ onRun }: { onRun: () => void }): JSX.Element {
   return (
@@ -103,25 +109,12 @@ export function OutputPanel({
                 </span>
                 <span className="badge">{file.hits}箇所を置換</span>
                 <span className="spacer" />
-                <fieldset className="toggle-group">
-                  <legend className="visually-hidden">本文の表示</legend>
-                  <button
-                    type="button"
-                    className={`toggle${highlighted ? ' is-active' : ''}`}
-                    aria-pressed={highlighted}
-                    onClick={() => onSetFileView(key, 'highlight')}
-                  >
-                    ハイライト
-                  </button>
-                  <button
-                    type="button"
-                    className={`toggle${highlighted ? '' : ' is-active'}`}
-                    aria-pressed={!highlighted}
-                    onClick={() => onSetFileView(key, 'plain')}
-                  >
-                    テキスト
-                  </button>
-                </fieldset>
+                <ToggleGroup
+                  legend="本文の表示"
+                  value={highlighted ? 'highlight' : 'plain'}
+                  options={BODY_VIEW_OPTIONS}
+                  onChange={(next) => onSetFileView(key, next)}
+                />
                 <button type="button" className="btn btn--small" onClick={() => onCopyFile(file)}>
                   <Icon name="copy" size={15} />
                   <span>コピー</span>

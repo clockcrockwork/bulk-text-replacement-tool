@@ -3,11 +3,11 @@ import { useEffect } from 'react';
 /**
  * 全画面オーバーレイの裏側がスクロールしないように body を固定する。
  * iOS Safari 対策で `position: fixed` を使うため、解除時にスクロール位置を復元する。
+ *
+ * 呼んだ時点から、そのコンポーネントが消えるまで固定する。
  */
-export function useScrollLock(locked: boolean): void {
+export function useScrollLock(): void {
   useEffect(() => {
-    if (!locked) return;
-
     const scrollY = window.scrollY;
     const bodyStyle = document.body.style.cssText;
     const htmlOverflow = document.documentElement.style.overflow;
@@ -26,5 +26,5 @@ export function useScrollLock(locked: boolean): void {
       document.documentElement.style.overflow = htmlOverflow;
       window.scrollTo(0, scrollY);
     };
-  }, [locked]);
+  }, []);
 }
