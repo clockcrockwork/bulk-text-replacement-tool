@@ -213,36 +213,30 @@ export function App(): JSX.Element {
 
   // ---- 子コンポーネントへ渡すハンドラ --------------------------------------
 
-  const groupCount = state.groups.length;
+  // 受け取り側は memo 化していないので、参照を固定しても再描画は減らない。
+  // 素直に毎回作る（依存配列の取りこぼしで古い値を掴む事故の方が高くつく）。
+  const ruleHandlers: RuleHandlers = {
+    onChangeSrc: (id, src) => dispatch({ type: 'rules/update', id, patch: { src } }),
+    onChangeValue: (ruleId, groupId, value) =>
+      dispatch({ type: 'rules/setValue', ruleId, groupId, value }),
+    onToggleRegex: (rule) =>
+      dispatch({ type: 'rules/update', id: rule.id, patch: { regex: !rule.regex } }),
+    onToggleCase: (rule) =>
+      dispatch({ type: 'rules/update', id: rule.id, patch: { cs: !rule.cs } }),
+    onToggleOrder: (rule) => {
+      const order: RuleOrder = rule.order === 'seq' ? 'sim' : 'seq';
+      dispatch({ type: 'rules/update', id: rule.id, patch: { order } });
+    },
+    onMove: (index, delta) => dispatch({ type: 'rules/move', index, delta }),
+    onRemove: (id) => dispatch({ type: 'rules/remove', id }),
+  };
 
-  const ruleHandlers: RuleHandlers = useMemo(
-    () => ({
-      onChangeSrc: (id, src) => dispatch({ type: 'rules/update', id, patch: { src } }),
-      onChangeValue: (ruleId, groupId, value) =>
-        dispatch({ type: 'rules/setValue', ruleId, groupId, value }),
-      onToggleRegex: (rule) =>
-        dispatch({ type: 'rules/update', id: rule.id, patch: { regex: !rule.regex } }),
-      onToggleCase: (rule) =>
-        dispatch({ type: 'rules/update', id: rule.id, patch: { cs: !rule.cs } }),
-      onToggleOrder: (rule) => {
-        const order: RuleOrder = rule.order === 'seq' ? 'sim' : 'seq';
-        dispatch({ type: 'rules/update', id: rule.id, patch: { order } });
-      },
-      onMove: (index, delta) => dispatch({ type: 'rules/move', index, delta }),
-      onRemove: (id) => dispatch({ type: 'rules/remove', id }),
-    }),
-    [],
-  );
-
-  const groupHandlers: GroupHandlers = useMemo(
-    () => ({
-      onRename: (id, name) => dispatch({ type: 'groups/rename', id, name }),
-      onRemove: (id) => dispatch({ type: 'groups/remove', id }),
-      onAdd: () =>
-        dispatch({ type: 'groups/add', group: createGroup(`グループ${groupCount + 1}`) }),
-    }),
-    [groupCount],
-  );
+  const groupHandlers: GroupHandlers = {
+    onRename: (id, name) => dispatch({ type: 'groups/rename', id, name }),
+    onRemove: (id) => dispatch({ type: 'groups/remove', id }),
+    onAdd: () =>
+      dispatch({ type: 'groups/add', group: createGroup(`グループ${state.groups.length + 1}`) }),
+  };
 
   // ---- ドラッグ＆ドロップ --------------------------------------------------
 

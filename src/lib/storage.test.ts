@@ -137,6 +137,45 @@ describe('loadWorkspace', () => {
   });
 });
 
+describe('loadWorkspace の ID / 配列の扱い', () => {
+  it('配列は要素オブジェクトとして扱わない（空行が生えない）', () => {
+    stubStorage({
+      [STORAGE_KEY]: JSON.stringify({
+        inputs: [[], { id: 'i1', title: 'a', text: 'x' }],
+        groups: [{ id: 'g1', name: 'A' }],
+        rules: [[]],
+        theme: 'light',
+      }),
+    });
+    const loaded = loadWorkspace();
+    expect(loaded?.inputs).toHaveLength(1);
+    expect(loaded?.rules).toHaveLength(0);
+  });
+
+  it('ID が重複していたら振り直す（1行の編集が2行に波及しない）', () => {
+    stubStorage({
+      [STORAGE_KEY]: JSON.stringify({
+        inputs: [],
+        groups: [
+          { id: 'g1', name: 'A' },
+          { id: 'g1', name: 'B' },
+        ],
+        rules: [
+          { id: 'r1', src: 'a', values: {} },
+          { id: 'r1', src: 'b', values: {} },
+        ],
+        theme: 'light',
+      }),
+    });
+    const loaded = loadWorkspace();
+    const groupIds = loaded?.groups.map((group) => group.id) ?? [];
+    const ruleIds = loaded?.rules.map((rule) => rule.id) ?? [];
+    expect(new Set(groupIds).size).toBe(2);
+    expect(new Set(ruleIds).size).toBe(2);
+    expect(loaded?.rules.map((rule) => rule.src)).toEqual(['a', 'b']);
+  });
+});
+
 describe('saveWorkspace', () => {
   it('保存した内容を読み戻せる', () => {
     const store = stubStorage();

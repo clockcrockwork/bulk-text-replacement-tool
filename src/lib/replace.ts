@@ -57,23 +57,32 @@ function pushRange(ranges: HitRange[], start: number, end: number): void {
 }
 
 /**
- * 元テキストの `[from, to)` を新テキストの `newStart` 以降へ複写したときに、
- * その範囲に掛かっていたハイライトを新しい座標へ移し替える。
+ * 元テキストの区間を新テキストへ複写するときに、掛かっていたハイライトを
+ * 新しい座標へ移し替える関数を作る。
+ *
+ * 複写する区間は左から右へ単調に進むので、読み取り位置を保持して前回の続きから見る。
+ * 毎回先頭から走査すると「候補数 × 範囲数」の総当たりになり、置換の多い原稿で
+ * 二乗に効く（32,000 置換で約1.9秒かかっていた）。
  */
-function carryRanges(
+function createRangeCarrier(
   source: readonly HitRange[],
-  from: number,
-  to: number,
-  newStart: number,
-  out: HitRange[],
-): void {
-  for (const range of source) {
-    if (range.end <= from) continue;
-    if (range.start >= to) break; // 昇順なのでこれ以降は掛からない
-    const start = Math.max(range.start, from);
-    const end = Math.min(range.end, to);
-    pushRange(out, newStart + (start - from), newStart + (end - from));
-  }
+): (from: number, to: number, newStart: number, out: HitRange[]) => void {
+  let cursor = 0;
+  return (from, to, newStart, out) => {
+    // from より手前で終わる範囲は、これ以降のどの区間にも掛からないので読み飛ばす。
+    while (cursor < source.length) {
+      const range = source[cursor];
+      if (!range || range.end > from) break;
+      cursor += 1;
+    }
+    for (let i = cursor; i < source.length; i++) {
+      const range = source[i];
+      if (!range || range.start >= to) break; // 昇順なのでこれ以降は掛からない
+      const start = Math.max(range.start, from);
+      const end = Math.min(range.end, to);
+      pushRange(out, newStart + (start - from), newStart + (end - from));
+    }
+  };
 }
 
 /**
@@ -176,13 +185,14 @@ export function applyBatch(
 
   let out = '';
   const outRanges: HitRange[] = [];
+  const carry = createRangeCarrier(ranges);
   let pos = 0;
   let total = 0;
 
   for (const candidate of candidates) {
     if (candidate.start < pos) continue; // 採用済みの範囲と重なる候補は捨てる
     if (candidate.start > pos) {
-      carryRanges(ranges, pos, candidate.start, out.length, outRanges);
+      carry(pos, candidate.start, out.length, outRanges);
       out += text.slice(pos, candidate.start);
     }
     const replaced = candidate.item.isRegex
@@ -197,7 +207,7 @@ export function applyBatch(
     pos = candidate.end;
   }
   if (pos < text.length) {
-    carryRanges(ranges, pos, text.length, out.length, outRanges);
+    carry(pos, text.length, out.length, outRanges);
     out += text.slice(pos);
   }
 

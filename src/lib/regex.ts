@@ -45,7 +45,9 @@ export function compileRule(rule: Pick<Rule, 'src' | 'regex' | 'cs'>): CompiledR
 
 /**
  * 置換先文字列の `$&` `$1` `$<name>` `$$` を展開する。
- * `String.prototype.replace` と違い、存在しない番号の参照はそのまま残す。
+ * `String.prototype.replace` と違い、存在しない番号の参照はそのまま残す
+ * （`$9` と書いて 9 番が無いとき、消えるより見えている方が直しやすい）。
+ * `$0` は `String.prototype.replace` と同じくグループ参照ではなくそのままの文字列。
  */
 export function expandReplacement(replacement: string, match: RegExpExecArray): string {
   return replacement.replace(/\$(\$|&|\d{1,2}|<[^>]+>)/g, (all, token: string) => {
@@ -53,6 +55,8 @@ export function expandReplacement(replacement: string, match: RegExpExecArray): 
     if (token === '&') return match[0];
     if (token.startsWith('<')) return match.groups?.[token.slice(1, -1)] ?? '';
     const index = Number(token);
+    // $0 はキャプチャ番号ではない（全体一致は $&）。native と同じくそのまま残す。
+    if (index === 0) return all;
     return index < match.length ? (match[index] ?? '') : all;
   });
 }

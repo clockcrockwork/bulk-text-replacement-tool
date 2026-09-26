@@ -15,7 +15,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "check": "npm run lint && npm run typecheck && npm run test && npm run build",
+    "check": "npm run lint && npm run typecheck && npm run coverage && npm run build",
     "coverage": "vitest run --coverage",
     "lint:text": "node scripts/checkText.mjs"
   },

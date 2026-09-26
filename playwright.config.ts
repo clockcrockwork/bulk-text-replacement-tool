@@ -20,10 +20,9 @@ export default defineConfig({
   // CI で .only の付け忘れを落とす。
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  // CI では html レポートも出す。これが無いと失敗時にアーティファクトとして回収できない。
-  reporter: process.env.CI
-    ? [['github'], ['list'], ['html', { open: 'never' }]]
-    : [['list'], ['html', { open: 'never' }]],
+  // html レポートは CI だけ。ローカルでも出すと、毎回の実行で playwright-report/ が
+  // 作り直され、見ないファイルが作業ツリーに積み上がる（必要なら --reporter=html）。
+  reporter: process.env.CI ? [['github'], ['list'], ['html', { open: 'never' }]] : [['list']],
   use: {
     baseURL: ORIGIN,
     trace: 'on-first-retry',

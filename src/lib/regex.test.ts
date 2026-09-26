@@ -93,6 +93,11 @@ describe('expandReplacement', () => {
     expect(expandReplacement('$3', exec('(a)', 'a'))).toBe('$3');
   });
 
+  it('$0 はキャプチャ参照ではなくそのまま残る（native の replace と同じ）', () => {
+    expect(expandReplacement('$0', exec('a', 'a'))).toBe('$0');
+    expect('a'.replace(/a/, '$0')).toBe('$0');
+  });
+
   it('存在しない名前付きキャプチャは空になる', () => {
     expect(expandReplacement('[$<z>]', exec('(?<y>a)', 'a'))).toBe('[]');
   });

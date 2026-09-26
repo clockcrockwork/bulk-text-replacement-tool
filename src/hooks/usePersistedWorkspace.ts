@@ -13,11 +13,15 @@ const SAVE_DEBOUNCE_MS = 400;
  */
 export function usePersistedWorkspace(workspace: PersistedWorkspace): void {
   const { inputs, groups, rules, theme } = workspace;
-  /** 直近の値。イベント時に依存配列を気にせず取り出せるようにしておく。 */
+  /**
+   * 直近の値。イベント時に依存配列を気にせず取り出せるようにしておく。
+   * レンダー中に書くと、破棄されたレンダー（Strict Mode の二重呼び出しや中断された
+   * 並行レンダー）の値が残りうるので、コミット後の effect で更新する。
+   */
   const latest = useRef(workspace);
-  latest.current = workspace;
 
   useEffect(() => {
+    latest.current = { inputs, groups, rules, theme };
     const timer = setTimeout(
       () => saveWorkspace({ inputs, groups, rules, theme }),
       SAVE_DEBOUNCE_MS,

@@ -15,7 +15,7 @@ localStorage にだけ保存する。**スマートフォンと Safari も保証
 
 ```bash
 npm run dev            # 開発サーバー
-npm run check          # lint + typecheck + test + build（変更後は必ずこれを通す）
+npm run check          # lint + typecheck + coverage + build（変更後は必ずこれを通す）
 npm run lint:fix       # Biome の自動修正
 npm run test -- <path> # 単一テストファイルの実行
 npm run coverage       # カバレッジ（閾値つき。ロジック層のみ計測）

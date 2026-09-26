@@ -17,15 +17,10 @@ export interface SeedWorkspace {
  * テストが壊れる。サンプルそのものを見たいテストだけ `openApp` を使う。
  */
 export async function seedWorkspace(page: Page, workspace: SeedWorkspace): Promise<void> {
-  await page.addInitScript(
-    ([key, value]) => {
-      localStorage.setItem(key, value);
-    },
-    [STORAGE_KEY, JSON.stringify({ theme: 'light', ...workspace })] as const,
-  );
+  await seedRawWorkspace(page, JSON.stringify({ theme: 'light', ...workspace }));
 }
 
-/** 壊れた保存データを仕込む（復旧の挙動を見るテスト用）。 */
+/** 保存データを文字列のまま仕込む。壊れたデータからの復旧を見るテスト用。 */
 export async function seedRawWorkspace(page: Page, raw: string): Promise<void> {
   await page.addInitScript(
     ([key, value]) => {

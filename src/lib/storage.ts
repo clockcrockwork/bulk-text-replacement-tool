@@ -5,7 +5,9 @@ import { createGroupId, createId } from './id';
 export const STORAGE_KEY = 'bt-bulk-replace-v1';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  // 配列も typeof 'object' なので明示的に外す。外さないと `[]` が
+  // 「全項目が既定値のオブジェクト」として通り、空の行が復元されてしまう。
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function asString(value: unknown, fallback = ''): string {
@@ -53,12 +55,28 @@ function normalizeRule(value: unknown): Rule | null {
   };
 }
 
-function normalizeList<T>(value: unknown, normalize: (item: unknown) => T | null): T[] {
+/**
+ * 配列を正規化する。ID が重複した要素には新しい ID を振り直す。
+ *
+ * ID は React のキーと `patchById` の同定に使うので、重複したまま復元すると
+ * 1行編集したつもりが2行変わる・行が入れ替わるといった直しようのない挙動になる。
+ * グループの ID を振り直すと `rule.values` の対応が切れるが、そもそも対応先が
+ * 一意に決まらない状態なので、空の列として復元する方を選ぶ。
+ */
+function normalizeList<T extends { id: string }>(
+  value: unknown,
+  normalize: (item: unknown) => T | null,
+  createFallbackId: () => string,
+): T[] {
   if (!Array.isArray(value)) return [];
   const out: T[] = [];
+  const seen = new Set<string>();
   for (const item of value) {
     const normalized = normalize(item);
-    if (normalized) out.push(normalized);
+    if (!normalized) continue;
+    if (seen.has(normalized.id)) normalized.id = createFallbackId();
+    seen.add(normalized.id);
+    out.push(normalized);
   }
   return out;
 }
@@ -103,14 +121,14 @@ export function loadWorkspace(): PersistedWorkspace | null {
   }
   if (!isRecord(parsed)) return null;
 
-  const groups = normalizeList(parsed.groups, normalizeGroup);
+  const groups = normalizeList(parsed.groups, normalizeGroup, createGroupId);
   // グループが無い状態は復元しても置換先を書く場所が無い。
   if (groups.length === 0) return null;
 
   return {
-    inputs: normalizeList(parsed.inputs, normalizeInput),
+    inputs: normalizeList(parsed.inputs, normalizeInput, createId),
     groups,
-    rules: normalizeList(parsed.rules, normalizeRule),
+    rules: normalizeList(parsed.rules, normalizeRule, createId),
     theme: parsed.theme === 'dark' ? 'dark' : 'light',
   };
 }

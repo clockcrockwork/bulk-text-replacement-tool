@@ -15,6 +15,12 @@ updates:
       - dependencies
     commit-message:
       prefix: chore
+    ignore:
+      # @types/node は .nvmrc / engines の Node 22 に合わせて固定する。
+      # major が上がると、実行する Node に無い API が型として通ってしまう。
+      - dependency-name: '@types/node'
+        update-types:
+          - version-update:semver-major
     groups:
       # 破壊的変更が入りにくい範囲は1本に束ねる。major は個別PRのまま残す。
       minor-and-patch:
