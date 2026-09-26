@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { loadWorkspace, preferredTheme, STORAGE_KEY, saveWorkspace } from './storage';
+import {
+  clearWorkspace,
+  loadWorkspace,
+  preferredTheme,
+  readRawWorkspace,
+  STORAGE_KEY,
+  saveWorkspace,
+} from './storage';
 
 /** localStorage を差し替える。`fail` を指定すると各操作が例外を投げる。 */
 function stubStorage(initial: Record<string, string> = {}, fail = false) {
@@ -194,6 +201,29 @@ describe('saveWorkspace', () => {
     expect(() =>
       saveWorkspace({ inputs: [], groups: [], rules: [], theme: 'light' }),
     ).not.toThrow();
+  });
+});
+
+describe('readRawWorkspace / clearWorkspace', () => {
+  it('保存されている文字列をそのまま読める（復旧UIが退避に使う）', () => {
+    stubStorage({ [STORAGE_KEY]: 'こわれたJSON' });
+    expect(readRawWorkspace()).toBe('こわれたJSON');
+  });
+
+  it('読めない環境では null（落ちない）', () => {
+    stubStorage({}, true);
+    expect(readRawWorkspace()).toBeNull();
+  });
+
+  it('保存データを消せる', () => {
+    const store = stubStorage({ [STORAGE_KEY]: '{}' });
+    clearWorkspace();
+    expect(store[STORAGE_KEY]).toBeUndefined();
+  });
+
+  it('消せない環境でも例外を投げない（復旧UIが道連れで落ちない）', () => {
+    stubStorage({}, true);
+    expect(() => clearWorkspace()).not.toThrow();
   });
 });
 

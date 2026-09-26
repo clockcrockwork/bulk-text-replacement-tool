@@ -216,3 +216,30 @@ describe('toSegments', () => {
     ]);
   });
 });
+
+describe('Unicode 正規化', () => {
+  it('合成済みと結合文字列は別物として扱う（正規化しない）', () => {
+    const composed = '\u304c'; // が
+    const decomposed = '\u304b\u3099'; // か + 濁点
+    expect(composed).not.toBe(decomposed);
+    expect(composed.normalize('NFD')).toBe(decomposed);
+
+    const result = runConversion({
+      inputs: [{ id: 'i1', title: 'a.txt', text: `${composed}/${decomposed}` }],
+      groups: [{ id: 'g1', name: 'G' }],
+      rules: [
+        {
+          id: 'r1',
+          src: composed,
+          regex: false,
+          cs: true,
+          order: 'sim',
+          values: { g1: 'X' },
+        },
+      ],
+    });
+    // 合成済みの側だけが置換される。正規化していたら両方 X になる。
+    expect(result.groups[0]?.files[0]?.text).toBe(`X/${decomposed}`);
+    expect(result.groups[0]?.files[0]?.hits).toBe(1);
+  });
+});

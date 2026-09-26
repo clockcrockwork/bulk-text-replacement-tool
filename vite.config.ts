@@ -20,7 +20,7 @@ export default defineConfig({
       exclude: ['src/**/*.test.ts', 'src/lib/browser.ts'],
       // 現状（statements 97% / branches 87%）から目立って下がったら落とす。
       // 数字を追うためではなく、テストを書かずにロジックを足すのを防ぐための歯止め。
-      thresholds: { statements: 95, branches: 85, functions: 95, lines: 95 },
+      thresholds: { statements: 96, branches: 87, functions: 98, lines: 98 },
     },
   },
 });

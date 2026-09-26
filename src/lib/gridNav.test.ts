@@ -84,6 +84,18 @@ describe('resolveGridNav（表表示）', () => {
   it('最終行で ↓ は何もしない', () => {
     expect(resolveGridNav(ctx({ key: 'ArrowDown', row: 2 }))).toEqual({ type: 'none' });
   });
+
+  it('↑ は同じ列の上の行へ', () => {
+    expect(resolveGridNav(ctx({ key: 'ArrowUp', row: 2, col: 1 }))).toEqual({
+      type: 'move',
+      row: 1,
+      col: 1,
+    });
+  });
+
+  it('先頭行で ↑ は何もしない', () => {
+    expect(resolveGridNav(ctx({ key: 'ArrowUp', row: 0 }))).toEqual({ type: 'none' });
+  });
 });
 
 describe('resolveGridNav（カード表示）', () => {

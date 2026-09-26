@@ -117,3 +117,18 @@ test('CSV に書き出すとオプション列つきの表になる', async ({ p
       'ビル,びる,れいちゃん,0,1,同時',
   );
 });
+
+test('TSV に書き出すとタブ区切りの表になる', async ({ page }) => {
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: 'TSV' }).click(),
+  ]);
+  expect(download.suggestedFilename()).toBe('rules.tsv');
+
+  const text = await readFile(await download.path(), 'utf8');
+  expect(text).toBe(
+    `${BOM}元テキスト\tA用\tB用\t正規表現\t大小区別\t適用順\r\n` +
+      'アリス\tあーちゃん\tびーちゃん\t0\t1\t同時\r\n' +
+      'ビル\tびる\tれいちゃん\t0\t1\t同時',
+  );
+});

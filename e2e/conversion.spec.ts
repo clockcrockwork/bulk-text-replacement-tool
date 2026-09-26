@@ -72,3 +72,24 @@ test('ZIPですべて保存するとグループ名のディレクトリを含�
   expect(download.suggestedFilename()).toMatch(/^converted-\d{8}-\d{4}\.zip$/);
   await expect(page.locator('.toast')).toHaveText('2ファイルをZIPで保存しました');
 });
+
+test('個別に保存すると1ファイルだけ落ちてくる', async ({ page }) => {
+  await page.getByRole('button', { name: '変換' }).click();
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: 'このファイルを保存' }).first().click(),
+  ]);
+  expect(download.suggestedFilename()).toBe('chapter1.md');
+});
+
+test('コピーを押すと変換後の本文がクリップボードに入る', async ({ page, context, browserName }) => {
+  // WebKit にはクリップボードの権限 API が無い（読み出しの許可が出せない）。
+  test.skip(browserName === 'webkit', 'WebKit ではクリップボードを読み出せない');
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.getByRole('button', { name: '変換' }).click();
+
+  const body = await page.locator('.file-card__body').first().innerText();
+  await page.getByRole('button', { name: 'コピー' }).first().click();
+  await expect(page.locator('.toast')).toHaveText('コピーしました');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(body);
+});

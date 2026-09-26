@@ -138,3 +138,34 @@ test('テーマを切り替えると html の data-theme が変わり、リロ�
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', toggled);
 });
+
+test('エディタを開いている間は背面が動かず、閉じるとスクロール位置が戻る', async ({ page }) => {
+  // 入力を増やしてページをスクロールできる高さにする。
+  for (let i = 0; i < 12; i++) {
+    await page.getByRole('button', { name: 'テキスト欄を追加' }).click();
+    await page.getByRole('button', { name: '完了' }).click();
+  }
+  await page.mouse.wheel(0, 600);
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+
+  await page.locator('.input-card__preview').first().click();
+  await page.waitForSelector('dialog.editor[open]');
+
+  // 裏側は position: fixed で固定されるので、ホイールを回しても動かない。
+  // 固定前の位置は top: -Npx として控えられている。
+  const locked = await page.evaluate(() => document.body.style.top);
+  expect(locked).toMatch(/^-\d+px$/);
+  await page.mouse.wheel(0, 400);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  expect(await page.evaluate(() => document.body.style.position)).toBe('fixed');
+
+  await page.getByRole('button', { name: '完了' }).click();
+  await expect(page.locator('dialog.editor')).toHaveCount(0);
+  expect(await page.evaluate(() => document.body.style.position)).toBe('');
+  // 固定を解いた位置から、閉じたときに戻るフォーカス（編集していたカード）が
+  // 画面内に入るぶんだけずれる。0 に飛ばされていないこと＝位置を失っていないことを見る。
+  const restored = await page.evaluate(() => window.scrollY);
+  expect(restored).toBeGreaterThan(0);
+  expect(Math.abs(restored - Number(locked.replace(/[-px]/g, '')))).toBeLessThan(300);
+  await expect(page.locator('.input-card__preview').first()).toBeInViewport();
+});
