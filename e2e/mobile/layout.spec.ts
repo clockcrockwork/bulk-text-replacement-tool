@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { goToTab, openApp } from '../fixtures';
+import { goToTab, openApp, seedBasic } from '../fixtures';
 
 /** 狭い画面（スマホ）専用。デスクトップとはレイアウトの前提が違うので分けている。 */
 
 test.beforeEach(async ({ page }) => {
+  await seedBasic(page);
   await openApp(page);
 });
 
@@ -41,7 +42,7 @@ test('フォーム要素の文字は16px以上（iOS Safari の自動ズーム�
 
 test('スマホ幅でも変換して結果を確認できる', async ({ page }) => {
   await page.getByRole('button', { name: '変換' }).click();
-  await expect(page.locator('.file-card__path')).toHaveText('A用/chapter1.md');
+  await expect(page.locator('.file-card__path')).toHaveText('A用/story.md');
   await expect(page.locator('.file-card__body mark').first()).toHaveText('あーちゃん');
 });
 

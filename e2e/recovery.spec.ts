@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { STORAGE_KEY } from '../src/lib/storage';
-import { openApp } from './fixtures';
+import { openApp, seedRawWorkspace } from './fixtures';
 
 /**
  * 描画中に例外が出たときの最後の受け皿（ErrorBoundary）。
@@ -25,25 +25,8 @@ const SAVED = JSON.stringify({
   rules: [],
 });
 
-/**
- * 保存データを1度だけ仕込む。
- *
- * `seedWorkspace` は init script なのでリロードのたびに書き戻してしまい、
- * 「消して再読み込み」が消せたかどうかを見られない。
- */
-async function seedOnce(page: import('@playwright/test').Page): Promise<void> {
-  await page.addInitScript(
-    ([key, value, flag]) => {
-      if (sessionStorage.getItem(flag)) return;
-      sessionStorage.setItem(flag, '1');
-      localStorage.setItem(key, value);
-    },
-    [STORAGE_KEY, SAVED, 'seeded'] as const,
-  );
-}
-
 test.beforeEach(async ({ page }) => {
-  await seedOnce(page);
+  await seedRawWorkspace(page, SAVED);
 });
 
 test('描画に失敗したら白画面ではなく復旧画面が出る', async ({ page }) => {

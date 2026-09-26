@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
-import { goToTab, openApp } from './fixtures';
+import { goToTab, openApp, seedBasic } from './fixtures';
 
 test.beforeEach(async ({ page }) => {
+  await seedBasic(page);
   await openApp(page);
 });
 
@@ -18,7 +19,7 @@ test('ファイルを選ぶと入力として取り込まれ、対応外の拡�
   await expect(page.locator('.toast')).toHaveText(
     '2件のファイルを追加しました · 1件は非対応形式のためスキップ',
   );
-  // 手つかずのサンプルではなく中身があるので、既存の入力は残る。
+  // 既存の入力には中身があるので残り、後ろに追加される。
   await expect(page.locator('.input-card')).toHaveCount(3);
   await expect(page.locator('.input-card__title').nth(1)).toHaveValue('a.md');
 });
@@ -101,7 +102,7 @@ test('エディタから前後のテキストへ移動できる', async ({ page 
   await expect(page.locator('.editor__meta-pos')).toHaveText('2 / 2');
 
   await page.getByRole('button', { name: '前のテキスト' }).click();
-  await expect(page.locator('.editor__title')).toHaveValue('chapter1.md');
+  await expect(page.locator('.editor__title')).toHaveValue('story.md');
   await expect(page.getByRole('button', { name: '前のテキスト' })).toBeDisabled();
 
   await page.getByRole('button', { name: '次のテキスト' }).click();

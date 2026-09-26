@@ -1,43 +1,31 @@
 import { expect, test } from '@playwright/test';
-import { cell, goToTab, openApp } from './fixtures';
+import { cell, goToTab, openApp, seedBasic } from './fixtures';
 
 test.beforeEach(async ({ page }) => {
+  await seedBasic(page);
   await openApp(page);
-});
-
-test('初期表示ではサンプルの入力とルールが並ぶ', async ({ page }) => {
-  await expect(page.locator('.input-card')).toHaveCount(1);
-  await expect(page.locator('.input-card__title')).toHaveValue('chapter1.md');
-  await goToTab(page, 'ルール');
-  await expect(page.locator('.rule-table tbody tr')).toHaveCount(3);
-  await expect(page.locator('.rule-table__group-name').first()).toHaveValue('A用');
-  await expect(page.locator('.rule-table__group-name').nth(1)).toHaveValue('B用');
 });
 
 test('変換するとグループごとの結果が置換箇所つきで出る', async ({ page }) => {
   await page.getByRole('button', { name: '変換' }).click();
 
-  await expect(page.locator('.file-card__path')).toHaveText('A用/chapter1.md');
+  await expect(page.locator('.file-card__path')).toHaveText('A用/story.md');
   await expect(page.locator('.file-card__body mark')).toHaveText([
     'あーちゃん',
     'びる',
-    'びる',
-    'あーちゃん',
     'あーちゃん',
   ]);
 
   // グループを切り替えると同じ入力の別バージョンが出る。
   await page.getByRole('button', { name: /^B用/ }).click();
-  await expect(page.locator('.file-card__path')).toHaveText('B用/chapter1.md');
+  await expect(page.locator('.file-card__path')).toHaveText('B用/story.md');
   await expect(page.locator('.file-card__body mark').first()).toHaveText('びーちゃん');
 });
 
 test('テキスト表示に切り替えると変換後の本文がそのまま読める', async ({ page }) => {
   await page.getByRole('button', { name: '変換' }).click();
   await page.getByRole('button', { name: 'テキスト', exact: true }).click();
-  await expect(page.locator('.file-card__plain')).toContainText(
-    'あーちゃんは川辺でびると並んで座っていた。',
-  );
+  await expect(page.locator('.file-card__plain')).toContainText('あーちゃんとびるが並ぶ。');
 });
 
 test('入力を変えると未反映バッジが出て、再変換で消える', async ({ page }) => {
@@ -79,7 +67,7 @@ test('個別に保存すると1ファイルだけ落ちてくる', async ({ page
     page.waitForEvent('download'),
     page.getByRole('button', { name: 'このファイルを保存' }).first().click(),
   ]);
-  expect(download.suggestedFilename()).toBe('chapter1.md');
+  expect(download.suggestedFilename()).toBe('story.md');
 });
 
 test('コピーを押すと変換後の本文がクリップボードに入る', async ({ page, context, browserName }) => {

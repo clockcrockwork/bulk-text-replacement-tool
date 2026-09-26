@@ -1,9 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { BOM } from '../src/lib/text';
-import { cell, goToTab, openApp } from './fixtures';
+import { cell, goToTab, openApp, seedBasic } from './fixtures';
 
 test.beforeEach(async ({ page }) => {
+  await seedBasic(page);
   await openApp(page);
   await goToTab(page, 'ルール');
 });
@@ -84,7 +85,7 @@ test('末尾に追加モードでは既存のルールを残す', async ({ page 
   await expect(page.locator('.dialog__detect')).toHaveText('CSV · 見出し＋1行 · 1列');
   await page.getByRole('button', { name: '読み込む' }).click();
 
-  // 既存の「アリス」「ビル」の後ろに追加される（空行は捨てられる）。
+  // fixture の「アリス」「ビル」の後ろに追加される（空行は捨てられる）。
   await expect(cell(page, 0, 0)).toHaveValue('アリス');
   await expect(cell(page, 2, 0)).toHaveValue('川辺');
 });
