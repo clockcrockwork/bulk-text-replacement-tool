@@ -1,4 +1,5 @@
-import type { Group, InputText, PersistedWorkspace, Rule, Theme } from '../types';
+import type { Group, InputText, PersistedWorkspace, Rule, RuleOrder, Theme } from '../types';
+import { createGroupId, createId } from './id';
 
 /** 永続化キー。スキーマを壊す変更をしたら末尾の版を上げること。 */
 export const STORAGE_KEY = 'bt-bulk-replace-v1';
@@ -7,17 +8,91 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+function asString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
+function asBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+/** グループID → 置換先。文字列でない値は落とす。 */
+function normalizeValues(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === 'string') out[key] = entry;
+  }
+  return out;
+}
+
+function normalizeInput(value: unknown): InputText | null {
+  if (!isRecord(value)) return null;
+  return {
+    id: asString(value.id) || createId(),
+    title: asString(value.title),
+    text: asString(value.text),
+  };
+}
+
+function normalizeGroup(value: unknown): Group | null {
+  if (!isRecord(value)) return null;
+  return { id: asString(value.id) || createGroupId(), name: asString(value.name) };
+}
+
+function normalizeRule(value: unknown): Rule | null {
+  if (!isRecord(value)) return null;
+  const order: RuleOrder = value.order === 'seq' ? 'seq' : 'sim';
+  return {
+    id: asString(value.id) || createId(),
+    src: asString(value.src),
+    regex: asBoolean(value.regex, false),
+    cs: asBoolean(value.cs, true),
+    order,
+    values: normalizeValues(value.values),
+  };
+}
+
+function normalizeList<T>(value: unknown, normalize: (item: unknown) => T | null): T[] {
+  if (!Array.isArray(value)) return [];
+  const out: T[] = [];
+  for (const item of value) {
+    const normalized = normalize(item);
+    if (normalized) out.push(normalized);
+  }
+  return out;
+}
+
+/** 保存されている生の文字列。復旧UIが中身を退避させるために使う。 */
+export function readRawWorkspace(): string | null {
+  try {
+    return localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function clearWorkspace(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // 消せない環境なら、どのみち書き込めていないので放置してよい。
+  }
+}
+
 /**
- * localStorage の内容を検証して読み込む。
- * 壊れていたり形が違えば null を返し、呼び出し側が初期値にフォールバックする。
+ * localStorage の内容を読み込む。
+ *
+ * 形が壊れていても**描画や変換の途中で落ちない形に正規化**してから返す。
+ * 以前は `Array.isArray` だけ見てキャストで素通ししていたため、要素に `text` が
+ * 無いだけで起動時に例外になり、状態が永続化されている以上リロードしても
+ * 直らない（復旧不能な）状態を作れた。
+ *
+ * 復元しても使えない場合（グループが1つも無い）は null を返し、呼び出し側が
+ * 初期値にフォールバックする。
  */
 export function loadWorkspace(): PersistedWorkspace | null {
-  let raw: string | null = null;
-  try {
-    raw = localStorage.getItem(STORAGE_KEY);
-  } catch {
-    return null; // プライベートモードなどで localStorage が使えない。
-  }
+  const raw = readRawWorkspace();
   if (!raw) return null;
 
   let parsed: unknown;
@@ -28,13 +103,14 @@ export function loadWorkspace(): PersistedWorkspace | null {
   }
   if (!isRecord(parsed)) return null;
 
-  const groups = Array.isArray(parsed.groups) ? (parsed.groups as Group[]) : [];
-  if (groups.length === 0) return null; // グループが無い状態は復元しても使えない。
+  const groups = normalizeList(parsed.groups, normalizeGroup);
+  // グループが無い状態は復元しても置換先を書く場所が無い。
+  if (groups.length === 0) return null;
 
   return {
-    inputs: Array.isArray(parsed.inputs) ? (parsed.inputs as InputText[]) : [],
+    inputs: normalizeList(parsed.inputs, normalizeInput),
     groups,
-    rules: Array.isArray(parsed.rules) ? (parsed.rules as Rule[]) : [],
+    rules: normalizeList(parsed.rules, normalizeRule),
     theme: parsed.theme === 'dark' ? 'dark' : 'light',
   };
 }

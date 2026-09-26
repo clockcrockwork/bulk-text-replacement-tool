@@ -156,6 +156,22 @@ describe('buildRulesFromTable', () => {
     expect(built?.rules.map((rule) => rule.src)).toEqual(['a']);
   });
 
+  it('同名の列見出しは別グループに分け、値を取りこぼさない', () => {
+    const built = buildRulesFromTable({
+      ...base,
+      rows: [
+        ['元テキスト', 'A用', 'A用'],
+        ['アリス', '左', '右'],
+      ],
+    });
+    expect(built?.groups.map((group) => group.name)).toEqual(['A用', 'A用 (2)']);
+    const [first, second] = built?.groups ?? [];
+    expect(built?.rules[0]?.values).toEqual({
+      [String(first?.id)]: '左',
+      [String(second?.id)]: '右',
+    });
+  });
+
   it('グループ列が1つも無ければ既定のグループを作る', () => {
     const built = buildRulesFromTable({ ...base, rows: [['元テキスト'], ['a']] });
     expect(built?.groups.map((group) => group.name)).toEqual(['グループ1']);

@@ -193,10 +193,22 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
     case 'groups/rename':
       return { ...state, groups: patchById(state.groups, action.id, { name: action.name }) };
 
-    case 'groups/remove':
+    case 'groups/remove': {
       // 列が0本になると置換先を入れる場所が無くなるので、最後の1本は消させない。
       if (state.groups.length <= 1) return state;
-      return { ...state, groups: state.groups.filter((group) => group.id !== action.id) };
+      return {
+        ...state,
+        groups: state.groups.filter((group) => group.id !== action.id),
+        // 消したグループの置換先を rule.values に残さない。残すと localStorage に
+        // 積もり続け、workspaceSignature（未反映バッジの判定）にも混ざる。
+        rules: state.rules.map((rule) => {
+          if (!(action.id in rule.values)) return rule;
+          const values = { ...rule.values };
+          delete values[action.id];
+          return { ...rule, values };
+        }),
+      };
+    }
 
     case 'rules/add':
       return { ...state, rules: [...state.rules, action.rule] };

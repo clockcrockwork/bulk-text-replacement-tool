@@ -1146,3 +1146,48 @@
   clip-path: inset(50%);
   border: 0;
 }
+
+/* ============================================================ 復旧画面 */
+
+/* ErrorBoundary が出す画面。アプリ本体のレイアウトには依存させない。 */
+.recovery {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: flex-start;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--gutter);
+}
+
+.recovery__title {
+  margin: 0;
+  font-size: 25px;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.recovery__lead {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 14px;
+}
+
+.recovery__detail {
+  width: 100%;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: var(--color-accent-text);
+  font: 13px / 1.6 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--color-surface);
+  border-left: 4px solid var(--color-accent);
+}
+
+.recovery__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

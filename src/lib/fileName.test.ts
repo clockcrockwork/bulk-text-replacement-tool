@@ -14,6 +14,20 @@ describe('sanitizeName', () => {
   it('先頭のスラッシュと前後の空白を落とす', () => {
     expect(sanitizeName('  /root/a.md ', true)).toBe('root/a.md');
   });
+
+  it('.. を落として展開先を抜け出せなくする（Zip Slip）', () => {
+    expect(sanitizeName('../../evil.txt', true)).toBe('evil.txt');
+    expect(sanitizeName('a/../../b.md', true)).toBe('a/b.md');
+    expect(sanitizeName('..', true)).toBe('');
+  });
+
+  it('. と空の区切りも落とす', () => {
+    expect(sanitizeName('./a//b.md', true)).toBe('a/b.md');
+  });
+
+  it('ディレクトリ名では .. が空になりフォールバックに回る', () => {
+    expect(sanitizeName('..', false)).toBe('');
+  });
 });
 
 describe('dedupeNames', () => {
@@ -51,5 +65,19 @@ describe('resolveFileNames', () => {
 describe('resolveDirNames', () => {
   it('空名にはグループ連番を割り当て、スラッシュは潰す', () => {
     expect(resolveDirNames(['', 'a/b'])).toEqual(['group-1', 'a_b']);
+  });
+
+  it('.. だけの名前はフォールバック名になる', () => {
+    expect(resolveDirNames(['..'])).toEqual(['group-1']);
+  });
+});
+
+describe('resolveFileNames（Zip Slip）', () => {
+  it('親ディレクトリへ抜ける名前を無害化する', () => {
+    expect(resolveFileNames(['../../evil.txt'])).toEqual(['evil.txt']);
+  });
+
+  it('名前が空になったらフォールバック名を使う', () => {
+    expect(resolveFileNames(['../..'])).toEqual(['text-1.txt']);
   });
 });

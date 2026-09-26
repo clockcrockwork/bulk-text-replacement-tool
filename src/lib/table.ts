@@ -140,11 +140,20 @@ export function buildRulesFromTable({
   const optionColumns = Object.values(optionIndex).filter((index) => index >= 0);
 
   const groups: Group[] = mode === 'replace' ? [] : [...currentGroups];
+  // 同じ見出しが複数列あると、同じグループに割り当てられて後の列が前の列の値を
+  // 静かに上書きしてしまう。この取り込みの中で既に使った名前には連番を振る。
+  const usedNames = new Set<string>();
   const groupColumns = header
     .map((title, index) => ({ title, index }))
     .filter(({ index }) => index > 0 && !optionColumns.includes(index))
     .map(({ title, index }) => {
-      const name = title || `グループ${groups.length + 1}`;
+      let name = title || `グループ${groups.length + 1}`;
+      if (usedNames.has(name)) {
+        let suffix = 2;
+        while (usedNames.has(`${name} (${suffix})`)) suffix += 1;
+        name = `${name} (${suffix})`;
+      }
+      usedNames.add(name);
       let group = groups.find((candidate) => candidate.name === name);
       if (!group) {
         group = { id: createGroupId(), name };

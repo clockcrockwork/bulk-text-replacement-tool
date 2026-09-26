@@ -35,8 +35,6 @@ import {
   workspaceSignature,
 } from './state/workspace';
 import type { ResultFile, RuleOrder } from './types';
-import './styles/tokens.css';
-import './styles/app.css';
 
 /** エディタを閉じたとき、元のカードがヘッダーに隠れないよう空ける余白。 */
 const SCROLL_BACK_OFFSET = 130;

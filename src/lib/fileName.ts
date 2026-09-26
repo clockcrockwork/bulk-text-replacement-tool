@@ -4,8 +4,13 @@
  */
 export function sanitizeName(name: string, allowSlash: boolean): string {
   const forbidden = allowSlash ? /[\\:*?"<>|]/g : /[\\/:*?"<>|]/g;
-  // 前後の空白を落としてから先頭のスラッシュを外す（`  /a.md` を絶対パス扱いさせない）。
-  return name.replace(forbidden, '_').trim().replace(/^\/+/, '');
+  const cleaned = name.replace(forbidden, '_').trim();
+  // `.` と `..` を落とす。これが残ると ZIP のエントリ名が `A用/../../evil.txt` のように
+  // 展開先を抜け出す形になり得る（Zip Slip）。空の区切りもここで消える。
+  return cleaned
+    .split('/')
+    .filter((segment) => segment !== '' && segment !== '.' && segment !== '..')
+    .join('/');
 }
 
 /**

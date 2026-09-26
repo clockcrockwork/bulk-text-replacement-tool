@@ -79,6 +79,38 @@ describe('workspaceReducer', () => {
     ]);
   });
 
+  it('グループを消したら、各ルールの置換先からもその列を消す', () => {
+    const withValues: Rule = {
+      id: 'r1',
+      src: 'a',
+      regex: false,
+      cs: true,
+      order: 'sim',
+      values: { g1: 'X', g2: 'Y' },
+    };
+    const next = workspaceReducer(state({ rules: [withValues] }), {
+      type: 'groups/remove',
+      id: 'g1',
+    });
+    expect(next.rules[0]?.values).toEqual({ g2: 'Y' });
+  });
+
+  it('関係ないルールは同じ参照のまま返す', () => {
+    const untouched: Rule = {
+      id: 'r1',
+      src: 'a',
+      regex: false,
+      cs: true,
+      order: 'sim',
+      values: { g2: 'Y' },
+    };
+    const next = workspaceReducer(state({ rules: [untouched] }), {
+      type: 'groups/remove',
+      id: 'g1',
+    });
+    expect(next.rules[0]).toBe(untouched);
+  });
+
   it('セルの値だけを差し替える', () => {
     const next = workspaceReducer(state({ rules: [rule('r1')] }), {
       type: 'rules/setValue',
