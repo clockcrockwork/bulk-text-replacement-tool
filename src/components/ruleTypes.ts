@@ -37,3 +37,18 @@ export interface RuleGridProps {
 export function cellId(row: number, col: number): string {
   return `${row}:${col}`;
 }
+
+/**
+ * ルール表のセルのアクセシブル名。
+ *
+ * 全セルが「置換元」「置換先」だけだと、スクリーンリーダーの要素一覧では
+ * 同じ名前が並ぶだけでどの行・どの列か分からない。行番号と、置換先なら
+ * グループ名まで含める。
+ */
+export function srcCellLabel(index: number): string {
+  return `${index + 1}行目の置換元`;
+}
+
+export function valueCellLabel(index: number, groupName: string): string {
+  return `${index + 1}行目の置換先（${groupName || '無名のグループ'}）`;
+}

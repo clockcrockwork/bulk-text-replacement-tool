@@ -78,7 +78,7 @@ export function OutputPanel({
         ) : null}
         <button type="button" className="btn btn--primary" onClick={onDownloadZip}>
           <Icon name="download" />
-          <span>ZIPで全て保存</span>
+          <span>ZIPですべて保存</span>
         </button>
       </div>
 

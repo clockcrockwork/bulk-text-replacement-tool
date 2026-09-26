@@ -1,5 +1,5 @@
 import { type ChangeEvent, type JSX, type RefObject, useEffect, useRef } from 'react';
-import { type ParsedTable, TABLE_KIND_LABEL } from '../lib/table';
+import { OPTION_HEADERS, type ParsedTable, TABLE_KIND_LABEL } from '../lib/table';
 import type { ImportMode } from '../types';
 import { Icon } from './Icon';
 import { ToggleGroup, type ToggleOption } from './ToggleGroup';
@@ -78,7 +78,10 @@ export function ImportDialog({
       <div className="dialog__inner">
         <h2 className="dialog__title">表から読み込み</h2>
         <p className="dialog__lead">
-          Markdown表・CSV・TSVを貼り付けるか、ファイルを選択。1行目は見出し（1列目＝元テキスト、2列目以降＝グループ名）。
+          Markdown表・CSV・TSVを貼り付けるか、ファイルを選択。1行目は見出しで、1列目が置換元（見出しは何でも構いません）、
+          残りの列がグループ名になります。見出しを「{OPTION_HEADERS.regex}」「{OPTION_HEADERS.cs}」
+          「{OPTION_HEADERS.order}」にした列はグループではなく、その行の設定として読み込みます。
+          置換先が空欄のセルは、そのグループでは置換しません（削除ではありません）。
         </p>
         <textarea
           className="dialog__textarea"

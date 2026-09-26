@@ -67,7 +67,7 @@ test('ZIP にはグループ名のディレクトリと変換後の本文が入�
 
   const [download] = await Promise.all([
     page.waitForEvent('download'),
-    page.getByRole('button', { name: 'ZIPで全て保存' }).click(),
+    page.getByRole('button', { name: 'ZIPですべて保存' }).click(),
   ]);
   const entries = await readZipEntries(await download.path());
 
@@ -88,7 +88,7 @@ test('ファイル名に .. が入っていても ZIP の中では無害化さ�
 
   const [download] = await Promise.all([
     page.waitForEvent('download'),
-    page.getByRole('button', { name: 'ZIPで全て保存' }).click(),
+    page.getByRole('button', { name: 'ZIPですべて保存' }).click(),
   ]);
   const entries = await readZipEntries(await download.path());
   expect(entries.map((entry) => entry.name)).toEqual(['G用/evil.md']);

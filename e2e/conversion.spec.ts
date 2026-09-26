@@ -63,11 +63,11 @@ test('入力が無いまま変換すると入力タブへ戻される', async ({
   await expect(page.locator('.tab.is-active')).toContainText('入力');
 });
 
-test('ZIPで全て保存するとグループ名のディレクトリを含むZIPが落ちてくる', async ({ page }) => {
+test('ZIPですべて保存するとグループ名のディレクトリを含むZIPが落ちてくる', async ({ page }) => {
   await page.getByRole('button', { name: '変換' }).click();
   const [download] = await Promise.all([
     page.waitForEvent('download'),
-    page.getByRole('button', { name: 'ZIPで全て保存' }).click(),
+    page.getByRole('button', { name: 'ZIPですべて保存' }).click(),
   ]);
   expect(download.suggestedFilename()).toMatch(/^converted-\d{8}-\d{4}\.zip$/);
   await expect(page.locator('.toast')).toHaveText('2ファイルをZIPで保存しました');

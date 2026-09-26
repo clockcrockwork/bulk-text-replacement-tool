@@ -41,8 +41,8 @@ updates:
     commit-message:
       prefix: ci
     groups:
-      actions:
+      # major は動かなくなる変更を含みうるので、束ねずに個別PRで見る。
+      actions-minor-and-patch:
         update-types:
-          - major
           - minor
           - patch

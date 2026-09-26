@@ -61,11 +61,6 @@ export function InputPanel({
             <Icon name="plus" />
             <span>テキスト欄を追加</span>
           </button>
-          <button type="button" className="btn" disabled title="準備中">
-            <Icon name="github" />
-            <span>GitHubから取り込み</span>
-            <span className="tag">準備中</span>
-          </button>
         </div>
         <input
           ref={fileInputRef}
@@ -121,13 +116,13 @@ export function InputPanel({
               value={input.text}
               onClick={handlePreviewClick(input.id)}
               onKeyDown={handlePreviewKey(input.id)}
-              placeholder="タップして本文を入力・貼り付け"
-              aria-label="本文（クリックで編集）"
+              placeholder="押して本文を入力・貼り付け"
+              aria-label="本文（押すと編集）"
               spellCheck={false}
             />
             <div className="input-card__foot">
               <span className="input-card__meta">{formatTextMeta(input.text)}</span>
-              <span className="input-card__action-hint">クリックで編集</span>
+              <span className="input-card__action-hint">押して編集</span>
             </div>
           </div>
         ))}

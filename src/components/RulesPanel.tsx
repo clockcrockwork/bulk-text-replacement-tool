@@ -168,7 +168,11 @@ export function RulesPanel({
         </div>
         <div className="legend__item">
           <b className="legend__key">順次</b>
-          <span>それまでの置換結果に対して単独で適用。空欄のセルは置換しません</span>
+          <span>それまでの置換結果に対して単独で適用（前のパスの結果ともつながる）</span>
+        </div>
+        <div className="legend__item">
+          <b className="legend__key">空欄</b>
+          <span>そのグループでは置換しません（文字列の削除ではありません）</span>
         </div>
       </div>
 

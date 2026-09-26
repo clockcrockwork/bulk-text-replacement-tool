@@ -29,7 +29,13 @@ export function TabBar({ tabs, current, onSelect }: TabBarProps): JSX.Element {
         >
           <span className="tab__label">{tab.label}</span>
           <span className="tab__count">{tab.count}</span>
-          {tab.badge ? <span className="tab__badge" title="未反映の変更があります" /> : null}
+          {/* 赤い点だけだと色の見えない環境・読み上げに何も伝わらないので、文字も添える。 */}
+          {tab.badge ? (
+            <>
+              <span className="tab__badge" aria-hidden="true" />
+              <span className="visually-hidden">未反映の変更があります</span>
+            </>
+          ) : null}
         </button>
       ))}
     </nav>

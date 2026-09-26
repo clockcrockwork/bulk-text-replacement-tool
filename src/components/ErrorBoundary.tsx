@@ -54,8 +54,9 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       <div className="recovery" role="alert">
         <h1 className="recovery__title">画面の表示に失敗しました</h1>
         <p className="recovery__lead">
-          保存されているデータが原因の場合、リロードしても同じ状態になります。
-          消す前に、保存データを手元に落としておくことをおすすめします。
+          保存されているデータが原因の場合、再読み込みしても同じ状態になります。
+          保存データを消すと直ることがありますが、入力した原稿もルール表も一緒に失われます。
+          先に「保存データをダウンロード」で手元に落としてから消してください。
         </p>
         <pre className="recovery__detail">{error.message}</pre>
         <div className="recovery__actions">
@@ -67,15 +68,11 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           >
             保存データをダウンロード
           </button>
-          <button type="button" className="btn" onClick={() => location.reload()}>
+          <button type="button" className="btn btn--primary" onClick={() => location.reload()}>
             再読み込み
           </button>
-          <button
-            type="button"
-            className="btn btn--primary"
-            onClick={this.handleReset}
-            disabled={!hasSavedData}
-          >
+          {/* 取り返しのつかない操作なので、既定の見た目のまま最後に置く。 */}
+          <button type="button" className="btn" onClick={this.handleReset} disabled={!hasSavedData}>
             保存データを消して再読み込み
           </button>
         </div>
