@@ -65,6 +65,8 @@ test('正規表現として不正なパターンにはエラーを出す', async
 test('Markdown 表からルールを読み込む', async ({ page }) => {
   await page.getByRole('button', { name: '表から読み込み' }).click();
   await expect(page.locator('dialog[open]')).toBeVisible();
+  // 既定は「末尾に追加」なので、置き換えたいときは明示的に選ぶ。
+  await page.getByRole('button', { name: '置き換える' }).click();
 
   await page
     .locator('.dialog__textarea')
@@ -72,6 +74,7 @@ test('Markdown 表からルールを読み込む', async ({ page }) => {
   await expect(page.locator('.dialog__detect')).toHaveText('Markdown · 見出し＋1行 · 1列');
 
   await page.getByRole('button', { name: '読み込む' }).click();
+  await page.locator('dialog.dialog--confirm').getByRole('button', { name: '置き換える' }).click();
   await expect(page.locator('.toast')).toHaveText('1行を読み込みました');
   await expect(page.locator('.rule-table__group-name')).toHaveCount(1);
   await expect(page.locator('.rule-table__group-name')).toHaveValue('C用');
@@ -80,7 +83,6 @@ test('Markdown 表からルールを読み込む', async ({ page }) => {
 
 test('末尾に追加モードでは既存のルールを残す', async ({ page }) => {
   await page.getByRole('button', { name: '表から読み込み' }).click();
-  await page.getByRole('button', { name: '末尾に追加' }).click();
   await page.locator('.dialog__textarea').fill('元テキスト,A用\n川辺,海辺');
   await expect(page.locator('.dialog__detect')).toHaveText('CSV · 見出し＋1行 · 1列');
   await page.getByRole('button', { name: '読み込む' }).click();
@@ -132,4 +134,54 @@ test('TSV に書き出すとタブ区切りの表になる', async ({ page }) =>
       'アリス\tあーちゃん\tびーちゃん\t0\t1\t同時\r\n' +
       'ビル\tびる\tれいちゃん\t0\t1\t同時',
   );
+});
+
+test.describe('取り込みは既定で非破壊', () => {
+  test('既定は「末尾に追加」で、既存のルールを消さない', async ({ page }) => {
+    await page.getByRole('button', { name: '表から読み込み' }).click();
+    await expect(page.getByRole('button', { name: '末尾に追加' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    await page.locator('.dialog__textarea').fill('元テキスト,A用\n川辺,海辺');
+    await page.getByRole('button', { name: '読み込む' }).click();
+
+    // 確認は出ず、既存の2行はそのまま残る。
+    await expect(page.locator('dialog.dialog--confirm')).toHaveCount(0);
+    await expect(cell(page, 0, 0)).toHaveValue('アリス');
+    await expect(cell(page, 2, 0)).toHaveValue('川辺');
+  });
+
+  test('「置き換える」は何が失われるか見せて確認する', async ({ page }) => {
+    await page.getByRole('button', { name: '表から読み込み' }).click();
+    await page.getByRole('button', { name: '置き換える' }).click();
+    await page.locator('.dialog__textarea').fill('元テキスト,C用\n川辺,海辺');
+    await page.getByRole('button', { name: '読み込む' }).click();
+
+    const confirmDialog = page.locator('dialog.dialog--confirm[open]');
+    await expect(confirmDialog).toBeVisible();
+    await expect(confirmDialog.locator('.dialog__details')).toContainText('ルール 2行');
+    await expect(confirmDialog.locator('.dialog__details')).toContainText('グループ 2件');
+
+    // キャンセルすれば何も変わらない。
+    await confirmDialog.getByRole('button', { name: 'キャンセル' }).click();
+    await expect(cell(page, 0, 0)).toHaveValue('アリス');
+    await expect(page.locator('.rule-table__group-name')).toHaveCount(2);
+  });
+
+  test('確認を通すと置き換わる', async ({ page }) => {
+    await page.getByRole('button', { name: '表から読み込み' }).click();
+    await page.getByRole('button', { name: '置き換える' }).click();
+    await page.locator('.dialog__textarea').fill('元テキスト,C用\n川辺,海辺');
+    await page.getByRole('button', { name: '読み込む' }).click();
+    await page
+      .locator('dialog.dialog--confirm')
+      .getByRole('button', { name: '置き換える' })
+      .click();
+
+    await expect(page.locator('.rule-table__group-name')).toHaveCount(1);
+    await expect(page.locator('.rule-table__group-name')).toHaveValue('C用');
+    await expect(cell(page, 0, 0)).toHaveValue('川辺');
+  });
 });

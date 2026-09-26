@@ -13,7 +13,8 @@ export type IconName =
   | 'arrowDown'
   | 'trash'
   | 'table'
-  | 'copy';
+  | 'copy'
+  | 'save';
 
 const SHAPES: Record<IconName, JSX.Element> = {
   sun: (
@@ -49,6 +50,13 @@ const SHAPES: Record<IconName, JSX.Element> = {
     <>
       <path d="M5 12h14" />
       <path d="M12 5v14" />
+    </>
+  ),
+  save: (
+    <>
+      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+      <path d="M17 21v-8H7v8" />
+      <path d="M7 3v5h8" />
     </>
   ),
   close: (

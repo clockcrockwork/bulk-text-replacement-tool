@@ -5,6 +5,7 @@ import type {
   Group,
   ImportMode,
   InputText,
+  PersistedWorkspace,
   Rule,
   RuleView,
   Tab,
@@ -51,6 +52,7 @@ export type WorkspaceAction =
   | { type: 'inputs/update'; id: string; patch: Partial<Omit<InputText, 'id'>> }
   | { type: 'inputs/remove'; id: string }
   | { type: 'inputs/clear' }
+  | { type: 'workspace/replace'; workspace: PersistedWorkspace }
   | { type: 'groups/add'; group: Group }
   | { type: 'groups/rename'; id: string; name: string }
   | { type: 'groups/remove'; id: string }
@@ -136,7 +138,8 @@ export function initWorkspace(): WorkspaceState {
     fileViews: {},
     importOpen: false,
     importText: '',
-    importMode: 'replace',
+    // 既定は非破壊側。置き換えは取り消せないので、選ぶのはユーザーの明示操作にする。
+    importMode: 'append',
   };
 }
 
@@ -192,6 +195,19 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
 
     case 'inputs/clear':
       return { ...state, inputs: [], editingId: null };
+
+    case 'workspace/replace':
+      // 作業データの読み込み。古い変換結果とエディタの状態は、新しい入力に
+      // 対応しないので一緒に捨てる（残すと別の原稿の結果を持ち出せてしまう）。
+      return {
+        ...state,
+        ...action.workspace,
+        editingId: null,
+        result: null,
+        lastSignature: null,
+        outGroupId: null,
+        fileViews: {},
+      };
 
     case 'groups/add':
       return { ...state, groups: [...state.groups, action.group] };

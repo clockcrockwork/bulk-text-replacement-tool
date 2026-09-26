@@ -283,8 +283,8 @@ describe('workspaceReducer（表インポート）', () => {
     const typed = workspaceReducer(opened, { type: 'import/setText', text: 'a,b' });
     expect(typed.importText).toBe('a,b');
 
-    const mode = workspaceReducer(typed, { type: 'import/setMode', mode: 'append' });
-    expect(mode.importMode).toBe('append');
+    const mode = workspaceReducer(typed, { type: 'import/setMode', mode: 'replace' });
+    expect(mode.importMode).toBe('replace');
 
     const closed = workspaceReducer(mode, { type: 'import/close' });
     expect(closed.importOpen).toBe(false);
@@ -318,6 +318,8 @@ describe('initWorkspace', () => {
     expect(initial.inputs).toHaveLength(1);
     expect(initial.tab).toBe('input');
     expect(initial.ruleView).toBe('auto');
+    // 取り込みの既定は非破壊側。置き換えは明示的に選ばせる。
+    expect(initial.importMode).toBe('append');
     expect(initial.result).toBeNull();
     expect(initial.editingId).toBeNull();
     vi.unstubAllGlobals();
@@ -369,5 +371,49 @@ describe('workspaceSignature', () => {
 describe('createEmptyRule', () => {
   it('同時適用・大小区別ありの空行を作る', () => {
     expect(createEmptyRule()).toMatchObject({ src: '', regex: false, cs: true, order: 'sim' });
+  });
+});
+
+describe('workspace/replace', () => {
+  it('作業データで入力・グループ・ルール・テーマを置き換える', () => {
+    const next = workspaceReducer(
+      state({ inputs: [input('i1', 'もとの本文')], rules: [rule('r1')] }),
+      {
+        type: 'workspace/replace',
+        workspace: {
+          inputs: [input('x1', '読み込んだ本文')],
+          groups: [{ id: 'gz', name: 'Z用' }],
+          rules: [rule('rz', 'ぜっと')],
+          theme: 'dark',
+        },
+      },
+    );
+    expect(next.inputs.map((i) => i.id)).toEqual(['x1']);
+    expect(next.groups.map((g) => g.id)).toEqual(['gz']);
+    expect(next.rules.map((r) => r.id)).toEqual(['rz']);
+    expect(next.theme).toBe('dark');
+  });
+
+  it('古い変換結果とエディタの状態を捨てる（別の原稿の結果を持ち出せないように）', () => {
+    const before = state({
+      editingId: 'i1',
+      lastSignature: 'sig',
+      outGroupId: 'g1',
+      fileViews: { 'g1:0': 'plain' },
+      result: {
+        at: new Date(),
+        groups: [{ id: 'g1', name: 'A用', dir: 'A用', files: [], hits: 0 }],
+        hitsByGroupRule: {},
+      },
+    });
+    const next = workspaceReducer(before, {
+      type: 'workspace/replace',
+      workspace: { inputs: [], groups: [GROUP_A], rules: [], theme: 'light' },
+    });
+    expect(next.result).toBeNull();
+    expect(next.lastSignature).toBeNull();
+    expect(next.editingId).toBeNull();
+    expect(next.outGroupId).toBeNull();
+    expect(next.fileViews).toEqual({});
   });
 });

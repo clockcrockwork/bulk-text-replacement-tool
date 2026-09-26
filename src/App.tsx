@@ -9,6 +9,7 @@ import {
   useState,
 } from 'react';
 import { AppHeader } from './components/AppHeader';
+import { type BackupCandidate, BackupDialog } from './components/BackupDialog';
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog';
 import { DropOverlay } from './components/DropOverlay';
 import { EditorOverlay } from './components/EditorOverlay';
@@ -23,6 +24,7 @@ import { useConfirm } from './hooks/useConfirm';
 import { useNarrowScreen } from './hooks/useNarrowScreen';
 import { usePersistedWorkspace } from './hooks/usePersistedWorkspace';
 import { useToast } from './hooks/useToast';
+import { buildBackup, parseBackup } from './lib/backup';
 import { copyText, downloadBlob } from './lib/browser';
 import { collectRuleErrors, findUnmatchedRules } from './lib/diagnostics';
 import { timestampForFileName } from './lib/format';
@@ -39,7 +41,7 @@ import {
   workspaceReducer,
   workspaceSignature,
 } from './state/workspace';
-import type { ResultFile, RuleOrder } from './types';
+import type { PersistedWorkspace, ResultFile, RuleOrder } from './types';
 
 /** エディタを閉じたとき、元のカードがヘッダーに隠れないよう空ける余白。 */
 const SCROLL_BACK_OFFSET = 130;
@@ -61,7 +63,71 @@ export function App(): JSX.Element {
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
 
-  usePersistedWorkspace(state);
+  const saveFailed = usePersistedWorkspace(state);
+
+  // ---- 作業データ（バックアップ） --------------------------------------------
+  const [backupOpen, setBackupOpen] = useState(false);
+  /**
+   * 読み込んだファイルの検証結果と、検証を通った中身。
+   *
+   * 「検証 → 内容を確認 → 反映」の順にするため、確定するまで現在の状態には触れない。
+   * 選んだ瞬間に反映すると、壊れたファイルを選んだだけで今のデータが消え、
+   * 復旧手段そのものが新しいデータ消失の経路になる。
+   */
+  const [backupCandidate, setBackupCandidate] = useState<BackupCandidate | null>(null);
+  const [pendingWorkspace, setPendingWorkspace] = useState<PersistedWorkspace | null>(null);
+  const backupFileInputRef = useRef<HTMLInputElement>(null);
+
+  const openBackup = (): void => {
+    setBackupCandidate(null);
+    setPendingWorkspace(null);
+    setBackupOpen(true);
+  };
+
+  const closeBackup = (): void => {
+    setBackupOpen(false);
+    setBackupCandidate(null);
+    setPendingWorkspace(null);
+  };
+
+  const exportBackup = (): void => {
+    guard('作業データの書き出し', () => {
+      const at = new Date();
+      const { inputs, groups, rules, theme } = state;
+      downloadBlob(
+        new Blob([buildBackup({ inputs, groups, rules, theme }, at)], {
+          type: 'application/json',
+        }),
+        `bulk-replace-workspace-${timestampForFileName(at)}.json`,
+      );
+      flash('作業データを書き出しました');
+    });
+  };
+
+  const selectBackupFile = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = event.target.files?.[0];
+    // 同じファイルを選び直せるように、読み取り前に値を空へ戻す。
+    event.target.value = '';
+    if (!file) return;
+    const parsed = parseBackup(decodeText(await file.arrayBuffer()));
+    if (parsed.kind === 'ok') {
+      setPendingWorkspace(parsed.workspace);
+      setBackupCandidate({ kind: 'ok', fileName: file.name, summary: parsed.summary });
+      return;
+    }
+    setPendingWorkspace(null);
+    setBackupCandidate({ kind: 'error', fileName: file.name, message: parsed.message });
+  };
+
+  const applyBackup = (): void => {
+    const workspace = pendingWorkspace;
+    if (!workspace) return;
+    guard('作業データの読み込み', () => {
+      dispatch({ type: 'workspace/replace', workspace });
+      closeBackup();
+      flash(`作業データを読み込みました（入力${workspace.inputs.length}件）`);
+    });
+  };
 
   useEffect(() => {
     document.documentElement.dataset.theme = state.theme;
@@ -221,18 +287,32 @@ export function App(): JSX.Element {
     [state.importOpen, state.importText],
   );
 
-  const applyImport = (): void => {
-    guard('表の読み込み', () => {
-      const built = buildRulesFromTable({
-        rows: parsedImport.rows,
-        mode: state.importMode,
-        currentGroups: state.groups,
-        currentRules: state.rules,
+  const applyImport = async (): Promise<void> => {
+    const built = buildRulesFromTable({
+      rows: parsedImport.rows,
+      mode: state.importMode,
+      currentGroups: state.groups,
+      currentRules: state.rules,
+    });
+    if (!built) {
+      flash('見出し行＋1行以上の表が必要です');
+      return;
+    }
+
+    // 置き換えは、いま画面にあるルールとグループをまとめて捨てる。
+    // 中身があるときだけ、何が失われるかを見せて確認する。
+    const losing = state.rules.filter((rule) => rule.src !== '').length;
+    if (state.importMode === 'replace' && losing > 0) {
+      const ok = await confirm.ask({
+        title: '現在のルール表を置き換える',
+        message: '取り消せません。書き出していないルールは失われます。',
+        details: [`ルール ${losing}行`, `グループ ${state.groups.length}件`],
+        confirmLabel: '置き換える',
       });
-      if (!built) {
-        flash('見出し行＋1行以上の表が必要です');
-        return;
-      }
+      if (!ok) return;
+    }
+
+    guard('表の読み込み', () => {
       dispatch({ type: 'import/apply', groups: built.groups, rules: built.rules });
       flash(`${built.imported}行を読み込みました`);
     });
@@ -333,6 +413,7 @@ export function App(): JSX.Element {
         <AppHeader
           theme={state.theme}
           onToggleTheme={() => dispatch({ type: 'theme/toggle' })}
+          onOpenBackup={openBackup}
           onRun={run}
         />
         <TabBar
@@ -441,7 +522,31 @@ export function App(): JSX.Element {
           onPickFile={() => tableFileInputRef.current?.click()}
           onFileSelected={(event) => void onTableFileSelected(event)}
           onClose={() => dispatch({ type: 'import/close' })}
-          onApply={applyImport}
+          onApply={() => void applyImport()}
+        />
+      ) : null}
+
+      {saveFailed ? (
+        <div className="save-error" role="alert">
+          <span>
+            ブラウザに保存できませんでした（容量がいっぱいの可能性があります）。
+            このまま編集を続けると、閉じたときに失われます。
+          </span>
+          <button type="button" className="btn btn--small" onClick={openBackup}>
+            作業データを書き出す
+          </button>
+        </div>
+      ) : null}
+
+      {backupOpen ? (
+        <BackupDialog
+          candidate={backupCandidate}
+          fileInputRef={backupFileInputRef}
+          onExport={exportBackup}
+          onPickFile={() => backupFileInputRef.current?.click()}
+          onFileSelected={(event) => void selectBackupFile(event)}
+          onApply={applyBackup}
+          onClose={closeBackup}
         />
       ) : null}
 

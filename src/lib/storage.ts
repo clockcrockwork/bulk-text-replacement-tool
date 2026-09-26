@@ -109,6 +109,29 @@ export function clearWorkspace(): void {
  * 復元しても使えない場合（グループが1つも無い）は null を返し、呼び出し側が
  * 初期値にフォールバックする。
  */
+/**
+ * 外から来た値を、描画や変換の途中で落ちない形へ正規化する。
+ *
+ * localStorage とバックアップファイルの両方がここを通る。取り込み側で検証を
+ * 緩めると、保存データ経由では防いだ壊れ方をファイル経由で作れてしまう。
+ *
+ * 復元しても使えない場合（グループが1つも無い）は null を返す。
+ */
+export function normalizeWorkspace(value: unknown): PersistedWorkspace | null {
+  if (!isRecord(value)) return null;
+
+  const groups = normalizeList(value.groups, normalizeGroup, createGroupId);
+  // グループが無い状態は復元しても置換先を書く場所が無い。
+  if (groups.length === 0) return null;
+
+  return {
+    inputs: normalizeList(value.inputs, normalizeInput, createId),
+    groups,
+    rules: normalizeList(value.rules, normalizeRule, createId),
+    theme: value.theme === 'dark' ? 'dark' : 'light',
+  };
+}
+
 export function loadWorkspace(): PersistedWorkspace | null {
   const raw = readRawWorkspace();
   if (!raw) return null;
@@ -119,25 +142,22 @@ export function loadWorkspace(): PersistedWorkspace | null {
   } catch {
     return null;
   }
-  if (!isRecord(parsed)) return null;
-
-  const groups = normalizeList(parsed.groups, normalizeGroup, createGroupId);
-  // グループが無い状態は復元しても置換先を書く場所が無い。
-  if (groups.length === 0) return null;
-
-  return {
-    inputs: normalizeList(parsed.inputs, normalizeInput, createId),
-    groups,
-    rules: normalizeList(parsed.rules, normalizeRule, createId),
-    theme: parsed.theme === 'dark' ? 'dark' : 'light',
-  };
+  return normalizeWorkspace(parsed);
 }
 
-export function saveWorkspace(workspace: PersistedWorkspace): void {
+/**
+ * 保存する。書けたかどうかを返す。
+ *
+ * 以前は失敗を握り潰していた。容量超過（localStorage は数MBで打ち止め）に達しても
+ * 画面は何も言わず、保存されないまま編集が続き、リロードした時点でその間の作業が
+ * 消える。呼び出し側が気づけるように結果を返す。
+ */
+export function saveWorkspace(workspace: PersistedWorkspace): boolean {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(workspace));
+    return true;
   } catch {
-    // 容量超過などは黙って諦める（入力を失わせないことを優先）。
+    return false;
   }
 }
 

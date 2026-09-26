@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { saveWorkspace } from '../lib/storage';
 import type { PersistedWorkspace } from '../types';
 
@@ -11,7 +11,7 @@ const SAVE_DEBOUNCE_MS = 400;
  * タイミングで即座に書き出す。`beforeunload` はモバイル Safari で発火しないことが
  * あるので `pagehide` と `visibilitychange` を見る。
  */
-export function usePersistedWorkspace(workspace: PersistedWorkspace): void {
+export function usePersistedWorkspace(workspace: PersistedWorkspace): boolean {
   const { inputs, groups, rules, theme } = workspace;
   /**
    * 直近の値。イベント時に依存配列を気にせず取り出せるようにしておく。
@@ -19,20 +19,27 @@ export function usePersistedWorkspace(workspace: PersistedWorkspace): void {
    * 並行レンダー）の値が残りうるので、コミット後の effect で更新する。
    */
   const latest = useRef(workspace);
+  /**
+   * 直近の保存に失敗しているか。
+   *
+   * 失敗を握り潰すと、保存されないまま編集が続き、リロードした時点でその間の
+   * 作業が消える。消えるトーストではなく、直るまで出したままにできるよう
+   * 状態として返す。
+   */
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     latest.current = { inputs, groups, rules, theme };
-    const timer = setTimeout(
-      () => saveWorkspace({ inputs, groups, rules, theme }),
-      SAVE_DEBOUNCE_MS,
-    );
+    const timer = setTimeout(() => {
+      setFailed(!saveWorkspace({ inputs, groups, rules, theme }));
+    }, SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [inputs, groups, rules, theme]);
 
   useEffect(() => {
     const flush = (): void => {
       const { inputs: i, groups: g, rules: r, theme: t } = latest.current;
-      saveWorkspace({ inputs: i, groups: g, rules: r, theme: t });
+      setFailed(!saveWorkspace({ inputs: i, groups: g, rules: r, theme: t }));
     };
     const onVisibilityChange = (): void => {
       if (document.visibilityState === 'hidden') flush();
@@ -44,4 +51,6 @@ export function usePersistedWorkspace(workspace: PersistedWorkspace): void {
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, []);
+
+  return failed;
 }
