@@ -101,6 +101,40 @@ describe('resolveGridNav（カード表示）', () => {
     });
   });
 
+  it('Tab は直列に次のセルへ進む', () => {
+    expect(resolveGridNav(ctx({ key: 'Tab', cards: true, row: 1, col: 0 }))).toEqual({
+      type: 'move',
+      row: 1,
+      col: 1,
+    });
+  });
+
+  it('Shift+Tab は直列に戻る', () => {
+    expect(
+      resolveGridNav(ctx({ key: 'Tab', shiftKey: true, cards: true, row: 1, col: 0 })),
+    ).toEqual({ type: 'move', row: 0, col: 2 });
+  });
+
+  it('↑ は直列に前のセルへ戻る', () => {
+    expect(resolveGridNav(ctx({ key: 'ArrowUp', cards: true, row: 1, col: 0 }))).toEqual({
+      type: 'move',
+      row: 0,
+      col: 2,
+    });
+  });
+
+  it('先頭セルで ↑ は何もしない', () => {
+    expect(resolveGridNav(ctx({ key: 'ArrowUp', cards: true, row: 0, col: 0 }))).toEqual({
+      type: 'none',
+    });
+  });
+
+  it('最後のセルで ↓ は何もしない（行は追加しない）', () => {
+    expect(resolveGridNav(ctx({ key: 'ArrowDown', cards: true, row: 2, col: 2 }))).toEqual({
+      type: 'none',
+    });
+  });
+
   it('最後のセルで Enter は行を追加する', () => {
     expect(resolveGridNav(ctx({ key: 'Enter', cards: true, row: 2, col: 2 }))).toEqual({
       type: 'append',

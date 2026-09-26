@@ -40,7 +40,9 @@ export default defineConfig({
   webServer: {
     command: `npm run build && npm run preview -- --host ${HOST} --port ${PORT} --strictPort`,
     url: ORIGIN,
-    reuseExistingServer: !process.env.CI,
+    // 既存サーバーを使い回すと build ごとスキップされ、古い dist を検証して
+    // 緑になることがある。常に建て直す（ポートが塞がっていれば明示的に失敗する）。
+    reuseExistingServer: false,
     timeout: 180_000,
     // 既定は 'ignore' で、起動に失敗しても build / preview の出力が丸ごと消える。
     // webServer が上がらない類の失敗を診断できるようにしておく。
