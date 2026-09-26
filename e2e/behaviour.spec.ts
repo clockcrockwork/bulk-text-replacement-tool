@@ -127,7 +127,7 @@ test.describe('壊れた保存データからの復帰', () => {
     );
     await openApp(page);
     await expect(page.locator('.input-card__title')).toHaveValue('kept.md');
-    await expect(page.locator('.input-card__meta')).toHaveText('0文字 · 0行');
+    await expect(page.locator('.input-card__meta')).toHaveText('0行');
 
     await page.getByRole('button', { name: '変換' }).click();
     await expect(page.locator('.file-card__path')).toBeVisible();

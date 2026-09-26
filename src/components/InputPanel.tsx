@@ -1,7 +1,6 @@
 import type { ChangeEvent, JSX, KeyboardEvent, MouseEvent, RefObject } from 'react';
 import { formatIndex, formatInputSummary, formatTextMeta } from '../lib/format';
 import { ACCEPT_ATTRIBUTE, ACCEPTED_EXTENSIONS_LABEL } from '../lib/inputFiles';
-import { countCharacters } from '../lib/text';
 import type { InputText } from '../types';
 import { Icon } from './Icon';
 
@@ -29,8 +28,6 @@ export function InputPanel({
   onRemoveInput,
   onOpenEditor,
 }: InputPanelProps): JSX.Element {
-  const totalChars = inputs.reduce((sum, input) => sum + countCharacters(input.text), 0);
-
   const handlePreviewClick = (id: string) => (event: MouseEvent<HTMLTextAreaElement>) => {
     const target = event.currentTarget;
     const ratio = target.scrollTop / Math.max(1, target.scrollHeight);
@@ -74,7 +71,7 @@ export function InputPanel({
 
       <div className="section-head">
         <div className="section-head__title">入力テキスト</div>
-        <div className="section-head__meta">{formatInputSummary(inputs.length, totalChars)}</div>
+        <div className="section-head__meta">{formatInputSummary(inputs.length)}</div>
         {inputs.length > 0 ? (
           <button type="button" className="btn btn--quiet" onClick={onClearInputs}>
             すべて削除

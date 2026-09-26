@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "複数のテキストを、グループごとの置換ルール表で一括変換するブラウザツール",
+  "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "dev": "vite",
     "build": "npm run typecheck && vite build",

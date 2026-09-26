@@ -42,25 +42,3 @@ export function decodeText(buffer: ArrayBuffer): string {
     return stripBom(new TextDecoder('shift_jis').decode(buffer));
   }
 }
-
-/**
- * 文字数を数える。
- *
- * `text.length` は UTF-16 の符号単位数なので、`𠮷` のような補助漢字を2と数えてしまう。
- * ここではコードポイント単位で数える（`𠮷` は1）。
- *
- * 書記素クラスタ（`Intl.Segmenter`）まで踏み込めば IVS や絵文字の連結も1と数えられるが、
- * 実測で 100万文字あたり 約630ms かかり、打鍵のたびに走る表示では現実的でない
- * （同じ条件でコードポイント計数は約5ms）。そのため IVS や ZWJ 絵文字は
- * 見た目の字数と一致しない。
- */
-export function countCharacters(text: string): number {
-  let count = 0;
-  for (let i = 0; i < text.length; i++) {
-    count += 1;
-    const code = text.charCodeAt(i);
-    // 上位サロゲートなら、続く下位サロゲートと合わせて1文字として数える。
-    if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) i += 1;
-  }
-  return count;
-}

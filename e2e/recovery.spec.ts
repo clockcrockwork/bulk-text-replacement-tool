@@ -7,7 +7,7 @@ import { openApp } from './fixtures';
  *
  * 保存データが原因で落ちるとリロードしても同じ場所で落ち続けるので、
  * 「退避してから消す」が画面の中だけで完結することを確かめる。
- * 落とし方は、入力カードの文字数表示が使う `toLocaleString` を投げさせる。
+ * 落とし方は、入力カードの行数表示が使う `toLocaleString` を投げさせる。
  * 復旧画面自体は数値整形を使わないので、受け皿ごと巻き込まれない。
  */
 async function breakRendering(page: import('@playwright/test').Page): Promise<void> {

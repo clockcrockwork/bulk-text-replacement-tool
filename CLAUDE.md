@@ -92,8 +92,9 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   描画中の例外しか拾わないので、onClick から同期で呼ぶ処理は自前で受け皿が要る。
 - **文字コード**: 取り込みは `decodeText`（UTF-8 → 失敗したら Shift_JIS）。`File.text()` を
   直接使わない。書き出しの BOM は `withBom`。
-- **文字数**は `countCharacters`（コードポイント単位）。`text.length` は補助漢字を2と数える。
-  `Intl.Segmenter` は 100万文字で約630ms かかるので、毎レンダー走る表示には使わない。
+- **文字数は表示しない**（`src/lib/format.ts` のコメント参照）。入力に上限が無く、
+  数え方（コードポイント／書記素）で値が変わるだけで判断材料にならないため外した。
+  足し直すなら、まず「何のために数えるか」を決めること。
 
 ## テスト
 
