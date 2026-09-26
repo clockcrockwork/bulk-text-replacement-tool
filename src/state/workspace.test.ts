@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Group, InputText, Rule } from '../types';
 import {
   createEmptyRule,
+  createGroup,
+  createInput,
+  initWorkspace,
   type WorkspaceState,
   workspaceReducer,
   workspaceSignature,
@@ -27,6 +30,7 @@ function state(overrides: Partial<WorkspaceState> = {}): WorkspaceState {
     tab: 'input',
     ruleView: 'auto',
     editingId: null,
+    editorCaret: { caret: 0, scrollRatio: 0 },
     result: null,
     lastSignature: null,
     outGroupId: null,
@@ -79,6 +83,38 @@ describe('workspaceReducer', () => {
     ]);
   });
 
+  it('グループを消したら、各ルールの置換先からもその列を消す', () => {
+    const withValues: Rule = {
+      id: 'r1',
+      src: 'a',
+      regex: false,
+      cs: true,
+      order: 'sim',
+      values: { g1: 'X', g2: 'Y' },
+    };
+    const next = workspaceReducer(state({ rules: [withValues] }), {
+      type: 'groups/remove',
+      id: 'g1',
+    });
+    expect(next.rules[0]?.values).toEqual({ g2: 'Y' });
+  });
+
+  it('関係ないルールは同じ参照のまま返す', () => {
+    const untouched: Rule = {
+      id: 'r1',
+      src: 'a',
+      regex: false,
+      cs: true,
+      order: 'sim',
+      values: { g2: 'Y' },
+    };
+    const next = workspaceReducer(state({ rules: [untouched] }), {
+      type: 'groups/remove',
+      id: 'g1',
+    });
+    expect(next.rules[0]).toBe(untouched);
+  });
+
   it('セルの値だけを差し替える', () => {
     const next = workspaceReducer(state({ rules: [rule('r1')] }), {
       type: 'rules/setValue',
@@ -129,6 +165,190 @@ describe('workspaceReducer', () => {
       signature: 'sig',
     });
     expect(next.outGroupId).toBe('g2');
+  });
+});
+
+describe('workspaceReducer（画面の状態）', () => {
+  it('タブを切り替える', () => {
+    expect(workspaceReducer(state(), { type: 'tab/set', tab: 'rules' }).tab).toBe('rules');
+  });
+
+  it('ルールの表示形式を切り替える', () => {
+    expect(workspaceReducer(state(), { type: 'ruleView/set', view: 'card' }).ruleView).toBe('card');
+  });
+
+  it('エディタを開くと対象と表示位置を覚える', () => {
+    const next = workspaceReducer(state({ inputs: [input('i1')] }), {
+      type: 'editor/open',
+      id: 'i1',
+      caret: 12,
+      scrollRatio: 0.5,
+    });
+    expect(next.editingId).toBe('i1');
+    expect(next.editorCaret).toEqual({ caret: 12, scrollRatio: 0.5 });
+  });
+
+  it('エディタを閉じる', () => {
+    const next = workspaceReducer(state({ editingId: 'i1' }), { type: 'editor/close' });
+    expect(next.editingId).toBeNull();
+  });
+
+  it('出力グループを選び直す', () => {
+    expect(workspaceReducer(state(), { type: 'output/selectGroup', id: 'g2' }).outGroupId).toBe(
+      'g2',
+    );
+  });
+
+  it('ファイルごとの表示モードを覚える', () => {
+    const first = workspaceReducer(state(), {
+      type: 'output/setFileView',
+      key: 'g1:0',
+      view: 'plain',
+    });
+    const second = workspaceReducer(first, {
+      type: 'output/setFileView',
+      key: 'g1:1',
+      view: 'highlight',
+    });
+    expect(second.fileViews).toEqual({ 'g1:0': 'plain', 'g1:1': 'highlight' });
+  });
+});
+
+describe('workspaceReducer（入力・グループ・ルールの編集）', () => {
+  it('入力を1件足す', () => {
+    const added = input('new');
+    const next = workspaceReducer(state({ inputs: [input('i1')] }), {
+      type: 'inputs/add',
+      input: added,
+    });
+    expect(next.inputs.map((item) => item.id)).toEqual(['i1', 'new']);
+  });
+
+  it('入力のタイトルと本文を部分更新する', () => {
+    const next = workspaceReducer(state({ inputs: [input('i1', 'old')] }), {
+      type: 'inputs/update',
+      id: 'i1',
+      patch: { text: 'new' },
+    });
+    expect(next.inputs[0]).toEqual({ id: 'i1', title: 'i1.txt', text: 'new' });
+  });
+
+  it('入力を全消しするとエディタも閉じる', () => {
+    const next = workspaceReducer(state({ inputs: [input('i1')], editingId: 'i1' }), {
+      type: 'inputs/clear',
+    });
+    expect(next.inputs).toEqual([]);
+    expect(next.editingId).toBeNull();
+  });
+
+  it('空のファイル取り込みは状態を変えない', () => {
+    const base = state({ inputs: [input('i1', 'text')] });
+    expect(workspaceReducer(base, { type: 'inputs/addMany', inputs: [] })).toBe(base);
+  });
+
+  it('グループを足す・名前を変える', () => {
+    const added = { id: 'g3', name: 'C用' };
+    const withGroup = workspaceReducer(state(), { type: 'groups/add', group: added });
+    expect(withGroup.groups).toHaveLength(3);
+    const renamed = workspaceReducer(withGroup, {
+      type: 'groups/rename',
+      id: 'g3',
+      name: 'C改',
+    });
+    expect(renamed.groups[2]?.name).toBe('C改');
+  });
+
+  it('ルールを足す・オプションを変える・消す', () => {
+    const added = rule('r1');
+    const withRule = workspaceReducer(state(), { type: 'rules/add', rule: added });
+    expect(withRule.rules).toHaveLength(1);
+
+    const updated = workspaceReducer(withRule, {
+      type: 'rules/update',
+      id: 'r1',
+      patch: { regex: true, order: 'seq' },
+    });
+    expect(updated.rules[0]).toMatchObject({ regex: true, order: 'seq', src: 'a' });
+
+    const removed = workspaceReducer(updated, { type: 'rules/remove', id: 'r1' });
+    expect(removed.rules).toEqual([]);
+  });
+});
+
+describe('workspaceReducer（表インポート）', () => {
+  it('開閉と入力内容・モードを保持する', () => {
+    const opened = workspaceReducer(state(), { type: 'import/open' });
+    expect(opened.importOpen).toBe(true);
+
+    const typed = workspaceReducer(opened, { type: 'import/setText', text: 'a,b' });
+    expect(typed.importText).toBe('a,b');
+
+    const mode = workspaceReducer(typed, { type: 'import/setMode', mode: 'append' });
+    expect(mode.importMode).toBe('append');
+
+    const closed = workspaceReducer(mode, { type: 'import/close' });
+    expect(closed.importOpen).toBe(false);
+    // 閉じただけなら入力は残す（開き直したときに消えていると困る）
+    expect(closed.importText).toBe('a,b');
+  });
+
+  it('取り込みを適用するとグループとルールを差し替え、モーダルを閉じて入力を捨てる', () => {
+    const before = state({ importOpen: true, importText: 'a,b', rules: [rule('old')] });
+    const next = workspaceReducer(before, {
+      type: 'import/apply',
+      groups: [{ id: 'gx', name: 'X' }],
+      rules: [rule('new', '新')],
+    });
+    expect(next.groups).toEqual([{ id: 'gx', name: 'X' }]);
+    expect(next.rules.map((item) => item.src)).toEqual(['新']);
+    expect(next.importOpen).toBe(false);
+    expect(next.importText).toBe('');
+    // 取り込みは既存の変換結果を消さない（未反映バッジで気づける）
+    expect(next.result).toBeNull();
+  });
+});
+
+describe('initWorkspace', () => {
+  it('保存が無ければサンプルから始まり、画面の状態は初期値', () => {
+    vi.stubGlobal('localStorage', { getItem: () => null });
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const initial = initWorkspace();
+    expect(initial.groups).toHaveLength(2);
+    expect(initial.rules.filter((item) => item.src)).toHaveLength(2);
+    expect(initial.inputs).toHaveLength(1);
+    expect(initial.tab).toBe('input');
+    expect(initial.ruleView).toBe('auto');
+    expect(initial.result).toBeNull();
+    expect(initial.editingId).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it('保存があればそれを使い、画面の状態だけ初期化する', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () =>
+        JSON.stringify({
+          inputs: [{ id: 'i1', title: 'a.md', text: 'x' }],
+          groups: [{ id: 'g1', name: '保存' }],
+          rules: [],
+          theme: 'dark',
+        }),
+    });
+    const initial = initWorkspace();
+    expect(initial.groups).toEqual([{ id: 'g1', name: '保存' }]);
+    expect(initial.theme).toBe('dark');
+    expect(initial.tab).toBe('input');
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('createGroup / createInput', () => {
+  it('ID を採番して作る', () => {
+    expect(createGroup('A')).toEqual({ id: expect.stringMatching(/^g[a-z0-9]{8}$/), name: 'A' });
+    expect(createInput('a.md')).toEqual({
+      id: expect.stringMatching(/^[a-z0-9]{8}$/),
+      title: 'a.md',
+      text: '',
+    });
   });
 });
 

@@ -21,10 +21,12 @@ import { Toast } from './components/Toast';
 import { useNarrowScreen } from './hooks/useNarrowScreen';
 import { usePersistedWorkspace } from './hooks/usePersistedWorkspace';
 import { useToast } from './hooks/useToast';
-import { copyText, downloadBlob, timestampForFileName } from './lib/browser';
+import { copyText, downloadBlob } from './lib/browser';
+import { timestampForFileName } from './lib/format';
 import { readInputFiles } from './lib/inputFiles';
 import { runConversion } from './lib/replace';
 import { buildRulesFromTable, type Delimiter, parseTable, rulesToDelimited } from './lib/table';
+import { decodeText, withBom } from './lib/text';
 import { createZip } from './lib/zip';
 import {
   createEmptyRule,
@@ -35,8 +37,6 @@ import {
   workspaceSignature,
 } from './state/workspace';
 import type { ResultFile, RuleOrder } from './types';
-import './styles/tokens.css';
-import './styles/app.css';
 
 /** エディタを閉じたとき、元のカードがヘッダーに隠れないよう空ける余白。 */
 const SCROLL_BACK_OFFSET = 130;
@@ -53,8 +53,6 @@ export function App(): JSX.Element {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const tableFileInputRef = useRef<HTMLInputElement>(null);
-  /** エディタを開くときに引き継ぐキャレット位置。 */
-  const caretRef = useRef({ caret: 0, ratio: 0 });
   /** dragenter / dragleave が子要素でも飛ぶので、深さを数えて判定する。 */
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
@@ -65,7 +63,12 @@ export function App(): JSX.Element {
     document.documentElement.dataset.theme = state.theme;
   }, [state.theme]);
 
-  const signature = workspaceSignature(state);
+  // 全入力の本文を JSON 化するので、打鍵のたびに走らせない。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 指紋の材料は入力・グループ・ルールだけ
+  const signature = useMemo(
+    () => workspaceSignature(state),
+    [state.inputs, state.groups, state.rules],
+  );
   const stale = state.result !== null && signature !== state.lastSignature;
   const cards = state.ruleView === 'auto' ? narrow : state.ruleView === 'card';
 
@@ -92,24 +95,43 @@ export function App(): JSX.Element {
     );
   };
 
-  const openEditor = (id: string, caret: number, ratio: number): void => {
-    caretRef.current = { caret, ratio };
-    dispatch({ type: 'editor/open', id });
+  const openEditor = (id: string, caret: number, scrollRatio: number): void => {
+    dispatch({ type: 'editor/open', id, caret, scrollRatio });
   };
 
   const closeEditor = (): void => {
     const id = state.editingId;
     dispatch({ type: 'editor/close' });
-    // スクロールロック解除のあとに、編集していたカードまで戻す。
+    // スクロールロック解除のあとに、編集していたカードまで戻し、起点へフォーカスを返す。
+    // <dialog> 自身も閉じる際にフォーカスを戻すが、挙動がブラウザ依存なので明示しておく。
     requestAnimationFrame(() => {
       const card = document.querySelector(`[data-input-id="${id}"]`);
       if (!card) return;
       const top = card.getBoundingClientRect().top + window.scrollY - SCROLL_BACK_OFFSET;
       window.scrollTo({ top: Math.max(0, top) });
+      card.querySelector<HTMLTextAreaElement>('.input-card__preview')?.focus({
+        preventScroll: true,
+      });
     });
   };
 
   // ---- 変換・書き出し ------------------------------------------------------
+
+  /**
+   * イベントハンドラ内の例外を受け止める。
+   *
+   * React のエラー境界が拾うのは描画中とライフサイクル中の例外だけで、onClick から
+   * 同期で呼ぶ変換や書き出しで落ちても復旧画面は出ず、画面が固まったままになる。
+   * ここで受けてトーストに倒す。
+   */
+  const guard = (label: string, action: () => void): void => {
+    try {
+      action();
+    } catch (error) {
+      console.error(`${label}に失敗しました`, error);
+      flash(`${label}に失敗しました`);
+    }
+  };
 
   const run = (): void => {
     if (state.inputs.length === 0) {
@@ -117,42 +139,52 @@ export function App(): JSX.Element {
       dispatch({ type: 'tab/set', tab: 'input' });
       return;
     }
-    const result = runConversion(state);
-    dispatch({ type: 'result/set', result, signature });
+    guard('変換', () => {
+      const result = runConversion(state);
+      dispatch({ type: 'result/set', result, signature });
+    });
   };
 
   const downloadZip = (): void => {
     const result = state.result;
     if (!result) return;
-    const entries = result.groups.flatMap((group) =>
-      group.files.map((file) => ({ name: `${group.dir}/${file.title}`, text: file.text })),
-    );
-    downloadBlob(createZip(entries, result.at), `converted-${timestampForFileName(result.at)}.zip`);
-    flash(`${entries.length}ファイルをZIPで保存しました`);
+    guard('ZIPの保存', () => {
+      const entries = result.groups.flatMap((group) =>
+        group.files.map((file) => ({ name: `${group.dir}/${file.title}`, text: file.text })),
+      );
+      downloadBlob(
+        createZip(entries, result.at),
+        `converted-${timestampForFileName(result.at)}.zip`,
+      );
+      flash(`${entries.length}ファイルをZIPで保存しました`);
+    });
   };
 
   const downloadFile = (file: ResultFile): void => {
-    downloadBlob(
-      new Blob([file.text], { type: 'text/plain;charset=utf-8' }),
-      file.title.split('/').pop() ?? file.title,
+    guard('ファイルの保存', () =>
+      downloadBlob(
+        new Blob([file.text], { type: 'text/plain;charset=utf-8' }),
+        file.title.split('/').pop() ?? file.title,
+      ),
     );
   };
 
   const copyFile = async (file: ResultFile): Promise<void> => {
-    await copyText(file.text);
-    flash('コピーしました');
+    const copied = await copyText(file.text);
+    flash(copied ? 'コピーしました' : 'コピーできませんでした');
   };
 
   const exportRules = (delimiter: Delimiter): void => {
-    const text = rulesToDelimited(state.groups, state.rules, delimiter);
-    const csv = delimiter === ',';
-    downloadBlob(
-      // Excel が UTF-8 と判定できるよう BOM を付ける。
-      new Blob([`﻿${text}`], {
-        type: csv ? 'text/csv' : 'text/tab-separated-values',
-      }),
-      csv ? 'rules.csv' : 'rules.tsv',
-    );
+    guard('ルール表の書き出し', () => {
+      const text = rulesToDelimited(state.groups, state.rules, delimiter);
+      const csv = delimiter === ',';
+      downloadBlob(
+        new Blob([withBom(text)], {
+          type: csv ? 'text/csv' : 'text/tab-separated-values',
+        }),
+        csv ? 'rules.csv' : 'rules.tsv',
+      );
+    });
   };
 
   // ---- 表インポート --------------------------------------------------------
@@ -163,22 +195,26 @@ export function App(): JSX.Element {
   );
 
   const applyImport = (): void => {
-    const built = buildRulesFromTable({
-      rows: parsedImport.rows,
-      mode: state.importMode,
-      currentGroups: state.groups,
-      currentRules: state.rules,
+    guard('表の読み込み', () => {
+      const built = buildRulesFromTable({
+        rows: parsedImport.rows,
+        mode: state.importMode,
+        currentGroups: state.groups,
+        currentRules: state.rules,
+      });
+      if (!built) {
+        flash('見出し行＋1行以上の表が必要です');
+        return;
+      }
+      dispatch({ type: 'import/apply', groups: built.groups, rules: built.rules });
+      flash(`${built.imported}行を読み込みました`);
     });
-    if (!built) {
-      flash('見出し行＋1行以上の表が必要です');
-      return;
-    }
-    dispatch({ type: 'import/apply', groups: built.groups, rules: built.rules });
-    flash(`${built.imported}行を読み込みました`);
   };
 
   // ---- 子コンポーネントへ渡すハンドラ --------------------------------------
 
+  // 受け取り側は memo 化していないので、参照を固定しても再描画は減らない。
+  // 素直に毎回作る（依存配列の取りこぼしで古い値を掴む事故の方が高くつく）。
   const ruleHandlers: RuleHandlers = {
     onChangeSrc: (id, src) => dispatch({ type: 'rules/update', id, patch: { src } }),
     onChangeValue: (ruleId, groupId, value) =>
@@ -220,6 +256,20 @@ export function App(): JSX.Element {
     if (dragDepth.current === 0) setDragging(false);
   };
 
+  // ウィンドウの外でドロップされると dragleave が対で飛ばず、案内が出たままになる。
+  useEffect(() => {
+    const reset = (): void => {
+      dragDepth.current = 0;
+      setDragging(false);
+    };
+    window.addEventListener('dragend', reset);
+    window.addEventListener('drop', reset);
+    return () => {
+      window.removeEventListener('dragend', reset);
+      window.removeEventListener('drop', reset);
+    };
+  }, []);
+
   const onDrop = (event: DragEvent<HTMLDivElement>): void => {
     if (!event.dataTransfer.files || event.dataTransfer.files.length === 0) return;
     event.preventDefault();
@@ -237,7 +287,7 @@ export function App(): JSX.Element {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    dispatch({ type: 'import/setText', text: (await file.text()).replace(/^﻿/, '') });
+    dispatch({ type: 'import/setText', text: decodeText(await file.arrayBuffer()) });
   };
 
   const editingIndex = state.inputs.findIndex((input) => input.id === state.editingId);
@@ -325,8 +375,8 @@ export function App(): JSX.Element {
           input={editing}
           index={editingIndex}
           total={state.inputs.length}
-          initialCaret={caretRef.current.caret}
-          initialScrollRatio={caretRef.current.ratio}
+          initialCaret={state.editorCaret.caret}
+          initialScrollRatio={state.editorCaret.scrollRatio}
           onChangeTitle={(title) =>
             dispatch({ type: 'inputs/update', id: editing.id, patch: { title } })
           }

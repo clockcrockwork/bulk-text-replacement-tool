@@ -21,6 +21,70 @@ interface BatchItem {
 /** 同時適用（`sim`）でまとめられた1回ぶんのパス。 */
 type Batch = BatchItem[];
 
+/** 置換で生成された範囲（終端は含まない）。 */
+interface HitRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * 置換途中のテキストと、そこまでに置換で生成された範囲。
+ *
+ * 以前は断片（Segment）の配列を持ち回っていたが、その形だと各パスが断片ごとに
+ * 独立して走査されるため、「置換済みの文字列」と「その周囲」にまたがる一致を
+ * 取りこぼしていた（順次適用が説明どおり動かない原因）。テキストは常に1本の
+ * 文字列として保持し、ハイライト位置だけを範囲で覚えておく。
+ */
+export interface MarkedText {
+  text: string;
+  /** 開始位置の昇順・重なりなし・隣接は結合済み。 */
+  ranges: HitRange[];
+}
+
+export function createMarkedText(text: string): MarkedText {
+  return { text, ranges: [] };
+}
+
+/** 範囲列に1件足す。直前の範囲と隣接・重複していればまとめる。 */
+function pushRange(ranges: HitRange[], start: number, end: number): void {
+  if (end <= start) return;
+  const last = ranges[ranges.length - 1];
+  if (last && last.end >= start) {
+    last.end = Math.max(last.end, end);
+    return;
+  }
+  ranges.push({ start, end });
+}
+
+/**
+ * 元テキストの区間を新テキストへ複写するときに、掛かっていたハイライトを
+ * 新しい座標へ移し替える関数を作る。
+ *
+ * 複写する区間は左から右へ単調に進むので、読み取り位置を保持して前回の続きから見る。
+ * 毎回先頭から走査すると「候補数 × 範囲数」の総当たりになり、置換の多い原稿で
+ * 二乗に効く（32,000 置換で約1.9秒かかっていた）。
+ */
+function createRangeCarrier(
+  source: readonly HitRange[],
+): (from: number, to: number, newStart: number, out: HitRange[]) => void {
+  let cursor = 0;
+  return (from, to, newStart, out) => {
+    // from より手前で終わる範囲は、これ以降のどの区間にも掛からないので読み飛ばす。
+    while (cursor < source.length) {
+      const range = source[cursor];
+      if (!range || range.end > from) break;
+      cursor += 1;
+    }
+    for (let i = cursor; i < source.length; i++) {
+      const range = source[i];
+      if (!range || range.start >= to) break; // 昇順なのでこれ以降は掛からない
+      const start = Math.max(range.start, from);
+      const end = Math.min(range.end, to);
+      pushRange(out, newStart + (start - from), newStart + (end - from));
+    }
+  };
+}
+
 /**
  * ルール列を適用パスに畳み込む。
  * 連続する `sim` 行は1つのパスにまとめ、`seq` 行は単独のパスとして切り出す。
@@ -67,90 +131,100 @@ interface Candidate {
   order: number;
 }
 
-/**
- * 断片列に1パスぶんの置換を適用する。
- *
- * 同じパス内のルールは「同時」に走る: 元テキストを一度だけ走査して候補を集め、
- * 開始位置が早い順 → 一致が長い順 → ルール定義順で採用する。
- * 置換で生まれたテキストは同じパス内では再走査しないので、ルールが連鎖することはない。
- *
- * @param hits ルールIDごとの置換件数。呼び出し側のカウンタを破壊的に更新する。
- * @returns 新しい断片列と、このパスでの置換件数。
- */
-export function applyBatch(
-  segments: readonly Segment[],
-  batch: Batch,
-  hits: Record<string, number>,
-): { segments: Segment[]; hits: number } {
-  const out: Segment[] = [];
-  let total = 0;
-
-  for (const segment of segments) {
-    const text = segment.text;
-    const candidates: Candidate[] = [];
-
-    batch.forEach((item, order) => {
-      item.re.lastIndex = 0;
-      let match = item.re.exec(text);
-      while (match !== null) {
-        if (match[0].length === 0) {
-          // 空一致は無限ループになるので1文字進めて読み飛ばす。
-          item.re.lastIndex += 1;
-        } else {
-          candidates.push({
-            start: match.index,
-            end: match.index + match[0].length,
-            item,
-            match,
-            order,
-          });
-        }
-        match = item.re.exec(text);
+/** バッチ内の全ルールで、テキスト全体から一致候補を集める。 */
+function collectCandidates(text: string, batch: Batch): Candidate[] {
+  const candidates: Candidate[] = [];
+  batch.forEach((item, order) => {
+    item.re.lastIndex = 0;
+    let match = item.re.exec(text);
+    while (match !== null) {
+      if (match[0].length === 0) {
+        // 空一致は無限ループになるので1文字進めて読み飛ばす。
+        item.re.lastIndex += 1;
+      } else {
+        candidates.push({
+          start: match.index,
+          end: match.index + match[0].length,
+          item,
+          match,
+          order,
+        });
       }
-    });
-
-    if (candidates.length === 0) {
-      out.push(segment);
-      continue;
+      match = item.re.exec(text);
     }
-
-    candidates.sort(
-      (a, b) => a.start - b.start || b.end - b.start - (a.end - a.start) || a.order - b.order,
-    );
-
-    let pos = 0;
-    for (const candidate of candidates) {
-      if (candidate.start < pos) continue; // 採用済みの範囲と重なる候補は捨てる。
-      if (candidate.start > pos) {
-        out.push({ text: text.slice(pos, candidate.start), hit: segment.hit });
-      }
-      const replaced = candidate.item.isRegex
-        ? expandReplacement(candidate.item.replacement, candidate.match)
-        : candidate.item.replacement;
-      if (replaced) out.push({ text: replaced, hit: true });
-      hits[candidate.item.ruleId] = (hits[candidate.item.ruleId] ?? 0) + 1;
-      total += 1;
-      pos = candidate.end;
-    }
-    if (pos < text.length) out.push({ text: text.slice(pos), hit: segment.hit });
-  }
-
-  return { segments: out, hits: total };
+  });
+  // 開始が早い順 → 一致が長い順 → ルール定義順
+  candidates.sort(
+    (a, b) => a.start - b.start || b.end - b.start - (a.end - a.start) || a.order - b.order,
+  );
+  return candidates;
 }
 
-/** 隣り合う同種（ヒット／非ヒット）の断片を1つにまとめ、空断片を落とす。 */
-export function mergeSegments(segments: readonly Segment[]): Segment[] {
-  const out: Segment[] = [];
-  for (const segment of segments) {
-    if (!segment.text) continue;
-    const last = out[out.length - 1];
-    if (last && last.hit === segment.hit) {
-      last.text += segment.text;
-    } else {
-      out.push({ ...segment });
+/**
+ * テキスト全体に1パスぶんの置換を適用する。
+ *
+ * 同じパス内のルールは「同時」に走る: このパスの開始時点のテキストを一度だけ走査して
+ * 候補を集め、開始位置が早い順 → 一致が長い順 → ルール定義順で採用する。
+ * 置換で生まれたテキストを同じパス内で再走査することはないので、ルールは連鎖しない。
+ *
+ * パスをまたぐ場合（順次適用や、順次を挟んだ次の同時パス）は、その時点の
+ * テキスト全体が対象になる。そのため前のパスの置換結果と周囲の文字列にまたがる
+ * 一致も拾える。
+ *
+ * @param hits ルールIDごとの置換件数。呼び出し側のカウンタを破壊的に更新する。
+ * @returns 新しいテキストと、このパスでの置換件数。
+ */
+export function applyBatch(
+  marked: MarkedText,
+  batch: Batch,
+  hits: Record<string, number>,
+): { marked: MarkedText; hits: number } {
+  const { text, ranges } = marked;
+  const candidates = collectCandidates(text, batch);
+  if (candidates.length === 0) return { marked, hits: 0 };
+
+  let out = '';
+  const outRanges: HitRange[] = [];
+  const carry = createRangeCarrier(ranges);
+  let pos = 0;
+  let total = 0;
+
+  for (const candidate of candidates) {
+    if (candidate.start < pos) continue; // 採用済みの範囲と重なる候補は捨てる
+    if (candidate.start > pos) {
+      carry(pos, candidate.start, out.length, outRanges);
+      out += text.slice(pos, candidate.start);
     }
+    const replaced = candidate.item.isRegex
+      ? expandReplacement(candidate.item.replacement, candidate.match)
+      : candidate.item.replacement;
+    if (replaced) {
+      pushRange(outRanges, out.length, out.length + replaced.length);
+      out += replaced;
+    }
+    hits[candidate.item.ruleId] = (hits[candidate.item.ruleId] ?? 0) + 1;
+    total += 1;
+    pos = candidate.end;
   }
-  return out;
+  if (pos < text.length) {
+    carry(pos, text.length, out.length, outRanges);
+    out += text.slice(pos);
+  }
+
+  return { marked: { text: out, ranges: outRanges }, hits: total };
+}
+
+/** ハイライト表示用の断片列に変換する。連結すると元のテキストと一致する。 */
+export function toSegments({ text, ranges }: MarkedText): Segment[] {
+  const segments: Segment[] = [];
+  let pos = 0;
+  for (const range of ranges) {
+    if (range.start > pos) segments.push({ text: text.slice(pos, range.start), hit: false });
+    segments.push({ text: text.slice(range.start, range.end), hit: true });
+    pos = range.end;
+  }
+  if (pos < text.length) segments.push({ text: text.slice(pos), hit: false });
+  return segments;
 }
 
 export interface ConversionInput {
@@ -181,18 +255,17 @@ export function runConversion({ inputs, groups, rules }: ConversionInput): Conve
     const dir = dirNames[groupIndex] ?? `group-${groupIndex + 1}`;
 
     const files: ResultFile[] = inputs.map((input, inputIndex) => {
-      let segments: Segment[] = [{ text: input.text, hit: false }];
+      let marked = createMarkedText(input.text);
       let fileHits = 0;
       for (const batch of batches) {
-        const applied = applyBatch(segments, batch, hits);
-        segments = applied.segments;
+        const applied = applyBatch(marked, batch, hits);
+        marked = applied.marked;
         fileHits += applied.hits;
       }
-      segments = mergeSegments(segments);
       return {
         title: fileNames[inputIndex] ?? `text-${inputIndex + 1}.txt`,
-        text: segments.map((segment) => segment.text).join(''),
-        segments,
+        text: marked.text,
+        segments: toSegments(marked),
         hits: fileHits,
       };
     });

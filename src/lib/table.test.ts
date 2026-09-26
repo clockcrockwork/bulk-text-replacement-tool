@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Group, Rule } from '../types';
-import { buildRulesFromTable, parseDelimited, parseTable, rulesToDelimited } from './table';
+import {
+  buildRulesFromTable,
+  type Delimiter,
+  parseDelimited,
+  parseTable,
+  rulesToDelimited,
+} from './table';
+import { BOM } from './text';
 
 describe('parseDelimited', () => {
   it('クォートの中の区切りと改行を保つ', () => {
@@ -46,11 +53,36 @@ describe('parseTable', () => {
   });
 
   it('それ以外は CSV とみなし、BOM と CRLF を吸収する', () => {
-    const parsed = parseTable('﻿a,b\r\n1,2\r\n');
+    const parsed = parseTable(`${BOM}a,b\r\n1,2\r\n`);
     expect(parsed.kind).toBe('csv');
     expect(parsed.rows).toEqual([
       ['a', 'b'],
       ['1', '2'],
+    ]);
+  });
+
+  it('クォートの中のタブでは TSV と誤判定しない', () => {
+    // 以前はテキスト全体に \t があるかで判定していたため、見出し行ごと1セルに潰れていた。
+    const parsed = parseTable('元テキスト,A用\n"foo\tbar",X');
+    expect(parsed.kind).toBe('csv');
+    expect(parsed.rows).toEqual([
+      ['元テキスト', 'A用'],
+      ['foo\tbar', 'X'],
+    ]);
+  });
+
+  it('クォートの外にタブがあれば TSV とみなす', () => {
+    expect(parseTable('a\tb\n1\t2').kind).toBe('tsv');
+  });
+
+  it('全角空白はセルの値として残す（字下げの指定に使う）', () => {
+    expect(parseTable('| 元テキスト | A用 |\n| --- | --- |\n| INDENT | \u3000 |').rows).toEqual([
+      ['元テキスト', 'A用'],
+      ['INDENT', '\u3000'],
+    ]);
+    expect(parseTable('元テキスト,A用\nINDENT,\u3000').rows).toEqual([
+      ['元テキスト', 'A用'],
+      ['INDENT', '\u3000'],
     ]);
   });
 
@@ -156,9 +188,95 @@ describe('buildRulesFromTable', () => {
     expect(built?.rules.map((rule) => rule.src)).toEqual(['a']);
   });
 
+  it('同名の列見出しは別グループに分け、値を取りこぼさない', () => {
+    const built = buildRulesFromTable({
+      ...base,
+      rows: [
+        ['元テキスト', 'A用', 'A用'],
+        ['アリス', '左', '右'],
+      ],
+    });
+    expect(built?.groups.map((group) => group.name)).toEqual(['A用', 'A用 (2)']);
+    const [first, second] = built?.groups ?? [];
+    expect(built?.rules[0]?.values).toEqual({
+      [String(first?.id)]: '左',
+      [String(second?.id)]: '右',
+    });
+  });
+
   it('グループ列が1つも無ければ既定のグループを作る', () => {
     const built = buildRulesFromTable({ ...base, rows: [['元テキスト'], ['a']] });
     expect(built?.groups.map((group) => group.name)).toEqual(['グループ1']);
+  });
+});
+
+describe('書き出し → 読み込みの往復', () => {
+  const roundTrip = (groups: Group[], rules: Rule[], delimiter: Delimiter = ',') => {
+    const text = rulesToDelimited(groups, rules, delimiter);
+    const parsed = parseTable(text);
+    return buildRulesFromTable({
+      rows: parsed.rows,
+      mode: 'replace',
+      currentGroups: [],
+      currentRules: [],
+    });
+  };
+
+  it('ふつうのルール表は往復しても同じ意味になる', () => {
+    const groups: Group[] = [
+      { id: 'g1', name: 'A用' },
+      { id: 'g2', name: 'B用' },
+    ];
+    const rules: Rule[] = [
+      {
+        id: 'r1',
+        src: 'アリス',
+        regex: false,
+        cs: true,
+        order: 'sim',
+        values: { g1: 'あー', g2: 'びー' },
+      },
+      { id: 'r2', src: 'a+', regex: true, cs: false, order: 'seq', values: { g1: 'X', g2: 'Y' } },
+    ];
+    const back = roundTrip(groups, rules);
+    expect(back?.groups.map((g) => g.name)).toEqual(['A用', 'B用']);
+    const [gA, gB] = back?.groups ?? [];
+    expect(back?.rules[0]).toMatchObject({ src: 'アリス', regex: false, cs: true, order: 'sim' });
+    expect(back?.rules[0]?.values).toEqual({ [String(gA?.id)]: 'あー', [String(gB?.id)]: 'びー' });
+    expect(back?.rules[1]).toMatchObject({ src: 'a+', regex: true, cs: false, order: 'seq' });
+  });
+
+  // 予約見出しと同じ名前のグループは UI で普通に作れる。以前はここで置換先が失われていた。
+  it.each(['正規表現', '大小区別', '適用順'])(
+    'グループ名が予約見出し「%s」でも往復できる',
+    (name) => {
+      const groups: Group[] = [{ id: 'g1', name }];
+      const rules: Rule[] = [
+        { id: 'r1', src: 'A', regex: false, cs: true, order: 'sim', values: { g1: 'X' } },
+      ];
+      const back = roundTrip(groups, rules);
+      expect(back?.groups.map((g) => g.name)).toEqual([name]);
+      expect(Object.values(back?.rules[0]?.values ?? {})).toEqual(['X']);
+      expect(back?.rules[0]).toMatchObject({ regex: false, cs: true, order: 'sim' });
+    },
+  );
+
+  it('全角空白だけの置換先も往復で失われない', () => {
+    const groups: Group[] = [{ id: 'g1', name: 'A用' }];
+    const rules: Rule[] = [
+      { id: 'r1', src: 'INDENT', regex: false, cs: true, order: 'sim', values: { g1: '\u3000' } },
+    ];
+    const back = roundTrip(groups, rules);
+    expect(Object.values(back?.rules[0]?.values ?? {})).toEqual(['\u3000']);
+  });
+
+  it('タブを含む置換元は CSV なら往復できる', () => {
+    const groups: Group[] = [{ id: 'g1', name: 'A用' }];
+    const rules: Rule[] = [
+      { id: 'r1', src: 'foo\tbar', regex: false, cs: true, order: 'sim', values: { g1: 'X' } },
+    ];
+    const back = roundTrip(groups, rules, ',');
+    expect(back?.rules[0]?.src).toBe('foo\tbar');
   });
 });
 

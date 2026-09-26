@@ -26,6 +26,11 @@ export interface WorkspaceState {
   ruleView: RuleView;
   /** 編集中の入力テキスト ID。null なら全画面エディタは閉じている。 */
   editingId: string | null;
+  /**
+   * エディタを開くときにプレビューから引き継ぐ表示位置。
+   * ref をレンダー中に読むのは React の原則に反するので、状態として持つ。
+   */
+  editorCaret: { caret: number; scrollRatio: number };
   result: ConversionResult | null;
   /** `result` を作ったときの入力の指紋。現在値と違えば「未反映の変更」バッジを出す。 */
   lastSignature: string | null;
@@ -54,7 +59,7 @@ export type WorkspaceAction =
   | { type: 'rules/setValue'; ruleId: string; groupId: string; value: string }
   | { type: 'rules/move'; index: number; delta: number }
   | { type: 'rules/remove'; id: string }
-  | { type: 'editor/open'; id: string }
+  | { type: 'editor/open'; id: string; caret: number; scrollRatio: number }
   | { type: 'editor/close' }
   | { type: 'import/open' }
   | { type: 'import/close' }
@@ -124,6 +129,7 @@ export function initWorkspace(): WorkspaceState {
     tab: 'input',
     ruleView: 'auto',
     editingId: null,
+    editorCaret: { caret: 0, scrollRatio: 0 },
     result: null,
     lastSignature: null,
     outGroupId: null,
@@ -193,10 +199,22 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
     case 'groups/rename':
       return { ...state, groups: patchById(state.groups, action.id, { name: action.name }) };
 
-    case 'groups/remove':
+    case 'groups/remove': {
       // 列が0本になると置換先を入れる場所が無くなるので、最後の1本は消させない。
       if (state.groups.length <= 1) return state;
-      return { ...state, groups: state.groups.filter((group) => group.id !== action.id) };
+      return {
+        ...state,
+        groups: state.groups.filter((group) => group.id !== action.id),
+        // 消したグループの置換先を rule.values に残さない。残すと localStorage に
+        // 積もり続け、workspaceSignature（未反映バッジの判定）にも混ざる。
+        rules: state.rules.map((rule) => {
+          if (!(action.id in rule.values)) return rule;
+          const values = { ...rule.values };
+          delete values[action.id];
+          return { ...rule, values };
+        }),
+      };
+    }
 
     case 'rules/add':
       return { ...state, rules: [...state.rules, action.rule] };
@@ -230,7 +248,11 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
       return { ...state, rules: state.rules.filter((rule) => rule.id !== action.id) };
 
     case 'editor/open':
-      return { ...state, editingId: action.id };
+      return {
+        ...state,
+        editingId: action.id,
+        editorCaret: { caret: action.caret, scrollRatio: action.scrollRatio },
+      };
 
     case 'editor/close':
       return { ...state, editingId: null };

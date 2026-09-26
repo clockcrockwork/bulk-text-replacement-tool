@@ -13,13 +13,27 @@ export type CompiledRule =
 
 /**
  * ルールの置換元を `RegExp` に変換する。
+ *
+ * `u` フラグを付けてサロゲートペアを1文字として扱う。付けないと `.` が `𠮷` を分断し
+ * （`'𠮷'.replace(/./g, 'X')` は `"XX"` になる）、`\p{Script=Han}` のような Unicode
+ * プロパティも使えない。日本語の原稿を扱う以上ここは外せない。
+ *
+ * ただし `u` は `[\-]` や裸の `{` のような従来は通っていた書き方を不正にするため、
+ * `u` 付きで作れないパターンは `u` 無しで作り直す。既に動いているルールを壊さないことを優先する。
+ *
  * 常に `g` フラグ付きなので、利用側は `lastIndex` のリセットに責任を持つこと。
  */
 export function compileRule(rule: Pick<Rule, 'src' | 'regex' | 'cs'>): CompiledRule {
   if (!rule.src) return { kind: 'empty' };
   const source = rule.regex ? rule.src : escapeRegExp(rule.src);
+  const base = rule.cs ? 'g' : 'gi';
   try {
-    return { kind: 'ok', re: new RegExp(source, rule.cs ? 'g' : 'gi') };
+    return { kind: 'ok', re: new RegExp(source, `${base}u`) };
+  } catch {
+    // u フラグでのみ不正になる書き方（`\-` や裸の `{` など）は、従来どおり u 無しで受け付ける。
+  }
+  try {
+    return { kind: 'ok', re: new RegExp(source, base) };
   } catch (error) {
     const raw = error instanceof Error ? error.message : String(error);
     return {
@@ -31,7 +45,9 @@ export function compileRule(rule: Pick<Rule, 'src' | 'regex' | 'cs'>): CompiledR
 
 /**
  * 置換先文字列の `$&` `$1` `$<name>` `$$` を展開する。
- * `String.prototype.replace` と違い、存在しない番号の参照はそのまま残す。
+ * `String.prototype.replace` と違い、存在しない番号の参照はそのまま残す
+ * （`$9` と書いて 9 番が無いとき、消えるより見えている方が直しやすい）。
+ * `$0` は `String.prototype.replace` と同じくグループ参照ではなくそのままの文字列。
  */
 export function expandReplacement(replacement: string, match: RegExpExecArray): string {
   return replacement.replace(/\$(\$|&|\d{1,2}|<[^>]+>)/g, (all, token: string) => {
@@ -39,6 +55,8 @@ export function expandReplacement(replacement: string, match: RegExpExecArray): 
     if (token === '&') return match[0];
     if (token.startsWith('<')) return match.groups?.[token.slice(1, -1)] ?? '';
     const index = Number(token);
+    // $0 はキャプチャ番号ではない（全体一致は $&）。native と同じくそのまま残す。
+    if (index === 0) return all;
     return index < match.length ? (match[index] ?? '') : all;
   });
 }

@@ -1,5 +1,6 @@
 import type { Group, ImportMode, Rule } from '../types';
 import { createGroupId, createId } from './id';
+import { stripBom, trimAscii } from './text';
 
 export type Delimiter = ',' | '\t';
 export type TableKind = 'markdown' | 'csv' | 'tsv';
@@ -71,11 +72,33 @@ export function parseDelimited(text: string, delimiter: Delimiter): string[][] {
 }
 
 /**
+ * 先頭行を見て区切り文字を決める。
+ *
+ * テキスト全体に `\t` が含まれるかで判定すると、CSV のクォート内にタブが1文字あるだけで
+ * TSV と誤判定し、見出し行ごと1セルに潰れる。引用符の外側にあるタブだけを見る。
+ */
+function detectDelimiter(text: string): Delimiter {
+  let quoted = false;
+  for (const ch of text) {
+    if (ch === '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if (quoted) continue;
+    if (ch === '\t') return '\t';
+    if (ch === '\n') break; // 先頭行だけで決める
+  }
+  return ',';
+}
+
+/**
  * 貼り付けられたテキストから表を推測して解析する。
- * 全行が `|` 始まりなら Markdown 表、タブを含めば TSV、それ以外は CSV とみなす。
+ * 全行が `|` 始まりなら Markdown 表、先頭行にクォート外のタブがあれば TSV、
+ * それ以外は CSV とみなす。
  */
 export function parseTable(text: string): ParsedTable {
-  const normalized = (text || '').replace(/^﻿/, '').replace(/\r\n?/g, '\n').trim();
+  // trim ではなく trimAscii。全角空白は字下げの指定として意味を持つので落とさない。
+  const normalized = trimAscii(stripBom(text || '').replace(/\r\n?/g, '\n'));
   if (!normalized) return { rows: [], kind: null };
 
   const lines = normalized.split('\n').filter((line) => line.trim());
@@ -84,14 +107,14 @@ export function parseTable(text: string): ParsedTable {
       .map((line) => {
         let body = line.trim().slice(1);
         if (body.endsWith('|') && !body.endsWith('\\|')) body = body.slice(0, -1);
-        return body.split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, '|'));
+        return body.split(/(?<!\\)\|/).map((cell) => trimAscii(cell).replace(/\\\|/g, '|'));
       })
       // Markdown 表の区切り行（`| --- | :--: |`）は読み飛ばす。
       .filter((cells) => !cells.every((cell) => cell === '' || /^:?-+:?$/.test(cell)));
     return { rows, kind: 'markdown' };
   }
 
-  const delimiter: Delimiter = normalized.includes('\t') ? '\t' : ',';
+  const delimiter = detectDelimiter(normalized);
   return {
     rows: parseDelimited(normalized, delimiter),
     kind: delimiter === '\t' ? 'tsv' : 'csv',
@@ -100,7 +123,7 @@ export function parseTable(text: string): ParsedTable {
 
 /** 真偽値セルの表記ゆれを吸収する。 */
 function isTruthyCell(value: string | undefined): boolean {
-  return /^(1|true|yes|y|on|○|◯|✓|はい)$/i.test((value ?? '').trim());
+  return /^(1|true|yes|y|on|○|◯|✓|はい)$/i.test(trimAscii(value ?? ''));
 }
 
 export interface ImportTableInput {
@@ -132,19 +155,31 @@ export function buildRulesFromTable({
   const header = rows[0] ?? [];
   const body = rows.slice(1);
 
+  // グループ名に予約見出しと同じ名前（例: 「正規表現」）を付けられるため、
+  // indexOf だとグループ列をオプション列と取り違え、置換先を失う。
+  // 書き出し側は必ずオプション列を末尾に置くので、後ろ側の一致を採る。
   const optionIndex = {
-    regex: header.indexOf(OPTION_HEADERS.regex),
-    cs: header.indexOf(OPTION_HEADERS.cs),
-    order: header.indexOf(OPTION_HEADERS.order),
+    regex: header.lastIndexOf(OPTION_HEADERS.regex),
+    cs: header.lastIndexOf(OPTION_HEADERS.cs),
+    order: header.lastIndexOf(OPTION_HEADERS.order),
   };
   const optionColumns = Object.values(optionIndex).filter((index) => index >= 0);
 
   const groups: Group[] = mode === 'replace' ? [] : [...currentGroups];
+  // 同じ見出しが複数列あると、同じグループに割り当てられて後の列が前の列の値を
+  // 静かに上書きしてしまう。この取り込みの中で既に使った名前には連番を振る。
+  const usedNames = new Set<string>();
   const groupColumns = header
     .map((title, index) => ({ title, index }))
     .filter(({ index }) => index > 0 && !optionColumns.includes(index))
     .map(({ title, index }) => {
-      const name = title || `グループ${groups.length + 1}`;
+      let name = title || `グループ${groups.length + 1}`;
+      if (usedNames.has(name)) {
+        let suffix = 2;
+        while (usedNames.has(`${name} (${suffix})`)) suffix += 1;
+        name = `${name} (${suffix})`;
+      }
+      usedNames.add(name);
       let group = groups.find((candidate) => candidate.name === name);
       if (!group) {
         group = { id: createGroupId(), name };

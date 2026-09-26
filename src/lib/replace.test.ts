@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Group, InputText, Rule, RuleOrder } from '../types';
-import { mergeSegments, runConversion } from './replace';
+import { createMarkedText, runConversion, toSegments } from './replace';
 
 const GROUP_A: Group = { id: 'ga', name: 'A用' };
 
@@ -77,6 +77,61 @@ describe('runConversion', () => {
     expect(file.text).toBe('c');
   });
 
+  it('順次適用は置換結果と周囲の文字列にまたがる一致も拾う', () => {
+    // 以前は「あー」(置換済み) と「ちゃん」(未置換) が別断片で走査され、
+    // またがる一致を取りこぼしていた。
+    const seq: Partial<Pick<Rule, 'order'>> = { order: 'seq' as RuleOrder };
+    const { file } = convertOne('アリスちゃん', [
+      rule('r1', 'アリス', { ga: 'あー' }),
+      rule('r2', 'あーちゃん', { ga: 'X' }, seq),
+    ]);
+    expect(file.text).toBe('X');
+  });
+
+  it('順次適用は置換結果の内側の一致も拾う', () => {
+    const seq: Partial<Pick<Rule, 'order'>> = { order: 'seq' as RuleOrder };
+    const { file } = convertOne('a', [
+      rule('r1', 'a', { ga: 'xyz' }),
+      rule('r2', 'y', { ga: 'Y' }, seq),
+    ]);
+    expect(file.text).toBe('xYz');
+  });
+
+  it('順次を挟んだあとの同時パスも、テキスト全体を対象にする', () => {
+    const seq: Partial<Pick<Rule, 'order'>> = { order: 'seq' as RuleOrder };
+    const { file } = convertOne('AB', [
+      rule('r1', 'A', { ga: 'a' }),
+      rule('r2', 'B', { ga: 'b' }, seq),
+      rule('r3', 'ab', { ga: 'Z' }),
+    ]);
+    expect(file.text).toBe('Z');
+  });
+
+  it('前のパスのハイライトは、後のパスで置換されなければ残る', () => {
+    const seq: Partial<Pick<Rule, 'order'>> = { order: 'seq' as RuleOrder };
+    const { file } = convertOne('AB', [
+      rule('r1', 'A', { ga: 'a' }),
+      rule('r2', 'B', { ga: 'b' }, seq),
+    ]);
+    expect(file.text).toBe('ab');
+    // 2回とも置換しているので全体がハイライト対象（隣接するので1断片に結合される）
+    expect(file.segments).toEqual([{ text: 'ab', hit: true }]);
+  });
+
+  it('後のパスで置換された部分は、前のハイライトを引き継がない', () => {
+    const seq: Partial<Pick<Rule, 'order'>> = { order: 'seq' as RuleOrder };
+    const { file } = convertOne('xAy', [
+      rule('r1', 'A', { ga: 'BB' }),
+      rule('r2', 'B', { ga: '' }, seq), // 空は適用されない
+    ]);
+    expect(file.text).toBe('xBBy');
+    expect(file.segments).toEqual([
+      { text: 'x', hit: false },
+      { text: 'BB', hit: true },
+      { text: 'y', hit: false },
+    ]);
+  });
+
   it('正規表現の後方参照を展開する', () => {
     const { file } = convertOne('2026-09-26', [
       rule('r1', '(\\d{4})-(\\d{2})', { ga: '$2/$1' }, { regex: true }),
@@ -138,18 +193,53 @@ describe('runConversion', () => {
   });
 });
 
-describe('mergeSegments', () => {
-  it('同種の隣接断片をまとめ、空断片を落とす', () => {
-    expect(
-      mergeSegments([
-        { text: 'a', hit: false },
-        { text: '', hit: true },
-        { text: 'b', hit: false },
-        { text: 'c', hit: true },
-      ]),
-    ).toEqual([
-      { text: 'ab', hit: false },
-      { text: 'c', hit: true },
+describe('toSegments', () => {
+  it('ハイライト範囲の無いテキストは1断片になる', () => {
+    expect(toSegments(createMarkedText('abc'))).toEqual([{ text: 'abc', hit: false }]);
+  });
+
+  it('空テキストは断片ゼロ', () => {
+    expect(toSegments(createMarkedText(''))).toEqual([]);
+  });
+
+  it('範囲の前後を非ヒット断片として挟む', () => {
+    expect(toSegments({ text: 'abcde', ranges: [{ start: 1, end: 3 }] })).toEqual([
+      { text: 'a', hit: false },
+      { text: 'bc', hit: true },
+      { text: 'de', hit: false },
     ]);
+  });
+
+  it('先頭と末尾に接する範囲では空断片を作らない', () => {
+    expect(toSegments({ text: 'ab', ranges: [{ start: 0, end: 2 }] })).toEqual([
+      { text: 'ab', hit: true },
+    ]);
+  });
+});
+
+describe('Unicode 正規化', () => {
+  it('合成済みと結合文字列は別物として扱う（正規化しない）', () => {
+    const composed = '\u304c'; // が
+    const decomposed = '\u304b\u3099'; // か + 濁点
+    expect(composed).not.toBe(decomposed);
+    expect(composed.normalize('NFD')).toBe(decomposed);
+
+    const result = runConversion({
+      inputs: [{ id: 'i1', title: 'a.txt', text: `${composed}/${decomposed}` }],
+      groups: [{ id: 'g1', name: 'G' }],
+      rules: [
+        {
+          id: 'r1',
+          src: composed,
+          regex: false,
+          cs: true,
+          order: 'sim',
+          values: { g1: 'X' },
+        },
+      ],
+    });
+    // 合成済みの側だけが置換される。正規化していたら両方 X になる。
+    expect(result.groups[0]?.files[0]?.text).toBe(`X/${decomposed}`);
+    expect(result.groups[0]?.files[0]?.hits).toBe(1);
   });
 });

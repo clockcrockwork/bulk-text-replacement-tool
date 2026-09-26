@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import { formatIndex } from '../lib/format';
 import { Icon } from './Icon';
 import { RuleFlags, RuleRowActions } from './RuleFlags';
-import { cellId, type RuleGridProps } from './ruleTypes';
+import { cellId, type RuleGridProps, srcCellLabel, valueCellLabel } from './ruleTypes';
 
 /** 狭い画面向けのルール表示。1ルール＝1カードで、グループごとの置換先を縦に並べる。 */
 export function RuleCards({
@@ -55,7 +55,7 @@ export function RuleCards({
                 value={rule.src}
                 onChange={(event) => ruleHandlers.onChangeSrc(rule.id, event.target.value)}
                 placeholder="置換元"
-                aria-label="置換元"
+                aria-label={srcCellLabel(index)}
               />
             </div>
             {error ? <div className="rule-card__error">{error}</div> : null}
@@ -72,7 +72,7 @@ export function RuleCards({
                       ruleHandlers.onChangeValue(rule.id, group.id, event.target.value)
                     }
                     placeholder="（置換しない）"
-                    aria-label="置換先"
+                    aria-label={valueCellLabel(index, group.name)}
                   />
                   <span
                     className={`rule-card__hits hits${hit !== undefined && hit > 0 ? ' is-positive' : ''}`}

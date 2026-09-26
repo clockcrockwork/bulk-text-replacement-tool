@@ -1,33 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import { parseZip } from '../../testing/zipReader';
 import { crc32, createZip } from './zip';
 
-/**
- * テスト用の最小 ZIP リーダー。無圧縮前提でローカルヘッダを順に読む。
- * 実装と同じ知識を共有しないよう、オフセットは仕様の値をそのまま書いている。
- */
+/** 名前と本文を配列で比べたいテストが多いので、その形に整える。 */
 function readZip(buffer: ArrayBuffer): { names: string[]; texts: string[]; entryCount: number } {
-  const view = new DataView(buffer);
-  const bytes = new Uint8Array(buffer);
-  const decoder = new TextDecoder();
-  const names: string[] = [];
-  const texts: string[] = [];
-
-  let offset = 0;
-  while (offset + 4 <= buffer.byteLength && view.getUint32(offset, true) === 0x04034b50) {
-    const nameLength = view.getUint16(offset + 26, true);
-    const extraLength = view.getUint16(offset + 28, true);
-    const size = view.getUint32(offset + 22, true);
-    const nameStart = offset + 30;
-    const dataStart = nameStart + nameLength + extraLength;
-    names.push(decoder.decode(bytes.subarray(nameStart, nameStart + nameLength)));
-    texts.push(decoder.decode(bytes.subarray(dataStart, dataStart + size)));
-    offset = dataStart + size;
-  }
-
-  // End of central directory は末尾 22 バイト（コメント無しの場合）。
-  const endOffset = buffer.byteLength - 22;
-  expect(view.getUint32(endOffset, true)).toBe(0x06054b50);
-  return { names, texts, entryCount: view.getUint16(endOffset + 10, true) };
+  const { entries, entryCount } = parseZip(new Uint8Array(buffer));
+  return {
+    names: entries.map((entry) => entry.name),
+    texts: entries.map((entry) => entry.text),
+    entryCount,
+  };
 }
 
 describe('crc32', () => {

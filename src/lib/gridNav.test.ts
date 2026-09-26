@@ -84,6 +84,18 @@ describe('resolveGridNav（表表示）', () => {
   it('最終行で ↓ は何もしない', () => {
     expect(resolveGridNav(ctx({ key: 'ArrowDown', row: 2 }))).toEqual({ type: 'none' });
   });
+
+  it('↑ は同じ列の上の行へ', () => {
+    expect(resolveGridNav(ctx({ key: 'ArrowUp', row: 2, col: 1 }))).toEqual({
+      type: 'move',
+      row: 1,
+      col: 1,
+    });
+  });
+
+  it('先頭行で ↑ は何もしない', () => {
+    expect(resolveGridNav(ctx({ key: 'ArrowUp', row: 0 }))).toEqual({ type: 'none' });
+  });
 });
 
 describe('resolveGridNav（カード表示）', () => {
@@ -97,6 +109,40 @@ describe('resolveGridNav（カード表示）', () => {
 
   it('← → は使わない', () => {
     expect(resolveGridNav(ctx({ key: 'ArrowRight', cards: true, atEnd: true }))).toEqual({
+      type: 'none',
+    });
+  });
+
+  it('Tab は直列に次のセルへ進む', () => {
+    expect(resolveGridNav(ctx({ key: 'Tab', cards: true, row: 1, col: 0 }))).toEqual({
+      type: 'move',
+      row: 1,
+      col: 1,
+    });
+  });
+
+  it('Shift+Tab は直列に戻る', () => {
+    expect(
+      resolveGridNav(ctx({ key: 'Tab', shiftKey: true, cards: true, row: 1, col: 0 })),
+    ).toEqual({ type: 'move', row: 0, col: 2 });
+  });
+
+  it('↑ は直列に前のセルへ戻る', () => {
+    expect(resolveGridNav(ctx({ key: 'ArrowUp', cards: true, row: 1, col: 0 }))).toEqual({
+      type: 'move',
+      row: 0,
+      col: 2,
+    });
+  });
+
+  it('先頭セルで ↑ は何もしない', () => {
+    expect(resolveGridNav(ctx({ key: 'ArrowUp', cards: true, row: 0, col: 0 }))).toEqual({
+      type: 'none',
+    });
+  });
+
+  it('最後のセルで ↓ は何もしない（行は追加しない）', () => {
+    expect(resolveGridNav(ctx({ key: 'ArrowDown', cards: true, row: 2, col: 2 }))).toEqual({
       type: 'none',
     });
   });

@@ -1,8 +1,11 @@
 name: CI
 
 on:
+  # PR 中のブランチへの push は pull_request 側で走るため、push は main だけにする。
+  # 両方を全ブランチ対象にすると、同じコミットに対して同名のチェックが2系統報告され、
+  # required status checks の判定が不安定になる。
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 concurrency:
@@ -11,18 +14,50 @@ concurrency:
 
 jobs:
   check:
+    name: Lint / Types / Unit tests / Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: '22'
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       - name: Lint & format check
         run: npm run lint
       - name: Unit tests
-        run: npm run test
+        run: npm run coverage
       # build は typecheck も兼ねる（package.json の build スクリプト）
       - name: Build
         run: npm run build
+      - name: Upload coverage report
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Install browsers
+        run: npx playwright install --with-deps chromium webkit
+      - run: npm run test:e2e
+      - name: Upload Playwright report
+        # 成功時に上げても読む機会が無いので失敗時だけ。トレースは test-results/ に出る。
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

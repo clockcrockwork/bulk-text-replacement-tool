@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import { SOURCE_HEADER } from '../lib/table';
 import { Icon } from './Icon';
 import { RuleFlags, RuleRowActions } from './RuleFlags';
-import { cellId, type RuleGridProps } from './ruleTypes';
+import { cellId, type RuleGridProps, srcCellLabel, valueCellLabel } from './ruleTypes';
 
 /** 広い画面向けのルール表。置換元の列は横スクロールしても左に固定する。 */
 export function RuleTable({
@@ -71,7 +71,7 @@ export function RuleTable({
                   value={rule.src}
                   onChange={(event) => ruleHandlers.onChangeSrc(rule.id, event.target.value)}
                   placeholder="置換元"
-                  aria-label="置換元"
+                  aria-label={srcCellLabel(index)}
                 />
                 {error ? <div className="rule-table__error">{error}</div> : null}
               </td>
@@ -88,7 +88,7 @@ export function RuleTable({
                           ruleHandlers.onChangeValue(rule.id, group.id, event.target.value)
                         }
                         placeholder="—"
-                        aria-label="置換先"
+                        aria-label={valueCellLabel(index, group.name)}
                       />
                       {hit !== undefined ? (
                         <span

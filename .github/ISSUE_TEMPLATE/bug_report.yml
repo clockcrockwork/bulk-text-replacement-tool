@@ -1,0 +1,59 @@
+name: バグ報告
+description: 変換結果がおかしい、画面が壊れる、など
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **先に読んでください**: このアプリは入力した原稿・ルールをブラウザの localStorage にだけ保存しています。
+        切り分けのために保存データを消すと原稿ごと失われます。別プロファイルやシークレットウィンドウで試してください。
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 何が起きたか
+      description: 実際の挙動と、期待していた挙動を並べて書いてください。
+      placeholder: |
+        実際: 「順次」にしたルールが適用されない
+        期待: それまでの置換結果に対して適用される
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      placeholder: |
+        1. 入力タブに「アリスちゃん」を貼る
+        2. ルールタブで アリス→あー（同時）、あーちゃん→X（順次）を設定する
+        3. 「変換」を押す
+    validations:
+      required: true
+
+  - type: textarea
+    id: rules
+    attributes:
+      label: 再現に使ったルール表（任意）
+      description: >-
+        このリポジトリは公開されており、Issue は誰でも読めます。原稿の本文はもちろん、
+        実際のルール表（登場人物名や固有名詞が並ぶことが多い）もそのままは貼らないでください。
+        再現する最小のルールだけを、差し支えない文字列に置き換えて貼ってください。
+      render: csv
+
+  - type: input
+    id: environment
+    attributes:
+      label: ブラウザ / OS
+      description: Safari 固有の不具合の切り分けに使うので、必ず書いてください。
+      placeholder: Safari 18 / iOS 18
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 確認
+      options:
+        - label: シークレットウィンドウか別のブラウザプロファイル（＝保存データが無い状態）でも再現する
+        - label: 同じ内容の Issue が無いか探した

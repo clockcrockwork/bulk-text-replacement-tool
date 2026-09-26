@@ -8,18 +8,15 @@ export interface ToastController {
   flash: (message: string) => void;
 }
 
-export function useToast(duration: number = TOAST_DURATION_MS): ToastController {
+export function useToast(): ToastController {
   const [message, setMessage] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const flash = useCallback(
-    (next: string) => {
-      setMessage(next);
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => setMessage(null), duration);
-    },
-    [duration],
-  );
+  const flash = useCallback((next: string) => {
+    setMessage(next);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setMessage(null), TOAST_DURATION_MS);
+  }, []);
 
   useEffect(
     () => () => {

@@ -1,11 +1,19 @@
 import type { InputText } from '../types';
 import { createId } from './id';
+import { decodeText } from './text';
 
 /** 取り込めるテキストファイルの拡張子。 */
 export const ACCEPTED_EXTENSIONS = ['md', 'txt', 'tex'] as const;
 
 /** `<input type="file">` の accept 属性。 */
-export const ACCEPT_ATTRIBUTE = '.md,.txt,.tex,text/plain,text/markdown';
+/** MIME で選ばせたい種類。拡張子は ACCEPTED_EXTENSIONS から導出する。 */
+const ACCEPTED_MIME_TYPES = ['text/plain', 'text/markdown'] as const;
+
+/** `<input type="file">` の accept 属性。拡張子を足したらここも自動で追従する。 */
+export const ACCEPT_ATTRIBUTE = [
+  ...ACCEPTED_EXTENSIONS.map((ext) => `.${ext}`),
+  ...ACCEPTED_MIME_TYPES,
+].join(',');
 
 /** 画面に出す拡張子の案内文。 */
 export const ACCEPTED_EXTENSIONS_LABEL = ACCEPTED_EXTENSIONS.map((ext) => `.${ext}`).join(' / ');
@@ -30,7 +38,7 @@ export async function readInputFiles(fileList: FileList | File[] | null): Promis
     accepted.map(async (file) => ({
       id: createId(),
       title: file.name,
-      text: (await file.text()).replace(/^﻿/, ''),
+      text: decodeText(await file.arrayBuffer()),
     })),
   );
   return { inputs, skipped: files.length - accepted.length };

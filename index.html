@@ -3,10 +3,32 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      入力したテキストとルールを外部へ送らないことを、テストだけでなくブラウザ側でも保証する。
+      要は connect-src 'none' で fetch / XHR / sendBeacon / WebSocket を全部塞ぐこと。
+      style-src に 'unsafe-inline' が要るのは Google Fonts のスタイルシートのため。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               connect-src 'none';
+               script-src 'self';
+               style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+               font-src https://fonts.gstatic.com;
+               img-src 'self' data:;
+               object-src 'none';
+               base-uri 'self';
+               form-action 'none'"
+    />
     <title>一括置換ツール</title>
     <meta
       name="description"
       content="複数のテキストを、グループごとの置換ルール表で一括変換するブラウザツール。"
+    />
+    <!-- ブランドマークと同じ赤い四角。外部ファイルを増やさないためインラインSVG。 -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23ec3013'/%3E%3C/svg%3E"
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

@@ -1,0 +1,23 @@
+name: 機能の要望・改善案
+description: こうしたい、が出てきたらこちら
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 困っていること
+      description: 機能の形にする前の「何に困っているか」を書いてください。解決案より前提のほうが大事です。
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: 思いついている案（任意）
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: 今どう回避しているか（任意）
+      description: 回避できているなら優先度の判断材料になります。
