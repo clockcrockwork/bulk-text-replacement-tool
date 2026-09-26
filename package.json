@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "check": "npm run lint && npm run typecheck && npm run test"
+    "check": "npm run lint && npm run typecheck && npm run test && npm run build",
+    "coverage": "vitest run --coverage"
   },
   "dependencies": {
     "react": "^19.3.0",
@@ -24,12 +25,17 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",
     "@playwright/test": "^1.56.1",
-    "@types/node": "^26.6.3",
+    "@types/node": "^22.20.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "@vitest/coverage-v8": "^5.0.2",
     "typescript": "^7.0.2",
     "vite": "^8.3.1",
     "vitest": "^5.0.2"
-  }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "npm@10.9.7"
 }

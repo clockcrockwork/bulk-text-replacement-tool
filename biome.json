@@ -17,7 +17,7 @@
     "enabled": true,
     "rules": {
       "preset": "recommended",
-      "correctness": { "useExhaustiveDependencies": "warn" },
+      "correctness": { "useExhaustiveDependencies": "error" },
       "style": {
         "useConst": "error",
         "noNonNullAssertion": "error",

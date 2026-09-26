@@ -17,7 +17,10 @@ export default defineConfig({
   // CI で .only の付け忘れを落とす。
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  reporter: process.env.CI ? [['github'], ['list']] : 'list',
+  // CI では html レポートも出す。これが無いと失敗時にアーティファクトとして回収できない。
+  reporter: process.env.CI
+    ? [['github'], ['list'], ['html', { open: 'never' }]]
+    : [['list'], ['html', { open: 'never' }]],
   use: {
     baseURL: ORIGIN,
     trace: 'on-first-retry',
@@ -29,5 +32,9 @@ export default defineConfig({
     url: ORIGIN,
     reuseExistingServer: !process.env.CI,
     timeout: 180_000,
+    // 既定は 'ignore' で、起動に失敗しても build / preview の出力が丸ごと消える。
+    // webServer が上がらない類の失敗を診断できるようにしておく。
+    stdout: 'pipe',
+    stderr: 'pipe',
   },
 });
