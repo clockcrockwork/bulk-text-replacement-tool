@@ -1,6 +1,6 @@
 import { type JSX, type KeyboardEvent, useEffect, useMemo, useRef } from 'react';
+import { collectRuleErrors } from '../lib/diagnostics';
 import { resolveGridNav } from '../lib/gridNav';
-import { compileRule } from '../lib/regex';
 import type { ConversionResult, Group, Rule } from '../types';
 import { Icon } from './Icon';
 import { RuleCards } from './RuleCards';
@@ -58,24 +58,24 @@ export function RulesPanel({
   onExportTsv,
 }: RulesPanelProps): JSX.Element {
   // 正規表現ルールの数だけ new RegExp が走るので、打鍵のたびには作り直さない。
-  const rows: RuleRow[] = useMemo(
-    () =>
-      rules.map((rule, index) => {
-        const compiled = rule.regex && rule.src ? compileRule(rule) : null;
-        return {
-          rule,
-          index,
-          error: compiled?.kind === 'error' ? compiled.message : null,
-          hits: Object.fromEntries(
-            groups.map((group) => [
-              group.id,
-              rule.src ? result?.hitsByGroupRule[group.id]?.[rule.id] : undefined,
-            ]),
-          ),
-        };
-      }),
-    [rules, groups, result],
-  );
+  const rows: RuleRow[] = useMemo(() => {
+    // 変換をブロックする判定（App 側）と同じ関数を使う。別々に組むと、
+    // エラー表示は出ているのに変換は通る、という食い違いが生まれる。
+    const errors = collectRuleErrors(rules);
+    return rules.map((rule, index) => {
+      return {
+        rule,
+        index,
+        error: errors.get(rule.id) ?? null,
+        hits: Object.fromEntries(
+          groups.map((group) => [
+            group.id,
+            rule.src ? result?.hitsByGroupRule[group.id]?.[rule.id] : undefined,
+          ]),
+        ),
+      };
+    });
+  }, [rules, groups, result]);
 
   // 「最終行で Enter」で行を足したあと、増えた行にフォーカスを移す。
   const pendingFocus = useRef<{ row: number; col: number } | null>(null);

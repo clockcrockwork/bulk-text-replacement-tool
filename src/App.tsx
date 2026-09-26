@@ -9,6 +9,7 @@ import {
   useState,
 } from 'react';
 import { AppHeader } from './components/AppHeader';
+import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog';
 import { DropOverlay } from './components/DropOverlay';
 import { EditorOverlay } from './components/EditorOverlay';
 import { ImportDialog } from './components/ImportDialog';
@@ -18,10 +19,12 @@ import { RulesPanel } from './components/RulesPanel';
 import type { GroupHandlers, RuleHandlers } from './components/ruleTypes';
 import { TabBar, type TabDescriptor } from './components/TabBar';
 import { Toast } from './components/Toast';
+import { useConfirm } from './hooks/useConfirm';
 import { useNarrowScreen } from './hooks/useNarrowScreen';
 import { usePersistedWorkspace } from './hooks/usePersistedWorkspace';
 import { useToast } from './hooks/useToast';
 import { copyText, downloadBlob } from './lib/browser';
+import { collectRuleErrors, findUnmatchedRules } from './lib/diagnostics';
 import { timestampForFileName } from './lib/format';
 import { readInputFiles } from './lib/inputFiles';
 import { runConversion } from './lib/replace';
@@ -49,6 +52,7 @@ function hasFiles(event: DragEvent): boolean {
 export function App(): JSX.Element {
   const [state, dispatch] = useReducer(workspaceReducer, undefined, initWorkspace);
   const { message: toast, flash } = useToast();
+  const confirm = useConfirm();
   const narrow = useNarrowScreen();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -133,15 +137,38 @@ export function App(): JSX.Element {
     }
   };
 
+  /**
+   * 確認を出して、通ったときだけ実行する。
+   *
+   * 確認の結果を待つあいだに await を挟むので、実行側の例外は `guard` で受け直す
+   * （React のエラー境界も、非同期の続きでは拾えない）。
+   */
+  const confirmThen = async (request: ConfirmRequest, action: () => void): Promise<void> => {
+    if (await confirm.ask(request)) guard('操作', action);
+  };
+
   const run = (): void => {
     if (state.inputs.length === 0) {
       flash('入力テキストがありません');
       dispatch({ type: 'tab/set', tab: 'input' });
       return;
     }
+    // 正規表現が壊れている行は変換時に黙って捨てられる。エラー表示を見落としたまま
+    // 「そのルールだけ効いていない完成物」を保存できてしまうので、ここで止める。
+    const errors = collectRuleErrors(state.rules);
+    if (errors.size > 0) {
+      flash(`正規表現エラーが${errors.size}件あります。直してから変換してください`);
+      dispatch({ type: 'tab/set', tab: 'rules' });
+      return;
+    }
     guard('変換', () => {
       const result = runConversion(state);
       dispatch({ type: 'result/set', result, signature });
+      const unmatched = findUnmatchedRules(state.rules, state.groups, result);
+      // 0件そのものは異常ではないので止めない。打ち間違いや表記違いに気づけるようにだけする。
+      if (unmatched.length > 0) {
+        flash(`変換しました（1件も置換されなかったルールが${unmatched.length}件あります）`);
+      }
     });
   };
 
@@ -328,7 +355,15 @@ export function App(): JSX.Element {
               openEditor(input.id, 0, 0);
             }}
             onClearInputs={() => {
-              if (confirm('入力テキストをすべて削除しますか？')) dispatch({ type: 'inputs/clear' });
+              void confirmThen(
+                {
+                  title: '入力テキストをすべて削除する',
+                  message: '取り消せません。書き出していない本文は失われます。',
+                  details: [`入力 ${state.inputs.length}件`],
+                  confirmLabel: 'すべて削除する',
+                },
+                () => dispatch({ type: 'inputs/clear' }),
+              );
             }}
             onRenameInput={(id, title) => dispatch({ type: 'inputs/update', id, patch: { title } })}
             onRemoveInput={(id) => dispatch({ type: 'inputs/remove', id })}
@@ -407,6 +442,14 @@ export function App(): JSX.Element {
           onFileSelected={(event) => void onTableFileSelected(event)}
           onClose={() => dispatch({ type: 'import/close' })}
           onApply={applyImport}
+        />
+      ) : null}
+
+      {confirm.pending ? (
+        <ConfirmDialog
+          request={confirm.pending}
+          onConfirm={confirm.accept}
+          onCancel={confirm.reject}
         />
       ) : null}
 

@@ -21,6 +21,15 @@ export interface OutputPanelProps {
   onDownloadFile: (file: ResultFile) => void;
 }
 
+/**
+ * 未反映のあいだ持ち出しを止める理由。
+ *
+ * 複数のサイトへ投稿する使い方では、古い名前・古いルールの結果を取り違えて
+ * 持ち出す事故の方が、「比較のために古い結果も保存したい」需要より重い。
+ * プレビューとしては残すが、コピー・保存・ZIP は再変換を要求する。
+ */
+const STALE_REASON = '入力かルールを変更しています。持ち出す前に再変換してください。';
+
 const BODY_VIEW_OPTIONS: readonly ToggleOption<FileView>[] = [
   { value: 'highlight', label: 'ハイライト' },
   { value: 'plain', label: 'テキスト' },
@@ -72,15 +81,27 @@ export function OutputPanel({
         {stale ? <span className="badge">未反映の変更があります</span> : null}
         <span className="spacer" />
         {stale ? (
-          <button type="button" className="btn" onClick={onRun}>
+          <button type="button" className="btn btn--primary" onClick={onRun}>
             再変換
           </button>
         ) : null}
-        <button type="button" className="btn btn--primary" onClick={onDownloadZip}>
+        <button
+          type="button"
+          className="btn btn--primary"
+          onClick={onDownloadZip}
+          disabled={stale}
+          title={stale ? STALE_REASON : undefined}
+        >
           <Icon name="download" />
           <span>ZIPですべて保存</span>
         </button>
       </div>
+
+      {stale ? (
+        <p className="result-bar__stale" role="status">
+          {STALE_REASON}
+        </p>
+      ) : null}
 
       <div className="out-tabs">
         {result.groups.map((group) => (
@@ -115,7 +136,13 @@ export function OutputPanel({
                   options={BODY_VIEW_OPTIONS}
                   onChange={(next) => onSetFileView(key, next)}
                 />
-                <button type="button" className="btn btn--small" onClick={() => onCopyFile(file)}>
+                <button
+                  type="button"
+                  className="btn btn--small"
+                  onClick={() => onCopyFile(file)}
+                  disabled={stale}
+                  title={stale ? STALE_REASON : undefined}
+                >
                   <Icon name="copy" size={15} />
                   <span>コピー</span>
                 </button>
@@ -123,7 +150,8 @@ export function OutputPanel({
                   type="button"
                   className="icon-btn"
                   onClick={() => onDownloadFile(file)}
-                  title="このファイルを保存"
+                  disabled={stale}
+                  title={stale ? STALE_REASON : 'このファイルを保存'}
                   aria-label="このファイルを保存"
                 >
                   <Icon name="download" size={15} />

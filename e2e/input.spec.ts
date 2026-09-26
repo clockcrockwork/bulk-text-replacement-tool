@@ -170,3 +170,37 @@ test('エディタを開いている間は背面が動かず、閉じるとス�
   expect(Math.abs(restored - Number(locked.replace(/[-px]/g, '')))).toBeLessThan(300);
   await expect(page.locator('.input-card__preview').first()).toBeInViewport();
 });
+
+test.describe('破壊操作の確認', () => {
+  test('確認を閉じるまで実行されず、キャンセルすれば何も起きない', async ({ page }) => {
+    await page.getByRole('button', { name: 'すべて削除' }).click();
+
+    const dialog = page.locator('dialog.dialog--confirm[open]');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole('heading')).toHaveText('入力テキストをすべて削除する');
+    // 失われる内容が分かること。
+    await expect(dialog.locator('.dialog__details')).toContainText('入力 1件');
+    // Enter の連打で消えないよう、既定のフォーカスはキャンセル側。
+    await expect(dialog.getByRole('button', { name: 'キャンセル' })).toBeFocused();
+
+    await dialog.getByRole('button', { name: 'キャンセル' }).click();
+    await expect(page.locator('dialog.dialog--confirm')).toHaveCount(0);
+    await expect(page.locator('.input-card')).toHaveCount(1);
+  });
+
+  test('Escape でもキャンセルになる', async ({ page }) => {
+    await page.getByRole('button', { name: 'すべて削除' }).click();
+    await expect(page.locator('dialog.dialog--confirm[open]')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('dialog.dialog--confirm')).toHaveCount(0);
+    await expect(page.locator('.input-card')).toHaveCount(1);
+  });
+
+  test('実行を選ぶと削除される', async ({ page }) => {
+    await page.getByRole('button', { name: 'すべて削除' }).click();
+    await page.getByRole('button', { name: 'すべて削除する' }).click();
+    await expect(page.locator('dialog.dialog--confirm')).toHaveCount(0);
+    await expect(page.locator('.input-card')).toHaveCount(0);
+    await expect(page.locator('.empty')).toContainText('入力がありません');
+  });
+});
