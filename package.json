@@ -9,14 +9,15 @@
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
-    "lint": "biome check .",
+    "lint": "biome check . && npm run lint:text",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "check": "npm run lint && npm run typecheck && npm run test && npm run build",
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "lint:text": "node scripts/checkText.mjs"
   },
   "dependencies": {
     "react": "^19.3.0",

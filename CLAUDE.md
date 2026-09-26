@@ -20,6 +20,7 @@ npm run lint:fix       # Biome の自動修正
 npm run test -- <path> # 単一テストファイルの実行
 npm run coverage       # カバレッジ（閾値つき。ロジック層のみ計測）
 npm run test:e2e       # Playwright（初回は npx playwright install chromium webkit）
+npm run lint:text      # 不可視文字・双方向制御文字・CRLF の全ファイル走査（lint に含まれる）
 ```
 
 E2E をブラウザ1つに絞るときは `npx playwright test --project=chromium`。
@@ -55,8 +56,10 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   **外から来る値（localStorage・取り込んだ表）を `as` で通さない。** 検証して正規化する。
 - **lint の抑制**: `biome-ignore` は理由を必ず書く。a11y の指摘は、まず実装で直せないかを検討する
   （例: モーダルはネイティブ `<dialog>`、トグル群は `ToggleGroup`）。
-- **不可視文字**: `﻿` のような文字をソースに直接書かない（見えないまま壊れる）。
+- **不可視文字**: `\ufeff` のような文字をソースに直接書かない（見えないまま壊れる）。
   BOM は `src/lib/text.ts` の `BOM` / `stripBom` / `withBom` を使う。
+  Biome は Markdown を見ず、文字列リテラルの中も見ないので、`scripts/checkText.mjs` が
+  git 管理下の全ファイルを走査する（`npm run lint` に含まれる）。
 
 ## 触るときに気をつけること
 
@@ -66,8 +69,10 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   置換結果を再走査しないので連鎖しない。「順次」は単独パスなので、前のパスの結果と周囲に
   またがる一致も拾う。この挙動を変えると利用者の出力が変わるので、変更時は
   `replace.test.ts` のケースを先に見直すこと。
-- **置換先が空の行**は「削除」ではなく「そのグループでは適用しない」。文字列の削除はできない。
-  これは仕様なので、変えるなら「適用しない」を別の形で表現する必要がある。
+- **置換先が空の行**は「削除」ではなく「そのグループでは適用しない」。ただし
+  **正規表現モードでは、展開後に空文字になる置換先を書けば削除できる**
+  （`applyBatch` の `if (replaced)` が偽になり、一致範囲が出力に積まれない）。
+  「リテラルでは消せない／正規表現なら消せる」が現在の仕様。
 - **永続化**（`src/lib/storage.ts`）: キーは `bt-bulk-replace-v1`。読み込み時に各要素を検証・
   正規化しており、ここを緩めると壊れた保存データで起動時に落ち、リロードしても直らない
   （復旧不能）状態を作れる。保存する形を後方互換なく変えるならキーの版を上げる。
@@ -80,7 +85,15 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
 - **選択状態**は色だけで表さない。トグルは `ToggleGroup`（`aria-pressed` 込み）を使い、
   独自に組むなら `aria-pressed` / `aria-current` を付ける。
 - **外部通信**を増やさない。README で「入力とルールは外部へ送信しない」と約束しており、
-  `e2e/privacy.spec.ts` が許可した宛先以外への通信を落とす。
+  `index.html` の CSP が `connect-src 'none'` で fetch / XHR を塞ぎ、
+  `e2e/privacy.spec.ts` が原稿・ルールに仕込んだ目印がリクエストに現れないことを検証する。
+  宛先ホストだけを見るのでは足りない（同一オリジンへの送信を見逃す）。
+- **イベントハンドラの例外**は `App.tsx` の `guard` で受ける。React のエラー境界は
+  描画中の例外しか拾わないので、onClick から同期で呼ぶ処理は自前で受け皿が要る。
+- **文字コード**: 取り込みは `decodeText`（UTF-8 → 失敗したら Shift_JIS）。`File.text()` を
+  直接使わない。書き出しの BOM は `withBom`。
+- **文字数**は `countCharacters`（コードポイント単位）。`text.length` は補助漢字を2と数える。
+  `Intl.Segmenter` は 100万文字で約630ms かかるので、毎レンダー走る表示には使わない。
 
 ## テスト
 

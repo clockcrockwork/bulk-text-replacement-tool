@@ -25,8 +25,11 @@ function readZip(buffer: ArrayBuffer): { names: string[]; texts: string[]; entry
   }
 
   // End of central directory は末尾 22 バイト（コメント無しの場合）。
+  // ここはヘルパーなので expect ではなく例外にする（どのテストが落ちたか分かるように）。
   const endOffset = buffer.byteLength - 22;
-  expect(view.getUint32(endOffset, true)).toBe(0x06054b50);
+  if (view.getUint32(endOffset, true) !== 0x06054b50) {
+    throw new Error('End of central directory のシグネチャが見つからない');
+  }
   return { names, texts, entryCount: view.getUint16(endOffset + 10, true) };
 }
 

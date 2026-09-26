@@ -1,0 +1,3 @@
+# 改行コードは LF に固定する。.editorconfig の end_of_line = lf を git 側でも強制し、
+# Windows から触ったときに CRLF が混入するのを防ぐ（scripts/checkText.mjs が検査する）。
+* text=auto eol=lf

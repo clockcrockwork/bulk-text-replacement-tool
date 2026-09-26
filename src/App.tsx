@@ -117,30 +117,55 @@ export function App(): JSX.Element {
 
   // ---- 変換・書き出し ------------------------------------------------------
 
+  /**
+   * イベントハンドラ内の例外を受け止める。
+   *
+   * React のエラー境界が拾うのは描画中とライフサイクル中の例外だけで、onClick から
+   * 同期で呼ぶ変換や書き出しで落ちても復旧画面は出ず、画面が固まったままになる。
+   * ここで受けてトーストに倒す。
+   */
+  const guard = (label: string, action: () => void): void => {
+    try {
+      action();
+    } catch (error) {
+      console.error(`${label}に失敗しました`, error);
+      flash(`${label}に失敗しました`);
+    }
+  };
+
   const run = (): void => {
     if (state.inputs.length === 0) {
       flash('入力テキストがありません');
       dispatch({ type: 'tab/set', tab: 'input' });
       return;
     }
-    const result = runConversion(state);
-    dispatch({ type: 'result/set', result, signature });
+    guard('変換', () => {
+      const result = runConversion(state);
+      dispatch({ type: 'result/set', result, signature });
+    });
   };
 
   const downloadZip = (): void => {
     const result = state.result;
     if (!result) return;
-    const entries = result.groups.flatMap((group) =>
-      group.files.map((file) => ({ name: `${group.dir}/${file.title}`, text: file.text })),
-    );
-    downloadBlob(createZip(entries, result.at), `converted-${timestampForFileName(result.at)}.zip`);
-    flash(`${entries.length}ファイルをZIPで保存しました`);
+    guard('ZIPの保存', () => {
+      const entries = result.groups.flatMap((group) =>
+        group.files.map((file) => ({ name: `${group.dir}/${file.title}`, text: file.text })),
+      );
+      downloadBlob(
+        createZip(entries, result.at),
+        `converted-${timestampForFileName(result.at)}.zip`,
+      );
+      flash(`${entries.length}ファイルをZIPで保存しました`);
+    });
   };
 
   const downloadFile = (file: ResultFile): void => {
-    downloadBlob(
-      new Blob([file.text], { type: 'text/plain;charset=utf-8' }),
-      file.title.split('/').pop() ?? file.title,
+    guard('ファイルの保存', () =>
+      downloadBlob(
+        new Blob([file.text], { type: 'text/plain;charset=utf-8' }),
+        file.title.split('/').pop() ?? file.title,
+      ),
     );
   };
 
@@ -150,14 +175,16 @@ export function App(): JSX.Element {
   };
 
   const exportRules = (delimiter: Delimiter): void => {
-    const text = rulesToDelimited(state.groups, state.rules, delimiter);
-    const csv = delimiter === ',';
-    downloadBlob(
-      new Blob([withBom(text)], {
-        type: csv ? 'text/csv' : 'text/tab-separated-values',
-      }),
-      csv ? 'rules.csv' : 'rules.tsv',
-    );
+    guard('ルール表の書き出し', () => {
+      const text = rulesToDelimited(state.groups, state.rules, delimiter);
+      const csv = delimiter === ',';
+      downloadBlob(
+        new Blob([withBom(text)], {
+          type: csv ? 'text/csv' : 'text/tab-separated-values',
+        }),
+        csv ? 'rules.csv' : 'rules.tsv',
+      );
+    });
   };
 
   // ---- 表インポート --------------------------------------------------------
@@ -168,18 +195,20 @@ export function App(): JSX.Element {
   );
 
   const applyImport = (): void => {
-    const built = buildRulesFromTable({
-      rows: parsedImport.rows,
-      mode: state.importMode,
-      currentGroups: state.groups,
-      currentRules: state.rules,
+    guard('表の読み込み', () => {
+      const built = buildRulesFromTable({
+        rows: parsedImport.rows,
+        mode: state.importMode,
+        currentGroups: state.groups,
+        currentRules: state.rules,
+      });
+      if (!built) {
+        flash('見出し行＋1行以上の表が必要です');
+        return;
+      }
+      dispatch({ type: 'import/apply', groups: built.groups, rules: built.rules });
+      flash(`${built.imported}行を読み込みました`);
     });
-    if (!built) {
-      flash('見出し行＋1行以上の表が必要です');
-      return;
-    }
-    dispatch({ type: 'import/apply', groups: built.groups, rules: built.rules });
-    flash(`${built.imported}行を読み込みました`);
   };
 
   // ---- 子コンポーネントへ渡すハンドラ --------------------------------------

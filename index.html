@@ -3,6 +3,23 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      入力したテキストとルールを外部へ送らないことを、テストだけでなくブラウザ側でも保証する。
+      要は connect-src 'none' で fetch / XHR / sendBeacon / WebSocket を全部塞ぐこと。
+      style-src に 'unsafe-inline' が要るのは Google Fonts のスタイルシートのため。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               connect-src 'none';
+               script-src 'self';
+               style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+               font-src https://fonts.gstatic.com;
+               img-src 'self' data:;
+               object-src 'none';
+               base-uri 'self';
+               form-action 'none'"
+    />
     <title>一括置換ツール</title>
     <meta
       name="description"

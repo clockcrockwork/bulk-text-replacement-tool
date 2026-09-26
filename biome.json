@@ -1,6 +1,10 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
-  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
   "files": {
     "includes": ["**", "!dist", "!design", "!node_modules"]
   },
@@ -11,23 +15,55 @@
     "lineWidth": 100
   },
   "javascript": {
-    "formatter": { "quoteStyle": "single", "jsxQuoteStyle": "double", "semicolons": "always" }
+    "formatter": {
+      "quoteStyle": "single",
+      "jsxQuoteStyle": "double",
+      "semicolons": "always"
+    }
   },
   "linter": {
     "enabled": true,
     "rules": {
       "preset": "recommended",
-      "correctness": { "useExhaustiveDependencies": "error" },
+      "correctness": {
+        "useExhaustiveDependencies": "error"
+      },
       "style": {
         "useConst": "error",
         "noNonNullAssertion": "error",
         "useFilenamingConvention": {
           "level": "error",
-          "options": { "filenameCases": ["camelCase", "PascalCase"] }
+          "options": {
+            "filenameCases": ["camelCase", "PascalCase"]
+          }
         }
       },
-      "suspicious": { "noExplicitAny": "error" }
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noIrregularWhitespace": "error",
+        "noMisplacedAssertion": "error",
+        "noConsole": {
+          "level": "error",
+          "options": {
+            "allow": ["error", "warn"]
+          }
+        }
+      },
+      "complexity": {
+        "noExcessiveCognitiveComplexity": {
+          "level": "error",
+          "options": {
+            "maxAllowedComplexity": 35
+          }
+        }
+      }
     }
   },
-  "assist": { "actions": { "source": { "organizeImports": "on" } } }
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  }
 }
