@@ -26,7 +26,7 @@ import { timestampForFileName } from './lib/format';
 import { readInputFiles } from './lib/inputFiles';
 import { runConversion } from './lib/replace';
 import { buildRulesFromTable, type Delimiter, parseTable, rulesToDelimited } from './lib/table';
-import { stripBom, withBom } from './lib/text';
+import { decodeText, withBom } from './lib/text';
 import { createZip } from './lib/zip';
 import {
   createEmptyRule,
@@ -264,7 +264,7 @@ export function App(): JSX.Element {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    dispatch({ type: 'import/setText', text: stripBom(await file.text()) });
+    dispatch({ type: 'import/setText', text: decodeText(await file.arrayBuffer()) });
   };
 
   const editingIndex = state.inputs.findIndex((input) => input.id === state.editingId);

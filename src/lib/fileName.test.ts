@@ -28,6 +28,24 @@ describe('sanitizeName', () => {
   it('ディレクトリ名では .. が空になりフォールバックに回る', () => {
     expect(sanitizeName('..', false)).toBe('');
   });
+
+  it('末尾のドットと空白を落とす（Windows で黙って消えて別名になる）', () => {
+    expect(sanitizeName('a.', true)).toBe('a');
+    expect(sanitizeName('a ', true)).toBe('a');
+    expect(sanitizeName('dir./file..', true)).toBe('dir/file');
+  });
+
+  it('Windows の予約デバイス名を避ける', () => {
+    expect(sanitizeName('CON', true)).toBe('_CON');
+    expect(sanitizeName('nul.txt', true)).toBe('_nul.txt');
+    expect(sanitizeName('COM1', true)).toBe('_COM1');
+    expect(sanitizeName('LPT9.md', true)).toBe('_LPT9.md');
+  });
+
+  it('予約名に似ているだけの名前は変えない', () => {
+    expect(sanitizeName('console.md', true)).toBe('console.md');
+    expect(sanitizeName('COM10', true)).toBe('COM10');
+  });
 });
 
 describe('dedupeNames', () => {
@@ -41,6 +59,16 @@ describe('dedupeNames', () => {
 
   it('連番先も既に埋まっていればさらにずらす', () => {
     expect(dedupeNames(['a.md', 'a (2).md', 'a.md'])).toEqual(['a.md', 'a (2).md', 'a (3).md']);
+  });
+
+  it('大文字小文字だけが違う名前も重複として扱う', () => {
+    // ZIP の中では別でも、大小を区別しないファイルシステムへ展開すると衝突する。
+    expect(dedupeNames(['A.txt', 'a.txt'])).toEqual(['A.txt', 'a (2).txt']);
+    expect(dedupeNames(['README', 'readme', 'ReadMe'])).toEqual([
+      'README',
+      'readme (2)',
+      'ReadMe (3)',
+    ]);
   });
 
   it('Object.prototype のキーでも重複扱いしない', () => {

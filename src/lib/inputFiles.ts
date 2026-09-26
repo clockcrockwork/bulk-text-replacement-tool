@@ -1,6 +1,6 @@
 import type { InputText } from '../types';
 import { createId } from './id';
-import { stripBom } from './text';
+import { decodeText } from './text';
 
 /** 取り込めるテキストファイルの拡張子。 */
 export const ACCEPTED_EXTENSIONS = ['md', 'txt', 'tex'] as const;
@@ -38,7 +38,7 @@ export async function readInputFiles(fileList: FileList | File[] | null): Promis
     accepted.map(async (file) => ({
       id: createId(),
       title: file.name,
-      text: stripBom(await file.text()),
+      text: decodeText(await file.arrayBuffer()),
     })),
   );
   return { inputs, skipped: files.length - accepted.length };

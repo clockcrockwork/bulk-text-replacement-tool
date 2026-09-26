@@ -1,3 +1,5 @@
+import { countCharacters } from './text';
+
 /** 画面やファイル名に出す数値・日時の書式をここに集約する。 */
 
 /** 2桁ゼロ埋め。時刻と連番で共有する。 */
@@ -8,7 +10,7 @@ function padTwo(value: number): string {
 /** 「1,234 文字 · 56 行」 */
 export function formatTextMeta(text: string): string {
   const lines = text ? text.split('\n').length : 0;
-  return `${text.length.toLocaleString()} 文字 · ${lines} 行`;
+  return `${countCharacters(text).toLocaleString()} 文字 · ${lines} 行`;
 }
 
 /** 入力タブの見出しに出す合計。 */

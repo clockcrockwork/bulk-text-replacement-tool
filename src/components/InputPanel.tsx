@@ -1,6 +1,7 @@
 import type { ChangeEvent, JSX, KeyboardEvent, MouseEvent, RefObject } from 'react';
 import { formatIndex, formatInputSummary, formatTextMeta } from '../lib/format';
 import { ACCEPT_ATTRIBUTE, ACCEPTED_EXTENSIONS_LABEL } from '../lib/inputFiles';
+import { countCharacters } from '../lib/text';
 import type { InputText } from '../types';
 import { Icon } from './Icon';
 
@@ -28,7 +29,7 @@ export function InputPanel({
   onRemoveInput,
   onOpenEditor,
 }: InputPanelProps): JSX.Element {
-  const totalChars = inputs.reduce((sum, input) => sum + input.text.length, 0);
+  const totalChars = inputs.reduce((sum, input) => sum + countCharacters(input.text), 0);
 
   const handlePreviewClick = (id: string) => (event: MouseEvent<HTMLTextAreaElement>) => {
     const target = event.currentTarget;
