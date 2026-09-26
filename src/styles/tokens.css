@@ -1,0 +1,104 @@
+/*
+ * デザイントークン。色・タイポ・余白はすべてここで定義し、コンポーネント側では
+ * 生の 16 進数や px を書かない。元になったデザインシステムは design/modernist/ を参照。
+ */
+
+:root {
+  /* 面 */
+  --color-bg: #f3f2f2;
+  --color-surface: #eae9e9;
+  --color-surface-strong: #e1dfdf;
+
+  /* 文字 */
+  --color-text: #201e1d;
+  --color-muted: color-mix(in srgb, #201e1d 62%, transparent);
+
+  /* 罫線 — modernist は 2px の強い罫と 1px の弱い罫を使い分ける */
+  --color-divider: color-mix(in srgb, #201e1d 40%, transparent);
+  --color-divider-soft: color-mix(in srgb, #201e1d 16%, transparent);
+
+  /* アクセント */
+  --color-accent: #ec3013;
+  --color-accent-hover: #dd2b0f;
+  /* 本文サイズの文字にアクセント色を使うときのコントラスト確保用 */
+  --color-accent-text: #ae1800;
+  --color-on-accent: #f3f2f2;
+
+  /* 置換箇所のハイライト */
+  --color-highlight: #ffe0d9;
+  --color-highlight-text: #7c1405;
+
+  --shadow-overlay: 0 12px 32px color-mix(in srgb, #2d2b2b 22%, transparent);
+
+  --font-body: "Archivo", "Hiragino Kaku Gothic ProN", "Noto Sans JP", system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Noto Sans Mono CJK JP", monospace;
+
+  /* ページ左右の余白。ヘッダー・本文・オーバーレイで揃える */
+  --gutter: clamp(12px, 3vw, 32px);
+  --control-height: 40px;
+  /* タッチ操作で潰れない最小サイズ */
+  --control-height-touch: 44px;
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #171514;
+  --color-surface: #211f1e;
+  --color-surface-strong: #2c2a29;
+  --color-text: #eeeae9;
+  --color-muted: color-mix(in srgb, #eeeae9 62%, transparent);
+  --color-divider: color-mix(in srgb, #eeeae9 36%, transparent);
+  --color-divider-soft: color-mix(in srgb, #eeeae9 15%, transparent);
+  --color-accent: #ff563c;
+  --color-accent-hover: #ff9783;
+  --color-accent-text: #ff9783;
+  --color-on-accent: #171514;
+  --color-highlight: #5a1c10;
+  --color-highlight-text: #ffd2c8;
+  --shadow-overlay: 0 12px 32px rgb(0 0 0 / 60%);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
+}
+
+body {
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+::placeholder {
+  color: var(--color-muted);
+  opacity: 0.75;
+}
+
+a {
+  color: var(--color-accent);
+}
+
+a:hover {
+  color: var(--color-accent-hover);
+}
