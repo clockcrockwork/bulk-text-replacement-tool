@@ -11,6 +11,9 @@ const PORT = 4173;
 const HOST = '127.0.0.1';
 const ORIGIN = `http://${HOST}:${PORT}`;
 
+/** 狭い画面専用のテスト。デスクトップの projects からは除外する。 */
+const MOBILE_SPECS = /e2e[\\/]mobile[\\/]/;
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
@@ -25,7 +28,14 @@ export default defineConfig({
     baseURL: ORIGIN,
     trace: 'on-first-retry',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    // スマホ利用と Safari を保証対象にしているので、WebKit も回帰に含める。
+    // （Playwright の WebKit は Safari そのものではないので、最終確認は実機で別途行う）
+    { name: 'chromium', testIgnore: MOBILE_SPECS, use: { ...devices['Desktop Chrome'] } },
+    { name: 'webkit', testIgnore: MOBILE_SPECS, use: { ...devices['Desktop Safari'] } },
+    // 狭い画面ではルール表がカード表示に変わるため、レイアウト前提の違うテストを分けている。
+    { name: 'mobile-safari', testMatch: MOBILE_SPECS, use: { ...devices['iPhone 15'] } },
+  ],
   // 開発サーバーではなく本番ビルドを検証する（実際に配信する成果物と同じものを見る）。
   webServer: {
     command: `npm run build && npm run preview -- --host ${HOST} --port ${PORT} --strictPort`,

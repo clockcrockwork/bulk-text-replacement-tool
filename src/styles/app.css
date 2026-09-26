@@ -936,15 +936,22 @@
   font-size: 14px;
 }
 
+/* ネイティブ <dialog> を全画面に広げる。既定の中央寄せ・枠・余白は打ち消す。 */
 .editor {
-  position: fixed;
-  top: 0;
-  right: 0;
-  left: 0;
-  z-index: 80;
   display: flex;
   flex-direction: column;
+  width: 100%;
+  max-width: 100%;
   height: 100dvh;
+  max-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  color: var(--color-text);
+  background: var(--color-bg);
+  border: 0;
+}
+
+.editor::backdrop {
   background: var(--color-bg);
 }
 
@@ -1190,4 +1197,24 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+/* ============================================================ タッチ環境の調整 */
+
+/*
+ * iOS Safari は、フォーカスしたフォーム要素の文字が 16px 未満だと viewport を
+ * 自動でズームする。スマホを保証対象にしているので、タッチ環境では下限を 16px にする。
+ * （viewport に user-scalable=no を足す回避策は、ユーザーの拡大操作まで潰すので採らない）
+ *
+ * 個別クラスと同じ詳細度なので、打ち消せるようファイル末尾に置いている。
+ * 幅の条件はルール表がカード表示に変わる閾値（NARROW_BREAKPOINT）と揃えてある。
+ */
+@media (pointer: coarse), (hover: none), (max-width: 719px) {
+  .cell-input,
+  .input-card__preview,
+  .editor__textarea,
+  .dialog__textarea,
+  .file-card__plain {
+    font-size: 16px;
+  }
 }

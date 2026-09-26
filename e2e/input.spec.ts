@@ -43,6 +43,48 @@ test('エディタは Escape でも閉じられる', async ({ page }) => {
   await expect(page.locator('.editor')).toHaveCount(0);
 });
 
+test('エディタは本物のモーダルで、フォーカスが背面へ抜けない', async ({ page }) => {
+  await page.locator('.input-card__preview').click();
+  const dialog = page.locator('dialog.editor');
+  await expect(dialog).toBeVisible();
+
+  // 開いた直後は本文にフォーカスがある
+  await expect(page.locator('.editor__textarea')).toBeFocused();
+
+  // 背面の操作要素にフォーカスが移らないこと。
+  // タブ順が一周する瞬間は document.body を通るので、それは外へ出たとは見なさない。
+  const focusedOutside = async (): Promise<string | null> =>
+    page.evaluate(() => {
+      const active = document.activeElement;
+      if (!active || active === document.body) return null;
+      return active.closest('dialog.editor') ? null : active.className || active.tagName;
+    });
+
+  for (let i = 0; i < 12; i++) {
+    await page.keyboard.press('Tab');
+    expect(await focusedOutside(), `Tab ${i + 1} 回目`).toBeNull();
+  }
+  for (let i = 0; i < 6; i++) {
+    await page.keyboard.press('Shift+Tab');
+    expect(await focusedOutside(), `Shift+Tab ${i + 1} 回目`).toBeNull();
+  }
+
+  // 背面の要素は inert 扱いなので、プログラムから focus() しても受け取らない
+  await page.evaluate(() => {
+    document.querySelector<HTMLButtonElement>('.app-header .btn--primary')?.focus();
+  });
+  expect(await focusedOutside(), '背面のボタンへ focus() したとき').toBeNull();
+});
+
+test('エディタを閉じると起点のプレビューへフォーカスが戻る', async ({ page }) => {
+  await page.locator('.input-card__preview').click();
+  await expect(page.locator('dialog.editor')).toBeVisible();
+
+  await page.getByRole('button', { name: '完了' }).click();
+  await expect(page.locator('dialog.editor')).toHaveCount(0);
+  await expect(page.locator('.input-card__preview')).toBeFocused();
+});
+
 test('テキスト欄を追加するとそのままエディタが開く', async ({ page }) => {
   await page.getByRole('button', { name: 'テキスト欄を追加' }).click();
   await expect(page.locator('.editor')).toBeVisible();

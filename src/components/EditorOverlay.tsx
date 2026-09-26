@@ -1,4 +1,4 @@
-import { type JSX, type KeyboardEvent, useEffect, useRef } from 'react';
+import { type JSX, useEffect, useRef } from 'react';
 import { useScrollLock } from '../hooks/useScrollLock';
 import { formatIndex, formatTextMeta } from '../lib/format';
 import type { InputText } from '../types';
@@ -22,7 +22,14 @@ export interface EditorOverlayProps {
   onClose: () => void;
 }
 
-/** 入力テキストを全画面で編集するオーバーレイ。 */
+/**
+ * 入力テキストを全画面で編集するオーバーレイ。
+ *
+ * ネイティブの `<dialog>` を `showModal()` で開く。以前は `role="dialog"` を付けた
+ * ただの div で、見た目はモーダルでも Tab で背面の要素へ抜けられ、`aria-modal` も
+ * 背面の不活性化も無かった。ネイティブに寄せることで、フォーカストラップ・背面の
+ * inert 化・Escape・閉じたあとの起点へのフォーカス復帰をブラウザに任せられる。
+ */
 export function EditorOverlay({
   input,
   index,
@@ -35,8 +42,15 @@ export function EditorOverlay({
   onNext,
   onClose,
 }: EditorOverlayProps): JSX.Element {
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   useScrollLock(true);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    dialog?.showModal();
+    return () => dialog?.close();
+  }, []);
 
   // 開いた直後にプレビューで見ていた位置へ合わせる。テキストの変更では走らせない。
   // biome-ignore lint/correctness/useExhaustiveDependencies: 開いた対象が変わったときだけ位置を復元する
@@ -56,14 +70,17 @@ export function EditorOverlay({
     );
   }, [input.id]);
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
-    onClose();
-  };
-
   return (
-    <div className="editor" role="dialog" aria-label="本文の編集" onKeyDown={handleKeyDown}>
+    <dialog
+      ref={dialogRef}
+      className="editor"
+      aria-label="本文の編集"
+      onCancel={(event) => {
+        // 既定の閉じ方だと React 側の状態が残るので、こちらで閉じる。
+        event.preventDefault();
+        onClose();
+      }}
+    >
       <div className="editor__head">
         <span className="editor__num">{formatIndex(index)}</span>
         <input
@@ -112,6 +129,6 @@ export function EditorOverlay({
         spellCheck={false}
         aria-label="本文"
       />
-    </div>
+    </dialog>
   );
 }

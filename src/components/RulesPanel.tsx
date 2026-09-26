@@ -125,6 +125,7 @@ export function RulesPanel({
           <button
             type="button"
             className={`toggle toggle--tall${cards ? '' : ' is-active'}`}
+            aria-pressed={!cards}
             onClick={() => onSetView('table')}
           >
             表
@@ -132,6 +133,7 @@ export function RulesPanel({
           <button
             type="button"
             className={`toggle toggle--tall${cards ? ' is-active' : ''}`}
+            aria-pressed={cards}
             onClick={() => onSetView('card')}
           >
             カード

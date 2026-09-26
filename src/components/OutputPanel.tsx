@@ -82,6 +82,7 @@ export function OutputPanel({
             key={group.id}
             type="button"
             className={`out-tab${group.id === current?.id ? ' is-active' : ''}`}
+            aria-current={group.id === current?.id ? 'true' : undefined}
             onClick={() => onSelectGroup(group.id)}
           >
             <span>{group.name}</span>
@@ -107,6 +108,7 @@ export function OutputPanel({
                   <button
                     type="button"
                     className={`toggle${highlighted ? ' is-active' : ''}`}
+                    aria-pressed={highlighted}
                     onClick={() => onSetFileView(key, 'highlight')}
                   >
                     ハイライト
@@ -114,6 +116,7 @@ export function OutputPanel({
                   <button
                     type="button"
                     className={`toggle${highlighted ? '' : ' is-active'}`}
+                    aria-pressed={!highlighted}
                     onClick={() => onSetFileView(key, 'plain')}
                   >
                     テキスト

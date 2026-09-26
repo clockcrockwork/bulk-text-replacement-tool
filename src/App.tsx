@@ -98,12 +98,16 @@ export function App(): JSX.Element {
   const closeEditor = (): void => {
     const id = state.editingId;
     dispatch({ type: 'editor/close' });
-    // スクロールロック解除のあとに、編集していたカードまで戻す。
+    // スクロールロック解除のあとに、編集していたカードまで戻し、起点へフォーカスを返す。
+    // <dialog> 自身も閉じる際にフォーカスを戻すが、挙動がブラウザ依存なので明示しておく。
     requestAnimationFrame(() => {
       const card = document.querySelector(`[data-input-id="${id}"]`);
       if (!card) return;
       const top = card.getBoundingClientRect().top + window.scrollY - SCROLL_BACK_OFFSET;
       window.scrollTo({ top: Math.max(0, top) });
+      card.querySelector<HTMLTextAreaElement>('.input-card__preview')?.focus({
+        preventScroll: true,
+      });
     });
   };
 

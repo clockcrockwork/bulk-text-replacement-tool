@@ -2,7 +2,8 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "types": ["node"],
-    "lib": ["ES2023"]
+    // page.evaluate / $$eval のコールバックはブラウザ側で動くので DOM 型が要る。
+    "lib": ["ES2023", "DOM", "DOM.Iterable"]
   },
   "include": ["e2e", "vite.config.ts", "playwright.config.ts"]
 }
