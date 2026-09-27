@@ -1,6 +1,6 @@
 # GitHub import V2 specification
 
-Status: proposed / implementation-ready  
+Status: Slice 1 production-smoke complete / Slice 2 implementation-ready  
 Applies to: `main` only  
 Tracking issue: #12
 
@@ -180,6 +180,59 @@ Accessibility requirements:
 - screen-reader state for checkbox / mixed state
 - usable on mobile and Safari
 
+### Slice 2 selection model
+
+Selection is stored independently from which directories have already been expanded.
+
+Use **path rules** with two states:
+
+- `include`
+- `exclude`
+
+The default for the repository is `exclude`. For any path, the longest matching ancestor/exact rule wins.
+
+Examples:
+
+- selecting unopened directory `docs` adds `docs → include`
+- later expanding `docs` makes its supported children selected without another network-dependent state change
+- deselecting `docs/draft.md` adds `docs/draft.md → exclude`, so `docs` becomes mixed
+- selecting a child below an excluded directory adds a more-specific `include` rule
+
+When a path is explicitly selected/deselected, remove redundant descendant rules that no longer change the result. The pure selection helpers live outside the React component and are unit-tested.
+
+Directory checkbox state:
+
+- **checked**: the path is effectively included and no descendant override makes it partial
+- **unchecked**: the path is effectively excluded and no descendant include makes it partial
+- **mixed**: a descendant rule differs from the directory's effective state
+
+A directory does not need to be expanded to be selected.
+
+Use a native checkbox where possible. Directory navigation and directory selection are separate controls: the checkbox changes selection; the directory name/button opens it. Do not make mobile users depend on a small disclosure arrow or hover target.
+
+### Search / filter
+
+Slice 2 search is a **filter of the currently loaded directory**, not a repository-wide code search and not a reason to recursively enumerate the repository.
+
+- match the visible entry name/path case-insensitively
+- filtering changes visibility only
+- selection rules are never deleted or rewritten by filtering
+- clearing the filter restores the same checkbox states
+
+Repository-wide search can be designed separately if real usage shows it is needed.
+
+### Selection summary before enumeration
+
+An unopened selected directory has an unknown number of supported descendants until enumeration. Do not fake an exact file count.
+
+Before enumeration, show:
+
+- explicitly/known selected file count
+- selected directory count that still requires enumeration
+- known selected bytes from loaded file entries
+
+After enumeration and before blob download, replace that with the exact supported-file count and exact total bytes from tree entries.
+
 ### Supported entries
 
 Importable extensions are shared with the existing local import contract:
@@ -210,6 +263,20 @@ Known GitHub constraints that affect the implementation:
 - repository and installation listings are paginated
 
 Directory import may use recursive tree as a fast path only if `truncated === false`.
+
+For each effective include root:
+
+1. if it is a file, keep that file
+2. if it is a directory, request `?recursive=1` as a fast path
+3. if `truncated === false`, normalize descendants, apply include/exclude rules, and keep only supported files
+4. if `truncated === true`, discard that partial recursive result and traverse the directory non-recursively until complete
+5. deduplicate final files by repository path before blob fetch
+
+Never merge a truncated recursive result with fallback results and call it complete.
+
+The fallback traversal may use bounded concurrency, but it shares the same global GitHub-request concurrency budget as blob fetching. Start at **4 or fewer concurrent requests**.
+
+If a selected directory contains a more-specific exclusion, the exclusion is applied after enumeration. A more-specific include below an excluded ancestor is also honored by the longest-path-rule semantics.
 
 If a recursive response is truncated, fall back to non-recursive subtree traversal. Never treat a truncated tree as a complete successful selection.
 
@@ -260,6 +327,45 @@ Any fetch/decode/validation failure leaves the workspace unchanged.
 Show failed paths and allow the user to retry or go back.
 
 Use bounded concurrency and `AbortController` so cancellation stops pending work.
+
+### Batch preparation and commit
+
+Slice 2 uses two phases:
+
+**Prepare (no workspace mutation):**
+
+1. enumerate selection rules into an exact, deduplicated file list
+2. calculate exact file count / total tree bytes
+3. fetch/decode candidates with bounded concurrency
+4. collect candidate-specific warnings/failures
+5. calculate source-identity conflicts and basename collisions
+6. build an explicit import plan
+
+**Commit (one workspace mutation):**
+
+- apply the entire resolved plan with one workspace reducer action
+- the plan contains every add and every update target
+- do not dispatch a sequence of individual `inputs/update` / `inputs/add` actions as the batch commit
+- if preparation fails, conflict choices are incomplete, or the user goes back, dispatch nothing to the workspace
+
+For same-source conflicts in a batch:
+
+- one existing match: require **update existing** or **add another**
+- multiple existing matches: choosing update also requires an explicit target
+- there is one global **cancel/back** action; do not silently skip a selected conflicting file
+- the final import button stays disabled while any conflict is unresolved
+
+Same-basename/different-source remains a warning only.
+
+A single-file import may continue using the same plan machinery with one candidate so Slice 1 and Slice 2 do not diverge semantically.
+
+### Failure handling during preparation
+
+- 401 / expired token: abort the whole preparation and reconnect
+- rate limit: abort the whole preparation and show the classified rate-limit state
+- file-specific fetch/decode/validation failures: workspace remains unchanged; show the affected repository paths
+- cancel: abort outstanding work and leave workspace unchanged
+- retry starts a new preparation against the **same pinned commit** unless the user explicitly chooses **最新に更新**
 
 ## 8. Input provenance
 
@@ -417,10 +523,14 @@ Rate-limit errors must be distinguishable from generic network failures.
 ### Unit
 
 - tree normalization
+- selection-rule longest-prefix resolution
+- redundant descendant rule compaction
 - tri-state directory selection
 - select parent before expansion, then child inherits selection
 - deselect child → parent becomes mixed
+- excluded parent + re-included descendant
 - filter does not mutate selection
+- selected unopened directory reports pending enumeration instead of a fake exact count
 - extension filter
 - symlink / submodule exclusion
 - source identity
@@ -443,6 +553,15 @@ Cover:
 - authorized but not installed → install/configure → reconnect
 - repo → branch → pinned snapshot → tree → import
 - directory recursive selection
+- selected unopened directory inherits selection after expansion
+- selected directory with one deselected descendant
+- current-directory filter hides/restores rows without changing selection
+- recursive tree fast path
+- truncated recursive tree falls back and does not omit files
+- exact batch count/bytes appear after enumeration
+- one blob failure leaves the whole workspace unchanged
+- unresolved same-source batch conflict disables final import
+- batch commit applies adds/updates in one visible workspace transition
 - same-source update/add/cancel
 - different-source same-basename import
 - OAuth state mismatch
@@ -485,9 +604,12 @@ On Vercel preview/production with a real GitHub App:
 - [ ] branch selection pins a commit SHA
 - [ ] tree browsing and blob import use the same pinned SHA
 - [ ] directory/file checkbox selection works, including unopened directory inheritance
+- [ ] directory selection is independent of expansion/filter state and supports mixed descendants
 - [ ] only supported files are importable
 - [ ] recursive tree truncation cannot silently omit files
-- [ ] import is atomic
+- [ ] pre-enumeration summary distinguishes known files/bytes from unopened selected directories
+- [ ] exact count/bytes are shown after enumeration and before blob fetch/commit
+- [ ] import is atomic and the resolved batch is committed with one workspace reducer action
 - [ ] provenance is preserved
 - [ ] same basename from different sources is not treated as the same source
 - [ ] access token / refresh token / OAuth code are not persisted
