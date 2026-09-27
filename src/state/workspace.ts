@@ -256,14 +256,31 @@ function reduce(state: WorkspaceState, action: WorkspaceAction): WorkspaceState 
     case 'inputs/applyGitHubBatch': {
       if (action.updates.length === 0 && action.adds.length === 0) return state;
       // batch は候補を全件取得・検証した後の1 actionでだけ反映する。
-      // 初期サンプルなら、この同じ mutation の中で片付ける。
+      // 初期サンプルなら、入力だけでなくサンプル用ルール/グループも同じ mutation 内で片付ける。
+      const sampleReset = state.isSample
+        ? {
+            groups: [createGroup('グループ1')],
+            rules: [createEmptyRule()],
+            editingId: null,
+            result: null,
+            lastSignature: null,
+            outGroupId: null,
+            fileViews: {},
+            cellEdit: null,
+          }
+        : {};
       const base = state.isSample ? [] : state.inputs;
       const updates = new Map(action.updates.map((update) => [update.id, update]));
       const replaced = base.map((input) => {
         const update = updates.get(input.id);
         return update ? { ...input, text: update.text, source: update.source } : input;
       });
-      return { ...state, inputs: [...replaced, ...action.adds], tab: 'input' };
+      return {
+        ...state,
+        ...sampleReset,
+        inputs: [...replaced, ...action.adds],
+        tab: 'input',
+      };
     }
 
     case 'inputs/update':
