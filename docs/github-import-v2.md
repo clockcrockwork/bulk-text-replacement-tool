@@ -154,6 +154,8 @@ Provide a **最新に更新** action that explicitly resolves and pins a new sna
 
 Selection belongs to the pinned snapshot. When a new snapshot is pinned (最新に更新 finds a new commit, or a branch is chosen), the selection is cleared and the status message says so. If 最新に更新 finds the same commit, nothing changes and the selection is kept.
 
+Committing a single-file import (clicking a file name and adding/updating it) keeps the checkbox selection, so the user can check one file while building a multi-file selection. Committing a multi-file import clears the selection it used.
+
 ## 5. Tree picker
 
 Use Git Trees API as the tree source.
@@ -227,6 +229,8 @@ Blob fetch concurrency starts at 4 or fewer concurrent requests.
 
 Respect rate-limit signals the browser can actually read: `x-ratelimit-remaining` / `x-ratelimit-reset` (exposed through CORS) and the error `message` in the response body. `retry-after` is **not** in GitHub's `Access-Control-Expose-Headers`, so browser code cannot read it; when a secondary rate limit is detected from the status and message, wait at least one minute as GitHub's rate-limit documentation advises. Do not retry continuously.
 
+The error message shows when a rate limit is expected to lift (`x-ratelimit-reset`, or at least one minute for a secondary limit). Until that time the **再試行** button is disabled, and the retry handler refuses to run even if called. A multi-file retry re-issues many requests, so the wait is enforced by the UI, not only described.
+
 ### REST API version and CORS
 
 Repository data is fetched browser → `api.github.com` directly, so every request must pass GitHub's CORS policy. GitHub's CORS documentation shows the preflight response:
@@ -253,7 +257,7 @@ GitHub import is a transaction from the workspace's point of view.
 Before changing workspace state:
 
 1. enumerate every selected supported path from the pinned snapshot
-2. show the plan: the exact file list, file count, and byte total from tree entry sizes, plus any large-selection warnings (§10); no blob has been fetched yet
+2. show the plan: the exact file list and file count, the byte total of entries whose size the tree reports, the number of entries whose size is unknown, and any large-selection warnings (§10); no blob has been fetched yet
 3. fetch all required blobs only after the user confirms the plan
 4. decode all blobs with the existing `decodeText`
 5. validate all candidates
@@ -263,6 +267,12 @@ Before changing workspace state:
 9. dispatch the workspace mutation only after all required candidates are ready
 
 The plan step is always shown, even for a small selection. An unopened directory's contents are unknown until enumeration, so this is the first point where the real count and size can be shown, and fetching costs rate limit.
+
+What the plan step guarantees: **no file content (blob) is fetched in bulk before the user has seen the exact target count**. Enumeration itself reads tree metadata from GitHub and does use API requests before the plan is shown. That cannot be avoided, because the count and paths are only known after enumeration. The number of requests cannot be predicted in advance either: a successful recursive tree takes one request per selected root, and a truncated one falls back to one or two requests per directory. The status message while enumerating says that file contents have not been fetched yet.
+
+Both the plan and the confirmation list show at most 100 rows. The rest are summarized as a count. There is no hard cap on the selection, so without this the screen that shows the warnings could itself become too large to render. The confirmation list shows candidates that need a decision first, then candidates with a warning (same basename, Shift_JIS guess), then the rest.
+
+**選択へ戻る** on the plan step also cancels a fetch that is in progress. The remaining blob requests are aborted and the busy state is cleared.
 
 Any fetch/decode/validation failure leaves the workspace unchanged.
 
@@ -330,6 +340,15 @@ Offer:
 
 If multiple existing inputs share the same source identity, never guess which one to update. Ask the user to select the target, add another, or cancel.
 
+In a multi-file import, **cancel** means going back to the selection (**選択へ戻る**) and changing which files are checked. Choosing the files belongs to the tree picker. The confirmation step only decides add vs. update for candidates whose source already exists, and skipping a single candidate there is out of scope for Slice 2. It would need a second exclusion state beside the selection and would complicate the atomic batch.
+
+Because a batch can contain many same-source candidates, the confirmation step offers two bulk actions that never guess:
+
+- update every undecided candidate that has exactly one same-source input
+- add every undecided candidate as a new input
+
+Candidates with two or more same-source inputs still need an explicit choice, unless the user adds them all. Bulk actions never overwrite a choice that has already been made.
+
 ### Same basename but different GitHub source
 
 Treat them as distinct inputs.
@@ -358,7 +377,8 @@ V2 behavior:
 - reject blobs over 100 MB before fetch
 - warn for unusually large selections that browser persistence may fail
   - the plan step (§7) warns when the selection has more than 200 files (each blob is one request against the usual 5,000 requests/hour) or more than 2 MB in total (localStorage stops at a few MB)
-  - these are warnings only; there is no hard cap, so a legitimate large import is still possible after the user has seen the numbers
+  - it also warns whenever some entries have an unknown size. The shown total is then only a lower bound, and the real size cannot be checked before fetching, so this case is never shown as "no warning"
+  - these are warnings only; there is no hard cap, so a legitimate large import is still possible after the user has seen the numbers. A hard safety ceiling may be added later, based on measurements of browser memory and storage failures on real devices; it is a separate layer from GitHub's 100 MB per-blob API limit
 - keep the existing persistent save-failure warning and backup path
 - do not make an IndexedDB migration a prerequisite for GitHub import
 
@@ -484,7 +504,9 @@ Cover:
 
 ### Manual smoke test
 
-On Vercel preview/production with a real GitHub App:
+Only on the Production deployment, or on a fixed verification origin that is registered in advance. The GitHub App callback and the token-exchange allowlist are exact origins, and the GitHub env variables are configured for Production only (`docs/github-app-setup.md`), so PR Preview deployments cannot complete real OAuth. The release order is: CI with mocked E2E → merge → Production deploy → this smoke test.
+
+With a real GitHub App:
 
 - install/authorize App
 - choose an authorized repository
@@ -522,7 +544,7 @@ On Vercel preview/production with a real GitHub App:
 - [ ] rate limits, pagination, and truncation are handled
 - [ ] `npm run check` passes
 - [ ] GitHub import E2E passes
-- [ ] real GitHub App OAuth smoke test passes on an exact callback URL
+- [ ] real GitHub App OAuth smoke test passes on an exact callback URL (run on Production after merge; this is the release gate, see §13 **Manual smoke test**)
 - [ ] `release/lolipop-v1` remains unchanged
 
 ## 15. Implementation status
@@ -558,7 +580,12 @@ Implemented:
 - tri-state directories, unopened-directory inheritance, descendant exclusion, and explicit re-inclusion
 - current-directory filter that changes visibility only and preserves selection
 - known selected file/directory count and byte summary before enumeration
-- a plan step after enumeration and before any blob fetch: exact file list, count, and byte total from tree sizes, with warnings above 200 files or 2 MB
+- a plan step after enumeration and before any blob fetch: exact file list and count, known-size byte total and unknown-size count, with warnings above 200 files or 2 MB and whenever a size is unknown
+- plan and confirmation lists render at most 100 rows (decision-needed and warned candidates first); the rest are shown as a count
+- 選択へ戻る during a fetch aborts the remaining blob requests and clears the busy state
+- bulk same-source decisions (update single-target candidates / add all undecided) that never guess
+- a single-file import keeps the checkbox selection; a multi-file import clears it
+- rate-limited errors disable 再試行 until the reset time
 - selection is locked while enumerating/fetching, and results computed from a different selection are discarded
 - pinning a new snapshot clears the selection and says so
 - recursive Git Trees fast path from the minimal selected roots
