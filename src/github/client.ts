@@ -14,8 +14,8 @@ import {
   normalizeRefCommitSha,
   normalizeRepositories,
   normalizeTree,
-  parseNextLink,
   PER_PAGE,
+  parseNextLink,
   readErrorMessage,
 } from '../lib/githubApi';
 import type { GitHubRepository, GitHubSnapshot } from '../types';
