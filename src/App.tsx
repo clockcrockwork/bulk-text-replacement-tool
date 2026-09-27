@@ -14,7 +14,12 @@ import { CellEditor } from './components/CellEditor';
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog';
 import { DropOverlay } from './components/DropOverlay';
 import { EditorOverlay } from './components/EditorOverlay';
-import { GitHubImportDialog, type SameSourceInput } from './components/GitHubImportDialog';
+import {
+  type GitHubBatchDecision,
+  type GitHubBatchMatch,
+  GitHubImportDialog,
+  type SameSourceInput,
+} from './components/GitHubImportDialog';
 import { ImportDialog } from './components/ImportDialog';
 import { InputPanel } from './components/InputPanel';
 import { OutputPanel } from './components/OutputPanel';
@@ -285,6 +290,27 @@ export function App(): JSX.Element {
       )
     : false;
 
+  const githubBatchMatches: GitHubBatchMatch[] = (github.state.batchCandidates ?? []).map(
+    (candidate) => {
+      const sameSource = findSameSource(state.inputs, candidate.source).map((input) => {
+        const index = state.inputs.indexOf(input);
+        return {
+          id: input.id,
+          label: `${formatIndex(index)} ${input.title || formatFallbackTitle(index)}`,
+        };
+      });
+      const titleCollision = state.inputs.some(
+        (input) =>
+          input.title === candidate.title &&
+          !(
+            input.source &&
+            sourceIdentity(input.source) === sourceIdentity(candidate.source)
+          ),
+      );
+      return { path: candidate.source.path, sameSource, titleCollision };
+    },
+  );
+
   /** Shift_JIS は推測なので、黙って取り込まず知らせる（ローカルのファイルと同じ扱い）。 */
   const shiftJisNote = (encoding: 'utf-8' | 'shift_jis'): string =>
     encoding === 'shift_jis'
@@ -326,6 +352,52 @@ export function App(): JSX.Element {
       flash(
         `${target.title || candidate.title} を GitHub の内容で更新しました` +
           shiftJisNote(candidate.encoding),
+      );
+    });
+  };
+
+  const applyGitHubBatch = (decisions: readonly GitHubBatchDecision[]): void => {
+    const candidates = github.state.batchCandidates;
+    if (!candidates || candidates.length === 0) return;
+    const byPath = new Map(decisions.map((decision) => [decision.path, decision.updateInputId]));
+    const updates: Array<{
+      id: string;
+      text: string;
+      source: NonNullable<(typeof state.inputs)[number]['source']>;
+    }> = [];
+    const adds = [];
+
+    for (const candidate of candidates) {
+      if (!byPath.has(candidate.source.path)) {
+        flash('取り込み方法が決まっていないファイルがあります');
+        return;
+      }
+      const inputId = byPath.get(candidate.source.path) ?? null;
+      if (inputId === null) {
+        adds.push({ ...createInput(candidate.title, candidate.text), source: candidate.source });
+        continue;
+      }
+      const target = state.inputs.find((input) => input.id === inputId);
+      if (
+        !target?.source ||
+        sourceIdentity(target.source) !== sourceIdentity(candidate.source)
+      ) {
+        flash('更新先が変わったため、取り込み方法を選び直してください');
+        return;
+      }
+      updates.push({ id: inputId, text: candidate.text, source: candidate.source });
+    }
+
+    guard('GitHub からの一括取り込み', () => {
+      const clearedSample = state.isSample;
+      dispatch({ type: 'inputs/applyGitHubBatch', updates, adds });
+      github.finish();
+      const shiftJis = candidates.filter((candidate) => candidate.encoding === 'shift_jis').length;
+      flash(
+        `GitHub から ${candidates.length}ファイルを取り込みました` +
+          (updates.length > 0 ? ` · ${updates.length}件を更新` : '') +
+          (shiftJis > 0 ? ` · ${shiftJis}件は Shift_JIS` : '') +
+          (clearedSample ? ' · サンプルを片付けました' : ''),
       );
     });
   };
@@ -759,8 +831,10 @@ export function App(): JSX.Element {
           saveFailed={saveFailed}
           sameSource={githubSameSource}
           titleCollision={githubTitleCollision}
+          batchMatches={githubBatchMatches}
           onAdd={addFromGitHub}
           onUpdate={updateFromGitHub}
+          onApplyBatch={applyGitHubBatch}
         />
       ) : null}
 
