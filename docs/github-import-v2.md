@@ -191,6 +191,8 @@ Use **path rules** with two states:
 
 The default for the repository is `exclude`. For any path, the longest matching ancestor/exact rule wins.
 
+Ancestor matching is **path-segment aware**, never raw string-prefix matching. For example, rule `docs → include` applies to `docs/ch1.md` but not to `docs2/ch1.md`. Root may be represented as an explicit empty-path rule if the whole repository is selectable.
+
 Examples:
 
 - selecting unopened directory `docs` adds `docs → include`
@@ -346,6 +348,8 @@ Slice 2 uses two phases:
 - apply the entire resolved plan with one workspace reducer action
 - the plan contains every add and every update target
 - do not dispatch a sequence of individual `inputs/update` / `inputs/add` actions as the batch commit
+- if the untouched first-run sample must be cleared, clear its sample inputs/rules/groups **inside that same reducer action**, then apply the GitHub plan; do not dispatch `sample/clear` first
+- App may capture the pre-commit workspace for the existing undo toast, but the visible workspace transition is still one reducer dispatch
 - if preparation fails, conflict choices are incomplete, or the user goes back, dispatch nothing to the workspace
 
 For same-source conflicts in a batch:
@@ -523,7 +527,7 @@ Rate-limit errors must be distinguishable from generic network failures.
 ### Unit
 
 - tree normalization
-- selection-rule longest-prefix resolution
+- selection-rule longest-prefix resolution with path-segment boundaries (`docs` must not match `docs2`)
 - redundant descendant rule compaction
 - tri-state directory selection
 - select parent before expansion, then child inherits selection
