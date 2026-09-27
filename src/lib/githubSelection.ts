@@ -66,14 +66,10 @@ export function setTreeSelection(
  * state makes it mixed, even if that descendant has not been expanded in the current view.
  */
 /** Whether a directory can contain any selected supported path. Used to prune lazy traversal. */
-export function selectionMayContainSelected(
-  selection: GitHubTreeSelection,
-  path: string,
-): boolean {
+export function selectionMayContainSelected(selection: GitHubTreeSelection, path: string): boolean {
   if (isPathSelected(selection, path)) return true;
   return Object.entries(selection.rules).some(
-    ([rulePath, selected]) =>
-      selected && rulePath !== path && isSameOrDescendant(rulePath, path),
+    ([rulePath, selected]) => selected && rulePath !== path && isSameOrDescendant(rulePath, path),
   );
 }
 
@@ -81,10 +77,7 @@ export function hasAnySelection(selection: GitHubTreeSelection): boolean {
   return Object.values(selection.rules).some((selected) => selected);
 }
 
-export function selectionMark(
-  selection: GitHubTreeSelection,
-  path: string,
-): GitHubSelectionMark {
+export function selectionMark(selection: GitHubTreeSelection, path: string): GitHubSelectionMark {
   const selected = isPathSelected(selection, path);
   for (const rulePath of Object.keys(selection.rules)) {
     if (rulePath === path || !isSameOrDescendant(rulePath, path)) continue;
