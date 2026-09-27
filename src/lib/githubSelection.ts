@@ -73,6 +73,24 @@ export function hasAnySelection(selection: GitHubTreeSelection): boolean {
   return Object.values(selection.rules).some((selected) => selected);
 }
 
+/**
+ * Explicit include rules that are not already covered by another include ancestor.
+ * A re-include below an excluded subtree does not need a second traversal when an included ancestor
+ * exists: final selection is still decided by the most-specific rule after recursive enumeration.
+ */
+export function includedSelectionRoots(selection: GitHubTreeSelection): string[] {
+  const included = Object.entries(selection.rules)
+    .filter(([, selected]) => selected)
+    .map(([path]) => path)
+    .sort((a, b) => a.split('/').length - b.split('/').length || (a < b ? -1 : a > b ? 1 : 0));
+  const roots: string[] = [];
+  for (const path of included) {
+    if (roots.some((root) => isSameOrDescendant(path, root))) continue;
+    roots.push(path);
+  }
+  return roots;
+}
+
 export function selectionMark(selection: GitHubTreeSelection, path: string): GitHubSelectionMark {
   const selected = isPathSelected(selection, path);
   for (const rulePath of Object.keys(selection.rules)) {
