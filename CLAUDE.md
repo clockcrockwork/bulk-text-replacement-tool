@@ -173,8 +173,9 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
 
 - **`main`** — 継続開発する本流。Vercel production はここから配信する。GitHub 連携を含む
   V1 後の機能追加・改善・通常の依存更新はすべてここで行う。
-- **`release/lolipop-v1`** — コンテスト提出用の V1 保守系統。基点は PR #6 の
-  squash merge `221c233`。ロリポップ配信を維持するための最小修正以外は入れない。
+- **`release/lolipop-v1`** — コンテスト提出用の V1 保守系統。分岐点は PR #6 の
+  squash merge `221c233`、V1 baseline はタグ `v1.0.0`
+  （V1 freeze prep PR #10）。ロリポップ配信を維持するための最小修正以外は入れない。
 
 ### release/lolipop-v1 を触る条件
 
@@ -187,7 +188,7 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
 - GitHub 連携や新機能
 - UI / UX の通常改善やデザイン変更
 - `main` に入った機能を揃えるためだけの同期
-- 必須理由のない dependency update / refactor / cleanup
+- 必須理由のない dependency update / refactor / cleanup（Dependabot も release は追従させない）
 
 **`main` を release ブランチへ丸ごと merge / rebase しない。**
 両方に必要なバグ修正は原則 `main` で先に直し、release に必要な最小 commit だけ
