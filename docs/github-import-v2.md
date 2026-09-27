@@ -479,3 +479,29 @@ On Vercel preview/production with a real GitHub App:
 - [ ] GitHub import E2E passes
 - [ ] real GitHub App OAuth smoke test passes on an exact callback URL
 - [ ] `release/lolipop-v1` remains unchanged
+
+## 15. Implementation status
+
+### Slice 1 (single-file import)
+
+Implemented:
+
+- consent screen, explicit PKCE (S256) + `state` authorization, callback handling on app start
+- token exchange Function `api/github/token.js` (Origin / exact redirect URI allowlists, refresh token discarded, `no-store`)
+- in-memory access token; `sessionStorage` holds only `state` / verifier across the redirect
+- installation check via `GET /user/installations`, install/configure link, and recheck
+- repository list, default-branch preselection, branch change, pinned commit snapshot, explicit **最新に更新**
+- minimal single-select file explorer: non-recursive Git Trees per directory, lazy loading, breadcrumb / up navigation, tap-first layout
+- one supported blob fetched from the pinned snapshot, decoded with `decodeText`, Git LFS pointer rejection
+- `InputText.source`, storage normalization, source-identity duplicate handling (update / add another / cancel, explicit target when ambiguous), provenance on input cards
+- backup format version 2 (reads version 1)
+
+Implementation decisions:
+
+- callback URL is the origin root (`https://<origin>/`) because the build uses relative asset paths (`base: './'`)
+- Client ID and App slug are build-time public values (`VITE_GITHUB_APP_CLIENT_ID`, `VITE_GITHUB_APP_SLUG`); without them the button is disabled. No runtime config endpoint. See `docs/github-app-setup.md`
+- the Vercel Function is written in JavaScript with JSDoc types (TypeScript 7 has no JS transpile API for the Vercel builder to use)
+
+### Slice 2 (planned)
+
+Checkbox tree picker (tri-state, unopened-directory inheritance, search that does not mutate selection), multi-file atomic import with bounded blob concurrency, recursive-tree fast path with truncation fallback, candidate summary for multiple files.
