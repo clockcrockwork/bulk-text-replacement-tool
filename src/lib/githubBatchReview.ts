@@ -9,6 +9,29 @@ import type { BatchSourceMatch } from './inputSource';
  */
 export const BATCH_LIST_LIMIT = 100;
 
+/** 一覧のうち、いま表示している範囲。`start` は含み、`end` は含まない。 */
+export interface ListPage {
+  index: number;
+  count: number;
+  start: number;
+  end: number;
+}
+
+/**
+ * 確認画面の一覧を `size` 件ずつに区切ったときの、`requested` 番目のページ。
+ *
+ * 確認画面では、同じ取り込み元の候補は1件ずつ決める必要があり、決める手段が一覧の中に
+ * しか無い。先頭だけを見せて残りを件数で示すと、101件目以降の候補に手が届かず確定できなく
+ * なる。並べる数は抑えたまま、すべての行へ到達できるようにページで送る。決めても行の位置は
+ * 動かさない（操作中の選択欄が目の前から消えないように）。範囲外の番号は端に寄せる。
+ */
+export function listPage(total: number, requested: number, size = BATCH_LIST_LIMIT): ListPage {
+  const count = Math.max(1, Math.ceil(total / size));
+  const index = Math.min(Math.max(0, requested), count - 1);
+  const start = index * size;
+  return { index, count, start, end: Math.min(total, start + size) };
+}
+
 /** 候補1件の取り込み方法。 */
 export type BatchChoice = { action: 'add' } | { action: 'update'; inputId: string };
 

@@ -270,7 +270,12 @@ The plan step is always shown, even for a small selection. An unopened directory
 
 What the plan step guarantees: **no file content (blob) is fetched in bulk before the user has seen the exact target count**. Enumeration itself reads tree metadata from GitHub and does use API requests before the plan is shown. That cannot be avoided, because the count and paths are only known after enumeration. The number of requests cannot be predicted in advance either: a successful recursive tree takes one request per selected root, and a truncated one falls back to one or two requests per directory. The status message while enumerating says that file contents have not been fetched yet.
 
-Both the plan and the confirmation list show at most 100 rows. The rest are summarized as a count. There is no hard cap on the selection, so without this the screen that shows the warnings could itself become too large to render. The confirmation list shows candidates that need a decision first, then candidates with a warning (same basename, Shift_JIS guess), then the rest.
+Neither list renders more than 100 rows at a time. There is no hard cap on the selection, so without this the screen that shows the warnings could itself become too large to render.
+
+- The plan list shows the first 100 paths and a count of the rest. It only informs; nothing is decided there.
+- The confirmation list is paged in steps of 100, with previous/next controls. Same-source candidates must be decided row by row, so every row has to stay reachable; a list that showed only the first 100 would leave the 101st undecidable. It shows candidates that need a decision first, then candidates with a warning (same basename, Shift_JIS guess), then the rest. The order does not change as choices are made, so the row being edited never moves away.
+
+The batch confirmation does not preview file contents. For Shift_JIS guesses it says so and points to going back and opening files one by one (the single-file view shows the text).
 
 **選択へ戻る** on the plan step also cancels a fetch that is in progress. The remaining blob requests are aborted and the busy state is cleared.
 
@@ -581,7 +586,7 @@ Implemented:
 - current-directory filter that changes visibility only and preserves selection
 - known selected file/directory count and byte summary before enumeration
 - a plan step after enumeration and before any blob fetch: exact file list and count, known-size byte total and unknown-size count, with warnings above 200 files or 2 MB and whenever a size is unknown
-- plan and confirmation lists render at most 100 rows (decision-needed and warned candidates first); the rest are shown as a count
+- plan list shows the first 100 rows plus a count; the confirmation list is paged by 100 (decision-needed and warned candidates first) so every candidate stays reachable
 - 選択へ戻る during a fetch aborts the remaining blob requests and clears the busy state
 - bulk same-source decisions (update single-target candidates / add all undecided) that never guess
 - a single-file import keeps the checkbox selection; a multi-file import clears it

@@ -618,7 +618,9 @@ test('1件だけ確かめて取り込んでも、組んでいた複数選択は�
   await expect(chapters).not.toBeChecked();
 });
 
-test('大量の選択でも、計画画面と確認画面は先頭だけを並べて残りを件数で示す', async ({ page }) => {
+test('大量の選択でも、計画画面は先頭だけを並べ、確認画面は100件ずつ送って全件に届く', async ({
+  page,
+}) => {
   const files = Array.from({ length: 120 }, (_, index) => ({
     path: `many/f${String(index).padStart(3, '0')}.md`,
     content: `${index}\n`,
@@ -639,12 +641,69 @@ test('大量の選択でも、計画画面と確認画面は先頭だけを並�
 
   await plan.getByRole('button', { name: '120ファイルを取得' }).click();
   const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
-  await expect(
-    batch.getByRole('list', { name: '取り込むファイル' }).getByRole('listitem'),
-  ).toHaveCount(100);
-  await expect(batch).toContainText('ほか 20件');
+  const rows = batch.getByRole('list', { name: '取り込むファイル' }).getByRole('listitem');
+  await expect(rows).toHaveCount(100);
+  await expect(batch).toContainText('1〜100件目 / 全120件');
+  await batch.getByRole('button', { name: '次の100件' }).click();
+  await expect(rows).toHaveCount(20);
+  await expect(rows.last()).toContainText('many/f119.md');
   await batch.getByRole('button', { name: '120ファイルを取り込む' }).click();
   await expect(page.locator('.input-card')).toHaveCount(121);
+});
+
+test('更新先が2件以上ある候補が100件を超えても、ページを送れば101件目を個別に決められる', async ({
+  page,
+}) => {
+  const files = Array.from({ length: 101 }, (_, index) => ({
+    path: `many/f${String(index).padStart(3, '0')}.md`,
+    content: `新しい${index}\n`,
+  }));
+  const repository = novelRepository({ branches: { main: files } });
+  const mock = new GitHubMock([repository]);
+  const sourceOf = (path: string) => ({
+    kind: 'github' as const,
+    repositoryId: repository.id,
+    owner: repository.owner,
+    repo: repository.name,
+    ref: 'main',
+    commitSha: 'a'.repeat(40),
+    path,
+    blobSha: 'b'.repeat(40),
+  });
+  // どの候補にも同じ取り込み元の入力が2件ずつある（更新先を推測できない）。
+  const inputs = files.flatMap((file, index) =>
+    ['x', 'y'].map((copy) => ({
+      id: `${copy}${index}`,
+      title: `${copy}-${index}.md`,
+      text: '古い\n',
+      source: sourceOf(file.path),
+    })),
+  );
+  await mock.install(page);
+  await seedWorkspace(page, { inputs, groups: [{ id: 'g1', name: 'A用' }], rules: [] });
+  await openApp(page);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'many フォルダを選択' }).check();
+  const batch = await fetchSelection(page, 101);
+  // 更新先が2件の候補しか無いので、「更新先が1件」のまとめ操作は出ない。
+  await expect(batch.getByRole('button', { name: /更新先が1件/ })).toHaveCount(0);
+  await expect(batch).toContainText('未決定 101件');
+
+  await batch.getByRole('button', { name: '次の100件' }).click();
+  const last = batch.getByRole('combobox', { name: 'many/f100.md の取り込み方法' });
+  await last.selectOption('update:y100');
+  await expect(batch).toContainText('未決定 100件');
+  // 前のページへ戻っても、決めた内容は残る。
+  await batch.getByRole('button', { name: '前の100件' }).click();
+  await batch.getByRole('button', { name: '次の100件' }).click();
+  await expect(last).toHaveValue('update:y100');
+
+  await batch.getByRole('button', { name: '未決定の100件をすべて別の入力として追加' }).click();
+  await batch.getByRole('button', { name: '101ファイルを取り込む' }).click();
+  // 1件は更新、100件は追加。
+  await expect(page.locator('.input-card')).toHaveCount(202 + 100);
 });
 
 test('同じ取り込み元の候補は、更新先が1件のものをまとめて更新に決められる', async ({ page }) => {

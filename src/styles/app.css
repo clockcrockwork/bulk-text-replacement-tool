@@ -1666,6 +1666,13 @@ button.github__entry:hover {
   font-size: 13px;
 }
 
+.github__list-pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .github__batch-bulk {
   display: flex;
   flex-wrap: wrap;

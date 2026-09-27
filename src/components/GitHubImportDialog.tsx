@@ -18,6 +18,7 @@ import {
   countUndecided,
   type GitHubBatchDecision,
   initialBatchChoices,
+  listPage,
   needsDecision,
   orderForReview,
   toBatchDecisions,
@@ -917,8 +918,9 @@ function BatchCandidateView({
   ).length;
   const bytes = candidates.reduce((sum, candidate) => sum + candidate.size, 0);
   const shiftJis = candidates.filter((candidate) => candidate.encoding === 'shift_jis').length;
-  const shown = ordered.slice(0, BATCH_LIST_LIMIT);
-  const hidden = ordered.length - shown.length;
+  const [pageIndex, setPageIndex] = useState(0);
+  const page = listPage(ordered.length, pageIndex);
+  const shown = ordered.slice(page.start, page.end);
 
   return (
     <section className="github__section" aria-label="複数ファイルの取り込み確認">
@@ -931,7 +933,11 @@ function BatchCandidateView({
       <ul className="dialog__details">
         <li>合計 {formatBytes(bytes)}</li>
         {shiftJis > 0 ? (
-          <li>{shiftJis}件は Shift_JIS として読み込みました。文字化けが無いか確認してください。</li>
+          <li>
+            {shiftJis}件は Shift_JIS
+            として読み込みました（推測）。この画面では本文を確認できないので、
+            気になる場合は選択へ戻り、ファイル名を押して1件ずつ確認してください。
+          </li>
         ) : null}
         {needingDecision.length > 0 ? (
           <li>
@@ -1016,11 +1022,29 @@ function BatchCandidateView({
           );
         })}
       </ul>
-      {hidden > 0 ? (
-        <p className="github__list-more">
-          ほか {hidden}
-          件は一覧を省略しています（判断が要るもの・注意が要るものを先に並べています）。
-        </p>
+      {page.count > 1 ? (
+        <nav className="github__list-pager" aria-label="取り込むファイルの一覧のページ">
+          <button
+            type="button"
+            className="btn btn--small"
+            disabled={page.index === 0}
+            onClick={() => setPageIndex(page.index - 1)}
+          >
+            前の{BATCH_LIST_LIMIT}件
+          </button>
+          <span className="github__list-more">
+            {page.start + 1}〜{page.end}件目 / 全{ordered.length}
+            件（判断が要るもの・注意が要るものを先に並べています）
+          </span>
+          <button
+            type="button"
+            className="btn btn--small"
+            disabled={page.index === page.count - 1}
+            onClick={() => setPageIndex(page.index + 1)}
+          >
+            次の{BATCH_LIST_LIMIT}件
+          </button>
+        </nav>
       ) : null}
 
       <div className="dialog__row">

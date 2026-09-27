@@ -6,6 +6,7 @@ import {
   chooseSingleUpdates,
   countUndecided,
   initialBatchChoices,
+  listPage,
   needsDecision,
   orderForReview,
   toBatchDecisions,
@@ -84,5 +85,19 @@ describe('一括取り込みの確認', () => {
       { path: 'a.md', action: 'add' },
       { path: 'b.md', action: 'update', inputId: 'in1' },
     ]);
+  });
+});
+
+describe('確認画面の一覧のページ', () => {
+  it('100件ずつに区切り、最後のページは残りだけにする', () => {
+    expect(listPage(250, 0)).toEqual({ index: 0, count: 3, start: 0, end: 100 });
+    expect(listPage(250, 2)).toEqual({ index: 2, count: 3, start: 200, end: 250 });
+  });
+
+  it('範囲外の番号は端に寄せ、0件でも1ページとして扱う', () => {
+    expect(listPage(250, 9)).toEqual({ index: 2, count: 3, start: 200, end: 250 });
+    expect(listPage(250, -1)).toEqual({ index: 0, count: 3, start: 0, end: 100 });
+    expect(listPage(0, 0)).toEqual({ index: 0, count: 1, start: 0, end: 0 });
+    expect(listPage(100, 1)).toEqual({ index: 0, count: 1, start: 0, end: 100 });
   });
 });
