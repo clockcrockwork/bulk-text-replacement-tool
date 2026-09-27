@@ -1,9 +1,27 @@
 import type { JSX } from 'react';
+import type { ToastState } from '../hooks/useToast';
 
-export function Toast({ message }: { message: string }): JSX.Element {
+interface ToastProps {
+  toast: ToastState;
+  onAction: () => void;
+}
+
+export function Toast({ toast, onAction }: ToastProps): JSX.Element {
   return (
     <div className="toast" role="status">
-      {message}
+      <span>{toast.message}</span>
+      {toast.action ? (
+        <button
+          type="button"
+          className="toast__action"
+          onClick={() => {
+            toast.action?.onClick();
+            onAction();
+          }}
+        >
+          {toast.action.label}
+        </button>
+      ) : null}
     </div>
   );
 }

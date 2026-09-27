@@ -79,6 +79,15 @@ export interface PersistedWorkspace {
   groups: Group[];
   rules: Rule[];
   theme: Theme;
+  /**
+   * 中身が初回のサンプルのままか。
+   *
+   * サンプルは使い方を見せるために置いてあるが、そのまま実原稿を足すと
+   * 結果にサンプルが混ざり、サンプルのルールが実原稿に当たる。まだ手を付けて
+   * いないあいだだけ true にして、実データが入ったら片付ける判断に使う。
+   * 保存データに無ければ false（サンプルではない）として扱う。
+   */
+  isSample: boolean;
 }
 
 export type Theme = 'light' | 'dark';

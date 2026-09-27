@@ -1,5 +1,10 @@
 import type { ChangeEvent, JSX, KeyboardEvent, MouseEvent, RefObject } from 'react';
-import { formatIndex, formatInputSummary, formatTextMeta } from '../lib/format';
+import {
+  formatFallbackTitle,
+  formatIndex,
+  formatInputSummary,
+  formatTextMeta,
+} from '../lib/format';
 import { ACCEPT_ATTRIBUTE, ACCEPTED_EXTENSIONS_LABEL } from '../lib/inputFiles';
 import type { InputText } from '../types';
 import { Icon } from './Icon';
@@ -10,6 +15,9 @@ export interface InputPanelProps {
   onPickFiles: () => void;
   onFilesSelected: (event: ChangeEvent<HTMLInputElement>) => void;
   onAddInput: () => void;
+  /** 中身が初回のサンプルのままか。 */
+  isSample: boolean;
+  onClearSample: () => void;
   onClearInputs: () => void;
   onRenameInput: (id: string, title: string) => void;
   onRemoveInput: (id: string) => void;
@@ -23,6 +31,8 @@ export function InputPanel({
   onPickFiles,
   onFilesSelected,
   onAddInput,
+  isSample,
+  onClearSample,
   onClearInputs,
   onRenameInput,
   onRemoveInput,
@@ -69,6 +79,18 @@ export function InputPanel({
         />
       </div>
 
+      {isSample ? (
+        <div className="sample-notice" role="status">
+          <span>
+            いまはサンプルのデータです。原稿を取り込むと自動で片付きます。
+            試したあと自分で消したいときはこちら。
+          </span>
+          <button type="button" className="btn btn--small" onClick={onClearSample}>
+            サンプルを片付ける
+          </button>
+        </div>
+      ) : null}
+
       <div className="section-head">
         <div className="section-head__title">入力テキスト</div>
         <div className="section-head__meta">{formatInputSummary(inputs.length)}</div>
@@ -94,8 +116,9 @@ export function InputPanel({
                 className="cell-input input-card__title"
                 value={input.title}
                 onChange={(event) => onRenameInput(input.id, event.target.value)}
-                placeholder="ファイル名（例：chapter1.md。拡張子が無ければ .txt）"
+                placeholder={`空欄なら ${formatFallbackTitle(index)}`}
                 aria-label="ファイル名"
+                title="拡張子が無ければ .txt を付けます（.md / .tex 以外も .txt を足します）"
               />
               <button
                 type="button"

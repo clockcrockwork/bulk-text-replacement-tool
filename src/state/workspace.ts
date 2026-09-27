@@ -1,3 +1,4 @@
+import { uniqueName } from '../lib/fileName';
 import { createGroupId, createId } from '../lib/id';
 import { loadWorkspace, preferredTheme } from '../lib/storage';
 import type {
@@ -5,11 +6,28 @@ import type {
   Group,
   ImportMode,
   InputText,
+  PersistedWorkspace,
   Rule,
   RuleView,
   Tab,
   Theme,
 } from '../types';
+
+/** 同名のグループが残らないよう、後から出てきた方に連番を振る。 */
+function dedupeGroupNames(groups: readonly Group[]): Group[] {
+  const used = new Set<string>();
+  return groups.map((group) => {
+    const name = uniqueName(group.name, used);
+    used.add(name);
+    return { ...group, name };
+  });
+}
+
+/** 複数行セルの編集対象。`groupId` が null なら置換元の列。 */
+export interface CellEditTarget {
+  ruleId: string;
+  groupId: string | null;
+}
 
 /** 出力ペインの本文表示モード。 */
 export type FileView = 'highlight' | 'plain';
@@ -20,6 +38,8 @@ export interface WorkspaceState {
   groups: Group[];
   rules: Rule[];
   theme: Theme;
+  /** 中身が初回のサンプルのままか。`src/types.ts` の説明を参照。 */
+  isSample: boolean;
 
   // ---- 画面の状態（永続化しない） ----
   tab: Tab;
@@ -37,6 +57,13 @@ export interface WorkspaceState {
   outGroupId: string | null;
   /** `${groupId}:${fileIndex}` → 表示モード。 */
   fileViews: Record<string, FileView>;
+  /**
+   * 複数行セルの編集対象。`groupId` が null なら置換元の列。
+   *
+   * 改行を含む値は1行の `<input>` に載せられない（載せると編集した瞬間に改行が消える）。
+   * 表の一覧性は崩さず、編集だけ別の場所で行う。
+   */
+  cellEdit: CellEditTarget | null;
   importOpen: boolean;
   importText: string;
   importMode: ImportMode;
@@ -51,6 +78,7 @@ export type WorkspaceAction =
   | { type: 'inputs/update'; id: string; patch: Partial<Omit<InputText, 'id'>> }
   | { type: 'inputs/remove'; id: string }
   | { type: 'inputs/clear' }
+  | { type: 'workspace/replace'; workspace: PersistedWorkspace }
   | { type: 'groups/add'; group: Group }
   | { type: 'groups/rename'; id: string; name: string }
   | { type: 'groups/remove'; id: string }
@@ -68,7 +96,11 @@ export type WorkspaceAction =
   | { type: 'import/apply'; groups: Group[]; rules: Rule[] }
   | { type: 'result/set'; result: ConversionResult; signature: string }
   | { type: 'output/selectGroup'; id: string }
-  | { type: 'output/setFileView'; key: string; view: FileView };
+  | { type: 'output/setFileView'; key: string; view: FileView }
+  | { type: 'cellEdit/open'; target: CellEditTarget }
+  | { type: 'cellEdit/close' }
+  | { type: 'sample/clear' }
+  | { type: 'sample/restore'; workspace: PersistedWorkspace };
 
 /** 置換元が空の新規行。表の末尾に置いて入力待ちにする。 */
 export function createEmptyRule(): Rule {
@@ -86,7 +118,10 @@ export function createInput(title: string, text = ''): InputText {
 /**
  * 初回訪問時に置くサンプル。使い方（グループ列・置換ルール）が一目で分かる状態にしておく。
  */
-function createDefaultState(): Pick<WorkspaceState, 'inputs' | 'groups' | 'rules' | 'theme'> {
+function createDefaultState(): Pick<
+  WorkspaceState,
+  'inputs' | 'groups' | 'rules' | 'theme' | 'isSample'
+> {
   const groupA = createGroup('A用');
   const groupB = createGroup('B用');
   return {
@@ -117,6 +152,8 @@ function createDefaultState(): Pick<WorkspaceState, 'inputs' | 'groups' | 'rules
       createEmptyRule(),
     ],
     theme: preferredTheme(),
+    // まだ誰も触っていないサンプル。実データが入ったら片付ける判断に使う。
+    isSample: true,
   };
 }
 
@@ -134,9 +171,11 @@ export function initWorkspace(): WorkspaceState {
     lastSignature: null,
     outGroupId: null,
     fileViews: {},
+    cellEdit: null,
     importOpen: false,
     importText: '',
-    importMode: 'replace',
+    // 既定は非破壊側。置き換えは取り消せないので、選ぶのはユーザーの明示操作にする。
+    importMode: 'append',
   };
 }
 
@@ -158,7 +197,35 @@ function patchById<T extends { id: string }>(
   return items.map((item) => (item.id === id ? ({ ...item, ...patch } as T) : item));
 }
 
+/**
+ * 中身に手を付けたら「サンプルのまま」ではなくなる action。
+ *
+ * 自動で片付けてよいのは**まだ誰も触っていないサンプル**だけ。1文字でも直したら
+ * ユーザーの作業なので、勝手に消さず手動の「サンプルを片付ける」に任せる。
+ */
+const TOUCHES_CONTENT = new Set<WorkspaceAction['type']>([
+  'inputs/add',
+  'inputs/addMany',
+  'inputs/update',
+  'inputs/remove',
+  'inputs/clear',
+  'groups/add',
+  'groups/rename',
+  'groups/remove',
+  'rules/add',
+  'rules/update',
+  'rules/setValue',
+  'rules/move',
+  'rules/remove',
+  'import/apply',
+]);
+
 export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction): WorkspaceState {
+  const next = reduce(state, action);
+  return TOUCHES_CONTENT.has(action.type) && next.isSample ? { ...next, isSample: false } : next;
+}
+
+function reduce(state: WorkspaceState, action: WorkspaceAction): WorkspaceState {
   switch (action.type) {
     case 'theme/toggle':
       return { ...state, theme: state.theme === 'dark' ? 'light' : 'dark' };
@@ -193,8 +260,28 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
     case 'inputs/clear':
       return { ...state, inputs: [], editingId: null };
 
-    case 'groups/add':
-      return { ...state, groups: [...state.groups, action.group] };
+    case 'workspace/replace':
+      // 作業データの読み込み。古い変換結果とエディタの状態は、新しい入力に
+      // 対応しないので一緒に捨てる（残すと別の原稿の結果を持ち出せてしまう）。
+      return {
+        ...state,
+        ...action.workspace,
+        groups: dedupeGroupNames(action.workspace.groups),
+        editingId: null,
+        result: null,
+        lastSignature: null,
+        outGroupId: null,
+        fileViews: {},
+        cellEdit: null,
+      };
+
+    case 'groups/add': {
+      // グループ名は出力先（タブ名・ZIP のディレクトリ名）の識別子になるので、
+      // 見た目が同じものを作らない。
+      const used = new Set(state.groups.map((group) => group.name));
+      const name = uniqueName(action.group.name, used);
+      return { ...state, groups: [...state.groups, { ...action.group, name }] };
+    }
 
     case 'groups/rename':
       return { ...state, groups: patchById(state.groups, action.id, { name: action.name }) };
@@ -294,6 +381,32 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
 
     case 'output/setFileView':
       return { ...state, fileViews: { ...state.fileViews, [action.key]: action.view } };
+
+    case 'sample/clear':
+      // サンプルを片付ける。グループは空にできない（置換先を書く場所が無くなる）ので
+      // 1つだけ残し、名前も既定に戻す。
+      return {
+        ...state,
+        inputs: [],
+        groups: [createGroup('グループ1')],
+        rules: [createEmptyRule()],
+        isSample: false,
+        editingId: null,
+        result: null,
+        lastSignature: null,
+        outGroupId: null,
+        fileViews: {},
+        cellEdit: null,
+      };
+
+    case 'sample/restore':
+      return { ...state, ...action.workspace, result: null, lastSignature: null };
+
+    case 'cellEdit/open':
+      return { ...state, cellEdit: action.target };
+
+    case 'cellEdit/close':
+      return { ...state, cellEdit: null };
 
     default: {
       // すべての action を処理し終えたことを型で保証する。

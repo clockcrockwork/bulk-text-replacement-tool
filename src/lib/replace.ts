@@ -240,6 +240,9 @@ export interface ConversionInput {
 export function runConversion({ inputs, groups, rules }: ConversionInput): ConversionResult {
   const compiled = rules.map((rule) => compileRule(rule));
   const fileNames = resolveFileNames(inputs.map((input) => input.title));
+  // ZIP のディレクトリ名。画面のタブ名にもこれをそのまま使う。
+  // 名前を生のまま出すと、同じ「A用」というタブが2つ並び、どちらがどのグループか
+  // 分からないのに、ZIP の中では別ディレクトリ、という食い違いが起きる。
   const dirNames = resolveDirNames(groups.map((group) => group.name));
   const hitsByGroupRule: Record<string, Record<string, number>> = {};
 
@@ -272,7 +275,7 @@ export function runConversion({ inputs, groups, rules }: ConversionInput): Conve
 
     return {
       id: group.id,
-      name: group.name || dir,
+      name: dir,
       dir,
       files,
       hits: files.reduce((sum, file) => sum + file.hits, 0),

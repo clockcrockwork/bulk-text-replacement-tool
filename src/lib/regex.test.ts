@@ -38,17 +38,23 @@ describe('compileRule', () => {
     expect(result.kind === 'ok' && result.re.test('漢')).toBe(true);
   });
 
-  // u フラグでのみ不正になる書き方は、従来どおり動かす（既存ルールを壊さない）。
-  // 裸の `{` は従来の正規表現では文字として通るが、u フラグ付きでは不正になる。
-  // 既に動いているルールを壊さないよう、u 無しで作り直す経路を固定しておく。
+  // u フラグでのみ不正になる書き方は、黙って u 無しに退避せずエラーにする。
+  // 退避すると、同じ `.` がルールによって1文字にも2文字にもなり、仕様が1つに定まらない。
   it.each(['{', '}', '\\-', '\\a', '[a-\\d]'])(
-    'u では不正だが従来は通る書き方「%s」は u 無しで受け付ける',
+    'u では不正になる書き方「%s」はエラーにする（黙って意味を変えない）',
     (src) => {
       const result = compileRule({ src, regex: true, cs: true });
-      expect(result.kind).toBe('ok');
-      expect(result.kind === 'ok' && result.re.flags).toBe('g');
+      expect(result.kind).toBe('error');
+      expect(result.kind === 'error' && result.message).toContain('正規表現エラー');
     },
   );
+
+  it('コンパイルできたルールは必ず u 付き（Unicode の扱いがルールで変わらない）', () => {
+    for (const src of ['アリス', '\\d+', '\\p{Script=Han}', '.']) {
+      const result = compileRule({ src, regex: true, cs: true });
+      expect(result.kind === 'ok' && result.re.flags).toContain('u');
+    }
+  });
 
   it('リテラルは常に u 付きでコンパイルできる', () => {
     const result = compileRule({ src: '\u{20BB7}さん', regex: false, cs: true });

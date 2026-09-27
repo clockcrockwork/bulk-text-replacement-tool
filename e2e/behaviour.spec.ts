@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { goToTab, makeRule, openApp, seedRawWorkspace, seedWorkspace } from './fixtures';
+import { goToTab, makeRule, openApp, seedBasic, seedRawWorkspace, seedWorkspace } from './fixtures';
 import { readZipEntries } from './zipReader';
 
 /**
@@ -36,21 +36,23 @@ test.describe('同時と順次の違い', () => {
     await page.getByRole('button', { name: 'テキスト', exact: true }).click();
     await expect(page.locator('.file-card__plain')).toHaveValue('b');
   });
+});
 
-  test('順次は置換結果と周囲の文字列にまたがる一致も拾う', async ({ page }) => {
-    await seedWorkspace(page, {
-      inputs: [{ id: 'i1', title: 'a.txt', text: 'アリスちゃん' }],
-      groups: [GROUP],
-      rules: [
-        makeRule('r1', 'アリス', { g1: 'あー' }),
-        makeRule('r2', 'あーちゃん', { g1: 'X' }, { order: 'seq' }),
-      ],
-    });
-    await openApp(page);
-    await page.getByRole('button', { name: '変換' }).click();
-    await page.getByRole('button', { name: 'テキスト', exact: true }).click();
-    await expect(page.locator('.file-card__plain')).toHaveValue('X');
+// 状態を自前で仕込むので describe の beforeEach とは分ける
+// （seed は1回だけ効くため、二重に仕込むと後から書いた方が落ちる）。
+test('順次は置換結果と周囲の文字列にまたがる一致も拾う', async ({ page }) => {
+  await seedWorkspace(page, {
+    inputs: [{ id: 'i1', title: 'a.txt', text: 'アリスちゃん' }],
+    groups: [GROUP],
+    rules: [
+      makeRule('r1', 'アリス', { g1: 'あー' }),
+      makeRule('r2', 'あーちゃん', { g1: 'X' }, { order: 'seq' }),
+    ],
   });
+  await openApp(page);
+  await page.getByRole('button', { name: '変換' }).click();
+  await page.getByRole('button', { name: 'テキスト', exact: true }).click();
+  await expect(page.locator('.file-card__plain')).toHaveValue('X');
 });
 
 test('ZIP にはグループ名のディレクトリと変換後の本文が入る', async ({ page }) => {
@@ -95,6 +97,7 @@ test('ファイル名に .. が入っていても ZIP の中では無害化さ�
 });
 
 test('画面を狭めるとルールが自動でカード表示に切り替わる', async ({ page }) => {
+  await seedBasic(page);
   await openApp(page);
   await goToTab(page, 'ルール');
   await expect(page.locator('.rule-table')).toHaveCount(1);
@@ -111,8 +114,12 @@ test.describe('壊れた保存データからの復帰', () => {
   test('不正な JSON なら初期状態で起動する', async ({ page }) => {
     await seedRawWorkspace(page, '{壊れている');
     await openApp(page);
+    // 復旧画面ではなく通常の画面が出ること。中身がサンプルであることは
+    // sample.spec.ts の担当なので、ここでは内容に踏み込まない。
+    await expect(page.locator('.recovery')).toHaveCount(0);
     await expect(page.locator('.input-card')).toHaveCount(1);
-    await expect(page.locator('.input-card__title')).toHaveValue('chapter1.md');
+    await goToTab(page, 'ルール');
+    await expect(page.locator('.rule-table')).toHaveCount(1);
   });
 
   test('欠けたフィールドを補って復元し、変換まで通る', async ({ page }) => {
@@ -162,6 +169,7 @@ test.describe('ドラッグ＆ドロップ', () => {
   test.skip(({ browserName }) => browserName !== 'chromium', 'Chromium のみ');
 
   test('ドラッグ中は案内が出て、ドロップすると取り込まれる', async ({ page }) => {
+    await seedBasic(page);
     await openApp(page);
 
     const dataTransfer = await page.evaluateHandle(() => {
@@ -180,6 +188,7 @@ test.describe('ドラッグ＆ドロップ', () => {
   });
 
   test('ドラッグしたまま枠外で終わっても案内が残らない', async ({ page }) => {
+    await seedBasic(page);
     await openApp(page);
     const dataTransfer = await page.evaluateHandle(() => {
       const transfer = new DataTransfer();

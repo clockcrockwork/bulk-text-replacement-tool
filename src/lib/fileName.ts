@@ -1,3 +1,18 @@
+import { ACCEPTED_EXTENSIONS } from './inputFiles';
+
+/**
+ * 既に使われている名前なら ` (2)` `(3)` … を足して一意にする。
+ *
+ * 表の取り込み・グループの追加・作業データの読み込みで同じ規則を使う。
+ * 別々に組むと、経路によって同名が残ったり残らなかったりする。
+ */
+export function uniqueName(name: string, used: ReadonlySet<string>): string {
+  if (!used.has(name)) return name;
+  let suffix = 2;
+  while (used.has(`${name} (${suffix})`)) suffix += 1;
+  return `${name} (${suffix})`;
+}
+
 /**
  * Windows の予約デバイス名。拡張子が付いていても開けないので避ける。
  */
@@ -60,12 +75,44 @@ export function dedupeNames(names: readonly string[]): string[] {
   });
 }
 
-/** 入力テキストのタイトルから出力ファイル名を決める。拡張子がなければ `.txt` を足す。 */
+/**
+ * 名前の末尾が、このツールが中身を保証している拡張子か。
+ *
+ * 判定に使うのは取り込みと同じ一覧。ここを別に持つと、入力で受け付ける形式と
+ * 出力で名乗る形式が静かにずれる。
+ */
+function hasGuaranteedExtension(name: string): boolean {
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0) return false;
+  const ext = name.slice(dot + 1).toLowerCase();
+  return (ACCEPTED_EXTENSIONS as readonly string[]).includes(ext);
+}
+
+/**
+ * 入力テキストのタイトルから出力ファイル名を決める。
+ *
+ * タイトルは**ファイル名であってパスではない**ので `/` は潰す。許すと ZIP の中だけ
+ * 階層になり、個別保存では末尾だけが使われる、という食い違いが起きる。
+ *
+ * 中身は常に UTF-8 のプレーンテキストで、`.md` と書いても Markdown へ変換はしない。
+ * そのため保証していない拡張子（`.html` など）はそのままにせず `.txt` を足して
+ * `title.html.txt` にする。削って `title.txt` にしないのは、利用者が付けた名前を
+ * 失わせないため。`.html` のまま出すと、展開後にブラウザが HTML として解釈し得る。
+ *
+ * 変えるのはファイル名だけで、本文・ルール・変換結果の文字列には一切触らない。
+ */
 export function resolveFileNames(titles: readonly string[]): string[] {
   return dedupeNames(
     titles.map((title, index) => {
-      const cleaned = sanitizeName(title ?? '', true) || `text-${index + 1}.txt`;
-      return /\.[a-z0-9]+$/i.test(cleaned) ? cleaned : `${cleaned}.txt`;
+      // 区切りは階層ではなく名前の一部として残すが、`.` と `..` だけの断片は落とす。
+      // 先に `_` へ置き換えてしまうと `../../evil.txt` が `.._.._evil.txt` になり、
+      // 無害ではあるものの読めない名前が残る。
+      const flattened = (title ?? '')
+        .split('/')
+        .filter((segment) => segment !== '' && segment !== '.' && segment !== '..')
+        .join('_');
+      const cleaned = sanitizeName(flattened, false) || `text-${index + 1}.txt`;
+      return hasGuaranteedExtension(cleaned) ? cleaned : `${cleaned}.txt`;
     }),
   );
 }

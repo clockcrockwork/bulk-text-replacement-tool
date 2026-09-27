@@ -1,5 +1,5 @@
 import { type ChangeEvent, type JSX, type RefObject, useEffect, useRef } from 'react';
-import { OPTION_HEADERS, type ParsedTable, TABLE_KIND_LABEL } from '../lib/table';
+import { findRaggedRows, OPTION_HEADERS, type ParsedTable, TABLE_KIND_LABEL } from '../lib/table';
 import type { ImportMode } from '../types';
 import { Icon } from './Icon';
 import { ToggleGroup, type ToggleOption } from './ToggleGroup';
@@ -53,6 +53,7 @@ export function ImportDialog({
   onApply,
 }: ImportDialogProps): JSX.Element {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const ragged = findRaggedRows(parsed.rows);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -106,6 +107,14 @@ export function ImportDialog({
           />
           <span className="dialog__detect">{describe(parsed)}</span>
         </div>
+
+        {ragged.length > 0 ? (
+          <p className="dialog__error" role="status">
+            見出しと列数が違う行があります（{ragged.length}行目
+            {ragged.length > 1 ? ` ほか${ragged.length - 1}件` : ''}
+            ）。区切りが壊れていると、一部だけ違うルールとして読み込まれます。
+          </p>
+        ) : null}
         <div className="dialog__row">
           <span className="hint">現在のルール表</span>
           <ToggleGroup

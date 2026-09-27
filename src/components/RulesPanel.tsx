@@ -1,6 +1,6 @@
 import { type JSX, type KeyboardEvent, useEffect, useMemo, useRef } from 'react';
+import { collectRuleErrors, findDuplicateGroupNames } from '../lib/diagnostics';
 import { resolveGridNav } from '../lib/gridNav';
-import { compileRule } from '../lib/regex';
 import type { ConversionResult, Group, Rule } from '../types';
 import { Icon } from './Icon';
 import { RuleCards } from './RuleCards';
@@ -16,9 +16,10 @@ const VIEW_OPTIONS: readonly ToggleOption<'table' | 'card'>[] = [
   { value: 'card', label: 'カード' },
 ];
 
-const KEY_HINT_CARDS = '↑↓ / Tab で前後の欄へ · Enter で次の欄（最後の欄なら行を追加）';
+const KEY_HINT_CARDS =
+  '↑↓ / Tab で前後の欄へ · Enter で次の欄（最後の欄なら行を追加）· Shift+Enter で複数行編集';
 const KEY_HINT_TABLE =
-  '↑↓ / Enter で上下の行へ · ← → / Tab で左右の欄へ · 最終行で Enter を押すと行を追加';
+  '↑↓ / Enter で上下の行へ · ← → / Tab で左右の欄へ · 最終行で Enter を押すと行を追加 · Shift+Enter で複数行編集';
 
 function focusCell(row: number, col: number): boolean {
   const element = document.querySelector<HTMLInputElement>(`[data-cell="${row}:${col}"]`);
@@ -58,24 +59,26 @@ export function RulesPanel({
   onExportTsv,
 }: RulesPanelProps): JSX.Element {
   // 正規表現ルールの数だけ new RegExp が走るので、打鍵のたびには作り直さない。
-  const rows: RuleRow[] = useMemo(
-    () =>
-      rules.map((rule, index) => {
-        const compiled = rule.regex && rule.src ? compileRule(rule) : null;
-        return {
-          rule,
-          index,
-          error: compiled?.kind === 'error' ? compiled.message : null,
-          hits: Object.fromEntries(
-            groups.map((group) => [
-              group.id,
-              rule.src ? result?.hitsByGroupRule[group.id]?.[rule.id] : undefined,
-            ]),
-          ),
-        };
-      }),
-    [rules, groups, result],
-  );
+  const rows: RuleRow[] = useMemo(() => {
+    // 変換をブロックする判定（App 側）と同じ関数を使う。別々に組むと、
+    // エラー表示は出ているのに変換は通る、という食い違いが生まれる。
+    const errors = collectRuleErrors(rules);
+    return rules.map((rule, index) => {
+      return {
+        rule,
+        index,
+        error: errors.get(rule.id) ?? null,
+        hits: Object.fromEntries(
+          groups.map((group) => [
+            group.id,
+            rule.src ? result?.hitsByGroupRule[group.id]?.[rule.id] : undefined,
+          ]),
+        ),
+      };
+    });
+  }, [rules, groups, result]);
+
+  const duplicateNames = useMemo(() => findDuplicateGroupNames(groups), [groups]);
 
   // 「最終行で Enter」で行を足したあと、増えた行にフォーカスを移す。
   const pendingFocus = useRef<{ row: number; col: number } | null>(null);
@@ -96,6 +99,17 @@ export function RulesPanel({
     if (event.altKey || event.ctrlKey || event.metaKey) return;
 
     const [row = 0, col = 0] = cell.split(':').map(Number);
+
+    // 1行入力では改行を打てないので、複数行にしたいときの入口をキーボードにも置く。
+    if (event.key === 'Enter' && event.shiftKey) {
+      const rule = rules[row];
+      if (rule) {
+        event.preventDefault();
+        ruleHandlers.onEditCell(rule.id, col === 0 ? null : (groups[col - 1]?.id ?? null));
+        return;
+      }
+    }
+
     const action = resolveGridNav({
       key: event.key,
       shiftKey: event.shiftKey,
@@ -152,6 +166,15 @@ export function RulesPanel({
           <span>TSV書き出し</span>
         </button>
       </div>
+
+      {duplicateNames.length > 0 ? (
+        <p className="rules-warning" role="status">
+          同じ名前のグループがあります（
+          {duplicateNames.map((name) => name || '（無名）').join('・')}
+          ）。出力では「A用 (2)」のように連番が付きますが、どの列がどの出力になるか
+          分かりにくいので、名前を変えることをおすすめします。
+        </p>
+      ) : null}
 
       <div className="legend">
         <div className="legend__item">

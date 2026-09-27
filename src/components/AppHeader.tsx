@@ -5,16 +5,26 @@ import { Icon } from './Icon';
 export interface AppHeaderProps {
   theme: Theme;
   onToggleTheme: () => void;
+  onOpenBackup: () => void;
   onRun: () => void;
 }
 
-export function AppHeader({ theme, onToggleTheme, onRun }: AppHeaderProps): JSX.Element {
+export function AppHeader({
+  theme,
+  onToggleTheme,
+  onOpenBackup,
+  onRun,
+}: AppHeaderProps): JSX.Element {
   return (
     <header className="app-header">
       <div className="brand">
         <span className="brand__mark" />
         <span className="brand__name">一括置換</span>
       </div>
+      <button type="button" className="btn btn--small" onClick={onOpenBackup}>
+        <Icon name="save" size={15} />
+        <span>作業データ</span>
+      </button>
       <button
         type="button"
         className="icon-btn"

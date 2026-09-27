@@ -52,21 +52,24 @@ describe('trimAscii', () => {
 describe('decodeText', () => {
   const utf8 = (text: string): ArrayBuffer => new TextEncoder().encode(text).buffer as ArrayBuffer;
 
-  it('UTF-8 をそのまま読む', () => {
-    expect(decodeText(utf8('名前,太郎'))).toBe('名前,太郎');
+  it('UTF-8 をそのまま読み、使った文字コードを返す', () => {
+    expect(decodeText(utf8('名前,太郎'))).toEqual({ text: '名前,太郎', encoding: 'utf-8' });
   });
 
   it('BOM 付き UTF-8 は BOM を落とす', () => {
-    expect(decodeText(utf8(`${BOM}名前`))).toBe('名前');
+    expect(decodeText(utf8(`${BOM}名前`)).text).toBe('名前');
   });
 
   // 旧原稿や Excel が書き出した CSV は Shift_JIS のことがある。
-  it('Shift_JIS(CP932) を読める', () => {
+  it('Shift_JIS(CP932) を読め、推測したことが分かる', () => {
     const cp932 = new Uint8Array([0x96, 0xbc, 0x91, 0x4f, 0x2c, 0x91, 0xbe, 0x98, 0x59]);
-    expect(decodeText(cp932.buffer as ArrayBuffer)).toBe('名前,太郎');
+    expect(decodeText(cp932.buffer as ArrayBuffer)).toEqual({
+      text: '名前,太郎',
+      encoding: 'shift_jis',
+    });
   });
 
-  it('空のバイト列でも落ちない', () => {
-    expect(decodeText(new ArrayBuffer(0))).toBe('');
+  it('空のバイト列でも落ちない（UTF-8 として読めるので推測にならない）', () => {
+    expect(decodeText(new ArrayBuffer(0))).toEqual({ text: '', encoding: 'utf-8' });
   });
 });

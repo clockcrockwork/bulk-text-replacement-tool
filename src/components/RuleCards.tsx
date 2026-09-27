@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { formatIndex } from '../lib/format';
 import { Icon } from './Icon';
+import { RuleCell } from './RuleCell';
 import { RuleFlags, RuleRowActions } from './RuleFlags';
 import { cellId, type RuleGridProps, srcCellLabel, valueCellLabel } from './ruleTypes';
 
@@ -49,37 +50,42 @@ export function RuleCards({
           <div key={rule.id} className="rule-card">
             <div className="rule-card__head">
               <span className="rule-card__num">{formatIndex(index)}</span>
-              <input
-                className="cell-input rule-card__src"
-                data-cell={cellId(index, 0)}
+              <RuleCell
+                className="rule-card__src"
+                cell={cellId(index, 0)}
                 value={rule.src}
-                onChange={(event) => ruleHandlers.onChangeSrc(rule.id, event.target.value)}
+                label={srcCellLabel(index)}
                 placeholder="置換元"
-                aria-label={srcCellLabel(index)}
+                onChange={(value) => ruleHandlers.onChangeSrc(rule.id, value)}
+                onEdit={() => ruleHandlers.onEditCell(rule.id, null)}
+                showEditButton
               />
             </div>
             {error ? <div className="rule-card__error">{error}</div> : null}
             {groups.map((group, groupIndex) => {
               const hit = hits[group.id];
               return (
-                <label key={group.id} className="rule-card__value">
+                // 複数行のセルは <button> になるので <label> では包めない。
+                // 入力側の aria-label にグループ名まで入れてあるので、
+                // ここは見出しの見た目だけを持つ器にする。
+                <div key={group.id} className="rule-card__value">
                   <span className="rule-card__group-name">{group.name || '（無名）'}</span>
-                  <input
-                    className="cell-input rule-card__value-input"
-                    data-cell={cellId(index, groupIndex + 1)}
+                  <RuleCell
+                    className="rule-card__value-input"
+                    cell={cellId(index, groupIndex + 1)}
                     value={rule.values[group.id] ?? ''}
-                    onChange={(event) =>
-                      ruleHandlers.onChangeValue(rule.id, group.id, event.target.value)
-                    }
+                    label={valueCellLabel(index, group.name)}
                     placeholder="（置換しない）"
-                    aria-label={valueCellLabel(index, group.name)}
+                    onChange={(value) => ruleHandlers.onChangeValue(rule.id, group.id, value)}
+                    onEdit={() => ruleHandlers.onEditCell(rule.id, group.id)}
+                    showEditButton
                   />
                   <span
                     className={`rule-card__hits hits${hit !== undefined && hit > 0 ? ' is-positive' : ''}`}
                   >
                     {hit !== undefined ? `${hit}件` : ''}
                   </span>
-                </label>
+                </div>
               );
             })}
             <div className="rule-card__actions">

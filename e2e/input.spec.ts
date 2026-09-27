@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
-import { goToTab, openApp } from './fixtures';
+import { goToTab, openApp, seedBasic } from './fixtures';
 
 test.beforeEach(async ({ page }) => {
+  await seedBasic(page);
   await openApp(page);
 });
 
@@ -18,7 +19,7 @@ test('ファイルを選ぶと入力として取り込まれ、対応外の拡�
   await expect(page.locator('.toast')).toHaveText(
     '2件のファイルを追加しました · 1件は非対応形式のためスキップ',
   );
-  // 手つかずのサンプルではなく中身があるので、既存の入力は残る。
+  // 既存の入力には中身があるので残り、後ろに追加される。
   await expect(page.locator('.input-card')).toHaveCount(3);
   await expect(page.locator('.input-card__title').nth(1)).toHaveValue('a.md');
 });
@@ -101,7 +102,7 @@ test('エディタから前後のテキストへ移動できる', async ({ page 
   await expect(page.locator('.editor__meta-pos')).toHaveText('2 / 2');
 
   await page.getByRole('button', { name: '前のテキスト' }).click();
-  await expect(page.locator('.editor__title')).toHaveValue('chapter1.md');
+  await expect(page.locator('.editor__title')).toHaveValue('story.md');
   await expect(page.getByRole('button', { name: '前のテキスト' })).toBeDisabled();
 
   await page.getByRole('button', { name: '次のテキスト' }).click();
@@ -168,4 +169,95 @@ test('エディタを開いている間は背面が動かず、閉じるとス�
   expect(restored).toBeGreaterThan(0);
   expect(Math.abs(restored - Number(locked.replace(/[-px]/g, '')))).toBeLessThan(300);
   await expect(page.locator('.input-card__preview').first()).toBeInViewport();
+});
+
+test.describe('破壊操作の確認', () => {
+  test('確認を閉じるまで実行されず、キャンセルすれば何も起きない', async ({ page }) => {
+    await page.getByRole('button', { name: 'すべて削除' }).click();
+
+    const dialog = page.locator('dialog.dialog--confirm[open]');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole('heading')).toHaveText('入力テキストをすべて削除する');
+    // 失われる内容が分かること。
+    await expect(dialog.locator('.dialog__details')).toContainText('入力 1件');
+    // Enter の連打で消えないよう、既定のフォーカスはキャンセル側。
+    await expect(dialog.getByRole('button', { name: 'キャンセル' })).toBeFocused();
+
+    await dialog.getByRole('button', { name: 'キャンセル' }).click();
+    await expect(page.locator('dialog.dialog--confirm')).toHaveCount(0);
+    await expect(page.locator('.input-card')).toHaveCount(1);
+  });
+
+  test('Escape でもキャンセルになる', async ({ page }) => {
+    await page.getByRole('button', { name: 'すべて削除' }).click();
+    await expect(page.locator('dialog.dialog--confirm[open]')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('dialog.dialog--confirm')).toHaveCount(0);
+    await expect(page.locator('.input-card')).toHaveCount(1);
+  });
+
+  test('実行を選ぶと削除される', async ({ page }) => {
+    await page.getByRole('button', { name: 'すべて削除' }).click();
+    await page.getByRole('button', { name: 'すべて削除する' }).click();
+    await expect(page.locator('dialog.dialog--confirm')).toHaveCount(0);
+    await expect(page.locator('.input-card')).toHaveCount(0);
+    await expect(page.locator('.empty')).toContainText('入力がありません');
+  });
+});
+
+test('Shift_JIS のファイルは読めるが、推測であることを知らせる', async ({ page }) => {
+  // CP932 の「名前,太郎」。UTF-8 としては不正なので Shift_JIS とみなされる。
+  const cp932 = Buffer.from([0x96, 0xbc, 0x91, 0x4f, 0x2c, 0x91, 0xbe, 0x98, 0x59]);
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles([{ name: 'old.txt', mimeType: 'text/plain', buffer: cp932 }]);
+
+  await expect(page.locator('.toast')).toContainText('Shift_JIS として読み込みました');
+  await expect(page.locator('.input-card__preview').nth(1)).toHaveValue('名前,太郎');
+});
+
+test.describe('同じ名前のファイルを入れ直したとき', () => {
+  const same = {
+    name: 'story.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from('直した本文'),
+  };
+
+  test('置き換えを選ぶと増えずに中身が新しくなる', async ({ page }) => {
+    await page.locator('input[type="file"]').first().setInputFiles([same]);
+
+    const dialog = page.locator('dialog.dialog--confirm[open]');
+    await expect(dialog.getByRole('heading')).toHaveText('同じ名前の入力があります');
+    await expect(dialog.locator('.dialog__details')).toContainText('story.md');
+    await dialog.getByRole('button', { name: '置き換える' }).click();
+
+    await expect(page.locator('.input-card')).toHaveCount(1);
+    await expect(page.locator('.input-card__preview')).toHaveValue('直した本文');
+  });
+
+  test('別の入力として追加も選べる', async ({ page }) => {
+    await page.locator('input[type="file"]').first().setInputFiles([same]);
+    await page
+      .locator('dialog.dialog--confirm')
+      .getByRole('button', { name: '別の入力として追加' })
+      .click();
+
+    await expect(page.locator('.input-card')).toHaveCount(2);
+    await expect(page.locator('.input-card__preview').first()).toHaveValue(
+      'アリスとビルが並ぶ。アリスは笑った。\n',
+    );
+  });
+
+  test('キャンセルすれば何も起きない', async ({ page }) => {
+    await page.locator('input[type="file"]').first().setInputFiles([same]);
+    await page
+      .locator('dialog.dialog--confirm')
+      .getByRole('button', { name: 'キャンセル' })
+      .click();
+    await expect(page.locator('.input-card')).toHaveCount(1);
+    await expect(page.locator('.input-card__preview')).toHaveValue(
+      'アリスとビルが並ぶ。アリスは笑った。\n',
+    );
+  });
 });
