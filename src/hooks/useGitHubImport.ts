@@ -51,6 +51,15 @@ const BLOB_CONCURRENCY = 4;
 
 class GitHubBatchPreparationError extends Error {}
 
+class GitHubBatchRequestError extends Error {
+  constructor(
+    readonly path: string,
+    readonly requestError: GitHubRequestError,
+  ) {
+    super(`${path}: ${requestError.message}`);
+  }
+}
+
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
@@ -87,7 +96,15 @@ async function enumerateSelectedEntries(
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     const step = queue.shift();
     if (!step) break;
-    const tree = await api.getTree(snapshot, step.treeSha, step.path, signal);
+    let tree: NormalizedTree;
+    try {
+      tree = await api.getTree(snapshot, step.treeSha, step.path, signal);
+    } catch (error) {
+      if (error instanceof GitHubRequestError) {
+        throw new GitHubBatchRequestError(step.path || 'ルート', error);
+      }
+      throw error;
+    }
     if (tree.truncated) {
       throw new GitHubBatchPreparationError(
         `${step.path || 'ルート'} の一覧が途中で打ち切られたため、安全に一括取り込みできません。`,
@@ -237,6 +254,21 @@ export function useGitHubImport(): GitHubImport {
           dispatch({ type: 'fail', error: { message: error.message, recover: 'dismiss' } });
           return;
         }
+        if (error instanceof GitHubBatchRequestError) {
+          const detail = error.requestError.detail;
+          if (detail.kind === 'unauthorized') {
+            dropConnection(`${error.path}: ${describeGitHubError(detail)}`);
+            return;
+          }
+          dispatch({
+            type: 'fail',
+            error: {
+              message: `${error.path}: ${describeGitHubError(detail)}`,
+              recover: detail.kind === 'listTooLong' ? 'dismiss' : 'retry',
+            },
+          });
+          return;
+        }
         if (error instanceof GitHubRequestError) {
           if (error.detail.kind === 'unauthorized') {
             dropConnection(describeGitHubError(error.detail));
@@ -282,7 +314,15 @@ export function useGitHubImport(): GitHubImport {
           throw new GitHubBatchPreparationError('選択範囲に取り込めるファイルがありません。');
         }
         return mapWithConcurrency(entries, BLOB_CONCURRENCY, signal, async (entry) => {
-          const buffer = await api.getBlob(snapshot, entry.sha, signal);
+          let buffer: ArrayBuffer;
+          try {
+            buffer = await api.getBlob(snapshot, entry.sha, signal);
+          } catch (error) {
+            if (error instanceof GitHubRequestError) {
+              throw new GitHubBatchRequestError(entry.path, error);
+            }
+            throw error;
+          }
           const result = buildCandidate(snapshot, entry, buffer);
           if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
           return result.candidate;
