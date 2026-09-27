@@ -13,7 +13,10 @@ V1 以降、同じコードを2つの配信先で同じ速度で育てない。
 | Active product | `main` | Vercel production | 継続開発 |
 | Contest maintenance | `release/lolipop-v1` | ロリポップ | V1 固定・最低限保守 |
 
-V1 baseline は PR #6 を squash merge した `221c2331a21a6f39e3d0c93642a73fe8b042dfa8`。
+V1 baseline は tag `v1.0.0` が指す commit（V1 freeze prep PR #__PR__ の squash merge）。
+`release/lolipop-v1` の分岐点は PR #6 の squash merge `221c2331a21a6f39e3d0c93642a73fe8b042dfa8` で、
+freeze prep はそこへ CI / テスト用の依存更新と `package.json` の version `1.0.0` だけを足したもの。
+配信物（`dist/`）は `221c233` の build とバイト単位で同一であることを確認している。
 
 ## main
 
@@ -90,8 +93,17 @@ GitHub ruleset では少なくとも以下を要求する。
 `main protection` は default branch のみを対象としているため、この release branch は
 別途対象に追加する。release branch を長期間放置することは、保護を弱める理由にはしない。
 
-V1 の immutable anchor としてタグを置く場合は、`v1.0.0` を
-`221c2331a21a6f39e3d0c93642a73fe8b042dfa8` に向け、一度作ったタグを動かさない。
+V1 の immutable anchor は tag `v1.0.0`（V1 freeze prep PR #__PR__ の squash merge commit）。
+一度作ったタグは移動・上書きしない。以後 release 側に保守修正を入れて配信し直す場合は、
+`v1.0.1` のように新しいタグを切る。
+
+## Dependency updates
+
+Dependabot は `release/lolipop-v1` を自動追従しない。
+`.github/dependabot.yml` は `target-branch` を指定せず default branch（`main`）だけを見るので、
+この状態を維持する（release 向けの `target-branch` を足さない）。
+release 側の依存更新は、上の「変更を許可するもの」に当たる理由があるときだけ、
+`main` で検証済みの更新を小さい PR で手動 backport する。
 
 ## Maintenance posture
 
