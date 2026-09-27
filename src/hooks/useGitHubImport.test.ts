@@ -132,4 +132,37 @@ describe('mapWithConcurrency', () => {
     expect(results).toEqual([2, 4, 6, 8, 10, 12]);
     expect(maxActive).toBeLessThanOrEqual(2);
   });
+
+  it('1件失敗したら新しい worker を始めず、実行中の worker も abort する', async () => {
+    const started: number[] = [];
+    const aborted: number[] = [];
+
+    await expect(
+      mapWithConcurrency(
+        [1, 2, 3, 4, 5],
+        2,
+        new AbortController().signal,
+        async (value, signal) => {
+          started.push(value);
+          if (value === 1) throw new Error('boom');
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, 50);
+            signal.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(timer);
+                aborted.push(value);
+                reject(new DOMException('Aborted', 'AbortError'));
+              },
+              { once: true },
+            );
+          });
+          return value;
+        },
+      ),
+    ).rejects.toThrow('boom');
+
+    expect(started).toEqual([1, 2]);
+    expect(aborted).toEqual([2]);
+  });
 });
