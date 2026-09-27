@@ -230,9 +230,7 @@ test('フォルダ選択を未展開の子へ継承し、子を外すと親が m
   expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(1);
 });
 
-test('checkbox はキーボードで操作でき、mixed state を aria-checked で伝える', async ({
-  page,
-}) => {
+test('checkbox はキーボードで操作でき、mixed state を aria-checked で伝える', async ({ page }) => {
   const mock = new GitHubMock([REPO]);
   await start(page, mock);
   await connect(page);
