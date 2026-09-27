@@ -58,7 +58,6 @@ test('スマホ幅でもタップで GitHub から1ファイル取り込める',
   await expect(page.locator('.input-card__source')).toContainText('chapters/ch1.md');
 });
 
-
 test('スマホ幅でもフォルダをチェックして複数ファイルをまとめて取り込める', async ({ page }) => {
   const mock = new GitHubMock([novelRepository()]);
   await mock.install(page);
