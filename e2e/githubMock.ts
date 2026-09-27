@@ -214,7 +214,6 @@ export class GitHubMock {
     return result;
   }
 
-
   /** ページに GitHub の代わりを差し込む。`openApp` より前に呼ぶ。 */
   async install(page: Page): Promise<void> {
     page.on('request', (request) => this.record(request));
@@ -280,6 +279,22 @@ export class GitHubMock {
       headers: { ...CORS_HEADERS, 'content-type': 'application/json', ...headers },
       body: JSON.stringify(body),
     });
+  }
+
+  private handleTree(route: Route, treeSha: string, recursive: boolean): Promise<void> {
+    const object = this.objects.get(treeSha);
+    if (!object || !('tree' in object)) return this.json(route, 404, { message: 'Not Found' });
+    if (recursive) {
+      const entries = this.recursiveTree(treeSha);
+      const truncated = this.recursiveTreeTruncations > 0;
+      if (truncated) this.recursiveTreeTruncations -= 1;
+      return this.json(route, 200, {
+        sha: treeSha,
+        tree: truncated ? entries.slice(0, Math.max(1, Math.ceil(entries.length / 2))) : entries,
+        truncated,
+      });
+    }
+    return this.json(route, 200, { sha: treeSha, tree: object.tree, truncated: false });
   }
 
   private handleApi(route: Route): Promise<void> {
@@ -393,19 +408,7 @@ export class GitHubMock {
 
     const tree = /^git\/trees\/([0-9a-f]{40})$/.exec(rest);
     if (tree?.[1]) {
-      const object = this.objects.get(tree[1]);
-      if (!object || !('tree' in object)) return this.json(route, 404, { message: 'Not Found' });
-      if (url.searchParams.get('recursive') === '1') {
-        const entries = this.recursiveTree(tree[1]);
-        const truncated = this.recursiveTreeTruncations > 0;
-        if (truncated) this.recursiveTreeTruncations -= 1;
-        return this.json(route, 200, {
-          sha: tree[1],
-          tree: truncated ? entries.slice(0, Math.max(1, Math.ceil(entries.length / 2))) : entries,
-          truncated,
-        });
-      }
-      return this.json(route, 200, { sha: tree[1], tree: object.tree, truncated: false });
+      return this.handleTree(route, tree[1], url.searchParams.get('recursive') === '1');
     }
 
     const blob = /^git\/blobs\/([0-9a-f]{40})$/.exec(rest);
