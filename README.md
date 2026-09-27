@@ -154,6 +154,14 @@ Playwright の WebKit は Safari そのものではないので、リリース�
 特に**日本語 IME は自動テストで再現できません**（Playwright の入力は OS の IME を通りません）。
 ルール表で変換候補を Enter で確定したときに、行移動や行追加が誤発火しないことは実機で見てください。
 
+## V2: GitHub import
+
+V2 では、GitHub repository から `.txt` / `.md` / `.tex` を **read-only** で取り込む機能を追加予定です。
+GitHub への commit / push / PR 作成はこの段階では扱いません。
+
+権限・認証・privacy 境界・tree picker・snapshot・上限・失敗時の扱いまで含む正本仕様は
+[docs/github-import-v2.md](docs/github-import-v2.md) を参照してください。実装追跡は Issue #12 です。
+
 ## 開発
 
 ```bash
