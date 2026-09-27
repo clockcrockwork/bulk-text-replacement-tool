@@ -2,12 +2,12 @@ import { type JSX, type RefObject, useEffect, useMemo, useRef, useState } from '
 import { formatTextMeta } from '../lib/format';
 import { describeEntryStatus, formatBytes } from '../lib/githubApi';
 import {
+  type GitHubSelectionMark,
+  type GitHubTreeSelection,
   hasAnySelection,
   isPathSelected,
   selectionMark,
   summarizeKnownSelection,
-  type GitHubSelectionMark,
-  type GitHubTreeSelection,
 } from '../lib/githubSelection';
 import { formatSourceDetail, shortSha } from '../lib/inputSource';
 import type { GitHubImportState } from '../state/githubImport';
@@ -496,6 +496,7 @@ function Explorer({
   const [filter, setFilter] = useState('');
 
   // 絞り込みは表示だけに効かせる。場所を移ったら前の文字列を持ち越さない。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 現在ディレクトリの変更だけを契機にリセットする
   useEffect(() => setFilter(''), [here?.path]);
 
   const visibleEntries = useMemo(() => {
