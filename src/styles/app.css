@@ -1621,3 +1621,77 @@ button.github__entry:hover {
     max-width: none;
   }
 }
+
+
+/* GitHub Slice 2 batch */
+.github__selection-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-3);
+}
+
+.github__batch-list {
+  display: grid;
+  gap: var(--space-2);
+  max-height: min(46vh, 28rem);
+  margin: var(--space-3) 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.github__batch-item {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.github__batch-file {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.github__batch-file strong {
+  overflow-wrap: anywhere;
+}
+
+.github__batch-file span,
+.github__batch-new,
+.github__batch-warning {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.github__batch-warning {
+  color: var(--warning-text, var(--text-muted));
+}
+
+.github__batch-decision {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.github__batch-decision select {
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+}
+
+@media (max-width: 640px) {
+  .github__batch-file {
+    display: grid;
+  }
+
+  .github__selection-actions .btn {
+    width: 100%;
+  }
+}
