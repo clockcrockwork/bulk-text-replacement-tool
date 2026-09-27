@@ -103,8 +103,9 @@ test('PKCE（S256）と state で認可を始め、戻ったら URL と一時情
 
   // API には固定した版とトークンを付けて行く。
   const call = mock.apiCalls(/^\/user\/installations$/)[0];
-  expect(call?.headers['x-github-api-version']).toBe('2026-03-10');
   expect(call?.headers.authorization).toBe(`Bearer ${E2E_TOKEN}`);
+  // GitHub の CORS が許可していないヘッダは付けない（付けると本番の preflight で止まる）。
+  expect(call?.headers['x-github-api-version']).toBeUndefined();
 });
 
 test('アクセストークンはどこにも保存せず、再読み込みすると接続し直しになる', async ({ page }) => {
@@ -445,6 +446,18 @@ test('rate limit はネットワーク障害と区別して知らせる', async 
   await expect(dialog(page).getByRole('alert')).toContainText('GitHub API の利用上限に達しました');
   await dialog(page).getByRole('button', { name: '再試行' }).click();
   await expect(dialog(page).getByRole('heading', { name: 'ファイルを選ぶ' })).toBeVisible();
+});
+
+test('secondary rate limit も本文から見分けて知らせる（retry-after は読めない）', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  mock.secondaryRateLimitedResponses = 1;
+  await dialog(page).getByRole('button', { name: 'octo/novel' }).click();
+  await expect(dialog(page).getByRole('alert')).toContainText('GitHub API の利用上限に達しました');
+  await expect(dialog(page).getByRole('alert')).not.toContainText('権限');
 });
 
 test('トークンが失効したら（401）、接続を切って接続し直してもらう', async ({ page }) => {

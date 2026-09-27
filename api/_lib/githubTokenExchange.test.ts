@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  GITHUB_API_VERSION,
   GITHUB_TOKEN_URL,
   handleTokenExchange,
   MAX_BODY_BYTES,
@@ -117,9 +116,8 @@ describe('handleTokenExchange', () => {
       redirect_uri: REDIRECT,
       code_verifier: VERIFIER,
     });
-    expect(new Headers(calls[0]?.init?.headers).get('x-github-api-version')).toBe(
-      GITHUB_API_VERSION,
-    );
+    // OAuth の token エンドポイントは版付きの REST API ではないので、版は指定しない。
+    expect(new Headers(calls[0]?.init?.headers).get('x-github-api-version')).toBeNull();
   });
 
   it('有効期限が返らなければ付けない', async () => {

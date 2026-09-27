@@ -381,7 +381,9 @@ export function useGitHubImport(): GitHubImport {
       } else if (state.snapshot && state.listing === null && step) {
         loadListing(state.snapshot, step);
       } else if (state.repository && !state.snapshot && !state.choosingBranch) {
-        pin(state.repository, state.repository.defaultBranch);
+        // 既定ブランチが分からないリポジトリでは、選ぶ前の一覧に戻す（空の ref で固定しない）。
+        if (state.repository.defaultBranch) pin(state.repository, state.repository.defaultBranch);
+        else loadBranches(state.repository);
       }
     },
     close: () => {

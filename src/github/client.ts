@@ -2,8 +2,9 @@ import {
   classifyErrorResponse,
   encodePath,
   GITHUB_API_ORIGIN,
-  GITHUB_API_VERSION,
+  GITHUB_FETCH_INIT,
   type GitHubError,
+  githubRequestHeaders,
   mergeRepositories,
   type NormalizedTree,
   normalizeBranches,
@@ -14,6 +15,7 @@ import {
   normalizeTree,
   PER_PAGE,
   parseNextLink,
+  readErrorMessage,
 } from '../lib/githubApi';
 import type { GitHubRepository, GitHubSnapshot } from '../types';
 
@@ -80,17 +82,10 @@ export function createGitHubClient(
     let response: Response;
     try {
       response = await fetchImpl(url, {
-        headers: {
-          Accept: accept,
-          Authorization: `Bearer ${accessToken}`,
-          'X-GitHub-Api-Version': GITHUB_API_VERSION,
-        },
+        // 送るヘッダは GitHub の CORS が許すものだけ（`githubRequestHeaders` を参照）。
+        headers: githubRequestHeaders(accessToken, accept),
         signal,
-        // ブランチの HEAD はキャッシュされると「最新に更新」が効かない。
-        // 中身が変わらない tree / blob はフック側がメモリに持つので、ここでは常に取りに行く。
-        cache: 'no-store',
-        credentials: 'omit',
-        referrerPolicy: 'no-referrer',
+        ...GITHUB_FETCH_INIT,
       });
     } catch (error) {
       // 中断は失敗ではない。呼び出し側が無視できるよう、そのまま投げ直す。
@@ -98,8 +93,15 @@ export function createGitHubClient(
       throw new GitHubRequestError({ kind: 'network', status: null, resetAt: null });
     }
     if (!response.ok) {
+      // secondary rate limit と SAML SSO は本文の message でしか見分けられない。
+      const body = await response.text().catch(() => '');
       throw new GitHubRequestError(
-        classifyErrorResponse(response.status, response.headers, Date.now()),
+        classifyErrorResponse(
+          response.status,
+          response.headers,
+          readErrorMessage(body),
+          Date.now(),
+        ),
       );
     }
     return response;

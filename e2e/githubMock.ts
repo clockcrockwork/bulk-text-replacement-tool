@@ -63,11 +63,24 @@ function gitBlobSha(content: Buffer): string {
   return sha1(Buffer.concat([Buffer.from(`blob ${content.byteLength}\0`), content]));
 }
 
+/** 指定の URL へ履歴を残さずに移る HTML。URL は JSON 文字列として埋め込み、`<` は逃がす。 */
+function redirectPage(location: string): string {
+  const target = JSON.stringify(location).replace(/</g, '\\u003c');
+  return `<!doctype html><meta charset="utf-8"><title>Redirecting</title><script>location.replace(${target});</script>`;
+}
+
+/**
+ * GitHub の公式ドキュメントにある CORS 応答と同じ値。モックだけ緩いと、本番の CORS で
+ * 止まる／読めないヘッダに頼った実装がここで通ってしまう（実ブラウザでの確認は
+ * `githubCors.spec.ts`）。
+ */
 const CORS_HEADERS = {
   'access-control-allow-origin': '*',
-  'access-control-allow-headers': 'Authorization, Accept, X-GitHub-Api-Version, Content-Type',
+  'access-control-allow-headers':
+    'Authorization, Content-Type, If-Match, If-Modified-Since, If-None-Match, If-Unmodified-Since, X-Requested-With',
+  'access-control-allow-methods': 'GET, POST, PATCH, PUT, DELETE',
   'access-control-expose-headers':
-    'Link, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After, X-GitHub-SSO',
+    'ETag, Link, x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval',
 };
 
 export class GitHubMock {
@@ -82,8 +95,10 @@ export class GitHubMock {
   authorize: 'approve' | 'deny' | 'wrongState' | 'stay' = 'approve';
   /** true の間、API は 401 を返す（失効・取り消し）。 */
   tokenRevoked = false;
-  /** 残りの回数だけ、API が rate limit を返す。 */
+  /** 残りの回数だけ、API が primary rate limit（残数0）を返す。 */
   rateLimitedResponses = 0;
+  /** 残りの回数だけ、API が secondary rate limit（本文で分かる）を返す。 */
+  secondaryRateLimitedResponses = 0;
   /** パスに含まれると失敗させる（blob の取得失敗など）。 */
   failPaths: string[] = [];
 
@@ -209,7 +224,15 @@ export class GitHubMock {
         redirect.searchParams.set('code', E2E_CODE);
         redirect.searchParams.set('state', this.authorize === 'wrongState' ? 'forged' : state);
       }
-      return route.fulfill({ status: 302, headers: { location: redirect.toString() } });
+      // 本物の GitHub は 302 で戻すが、WebKit の route.fulfill はリダイレクトの状態コードを
+      // 受け付けない（`Cannot fulfill with redirect status`）。どのブラウザでも同じに動くよう、
+      // 200 の HTML から location.replace で戻す。replace なので、302 と同じく認可画面は
+      // 履歴に残らない。
+      return route.fulfill({
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+        body: redirectPage(redirect.toString()),
+      });
     });
 
     // 本物では Vercel Function が GitHub と交換する。ここではその応答（refresh token は
@@ -265,6 +288,19 @@ export class GitHubMock {
           'x-ratelimit-remaining': '0',
           'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 600),
         },
+      );
+    }
+    if (this.secondaryRateLimitedResponses > 0) {
+      this.secondaryRateLimitedResponses -= 1;
+      // retry-after は CORS で公開されていないので、ブラウザからは読めない。
+      return this.json(
+        route,
+        403,
+        {
+          message:
+            'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.',
+        },
+        { 'x-ratelimit-remaining': '4990', 'retry-after': '60' },
       );
     }
     if (this.failPaths.some((fragment) => path.includes(fragment))) {

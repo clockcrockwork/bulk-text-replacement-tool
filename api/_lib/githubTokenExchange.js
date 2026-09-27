@@ -21,9 +21,6 @@
 /** GitHub の token エンドポイント。 */
 export const GITHUB_TOKEN_URL = 'https://github.com/login/oauth/access_token';
 
-/** 仕様どおりに解釈させるため、API の版を固定する（ブラウザ側と同じ値）。 */
-export const GITHUB_API_VERSION = '2026-03-10';
-
 /** 受け付ける本文の上限。3つの短い文字列しか来ないので、大きなものは読まずに断る。 */
 export const MAX_BODY_BYTES = 4096;
 
@@ -196,7 +193,6 @@ export async function handleTokenExchange(request, config, fetchImpl) {
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/x-www-form-urlencoded',
-        'X-GitHub-Api-Version': GITHUB_API_VERSION,
       },
       body: new URLSearchParams({
         client_id: config.clientId,

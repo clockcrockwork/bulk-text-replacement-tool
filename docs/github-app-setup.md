@@ -12,7 +12,7 @@
 | 本番オリジン | `https://bulk-text-replacement-tool.vercel.app` |
 | Callback URL（完全一致） | `https://bulk-text-replacement-tool.vercel.app/` （末尾の `/` まで一致させる） |
 | トークン交換 | `POST /api/github/token`（`api/github/token.js`） |
-| GitHub REST API の版 | `X-GitHub-Api-Version: 2026-03-10` |
+| GitHub REST API の版 | 指定しない（GitHub の既定版。現在 `2022-11-28`）。`X-GitHub-Api-Version` は GitHub の CORS が許可していないため、ブラウザからは付けられない（`docs/github-import-v2.md` §6） |
 
 callback をオリジン直下にしているのは、ビルドが相対パス（vite の `base: './'`）で、
 下位のパスで開くと JS / CSS の参照が壊れるため。Vercel の一時的な Preview URL は

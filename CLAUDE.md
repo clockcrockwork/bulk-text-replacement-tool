@@ -144,6 +144,13 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
     OAuth を要求」には頼らない。callback はオリジン直下（`base: './'` なので下位パス不可）。
   - バックエンドは原稿・ルール・リポジトリの内容を受け取らない。本文はブラウザから
     api.github.com へ直接取りに行く。
+  - api.github.com へのリクエストは **GitHub の CORS 方針**に従う。送る要求ヘッダは
+    `githubRequestHeaders`（`Accept` と `Authorization`）だけで、`X-GitHub-Api-Version` など
+    許可リスト（`GITHUB_CORS_ALLOWED_REQUEST_HEADERS`）に無いものは付けない（preflight で止まる）。
+    読める応答ヘッダも限られる（`retry-after` や `x-github-sso` は読めない）ので、判定は
+    `x-ratelimit-*` と本文の `message` で行う。モックの E2E は CORS を再現しないので、
+    ヘッダや fetch オプションを変えたら `e2e/githubCors.spec.ts`（実ブラウザ × 方針を再現した
+    サーバー）で確かめる。
   - ブランチを選んだ時点でコミットを固定し、tree も blob もそこから読む。遅れて返った
     古い応答は reducer が捨てる。新しいコミットへは「最新に更新」でだけ移る。
   - 取り込み元の同一性は `repositoryId + ref + path`（`sourceIdentity`）。タイトルでは判定しない。

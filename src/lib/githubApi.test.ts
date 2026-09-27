@@ -8,7 +8,10 @@ import {
   describeGitHubError,
   encodePath,
   formatBytes,
+  GITHUB_CORS_ALLOWED_REQUEST_HEADERS,
+  GITHUB_CORS_EXPOSED_RESPONSE_HEADERS,
   type GitHubErrorKind,
+  githubRequestHeaders,
   isLfsPointer,
   joinPath,
   MAX_BLOB_BYTES,
@@ -21,7 +24,9 @@ import {
   normalizeTree,
   orderBranches,
   parseNextLink,
+  readErrorMessage,
 } from './githubApi';
+import { BOM } from './text';
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
@@ -74,57 +79,104 @@ describe('parseNextLink', () => {
   });
 });
 
-describe('classifyErrorResponse', () => {
-  const now = 1_000_000;
+describe('CORS', () => {
+  const SAFELISTED = ['accept', 'accept-language', 'content-language'];
 
-  it('401 は接続切れ', () => {
-    expect(classifyErrorResponse(401, headers({}), now).kind).toBe('unauthorized');
+  it('api.github.com へは、GitHub が CORS で許可するヘッダしか付けない', () => {
+    const headers = githubRequestHeaders('ghu_x', 'application/vnd.github+json');
+    expect(headers).toEqual({
+      Accept: 'application/vnd.github+json',
+      Authorization: 'Bearer ghu_x',
+    });
+    for (const name of Object.keys(headers).map((key) => key.toLowerCase())) {
+      expect([...SAFELISTED, ...GITHUB_CORS_ALLOWED_REQUEST_HEADERS]).toContain(name);
+    }
   });
 
-  it('残数0の 403 は rate limit として、解除時刻と一緒に返す', () => {
+  it('API の版指定ヘッダは許可リストに無いので付けない', () => {
+    expect(GITHUB_CORS_ALLOWED_REQUEST_HEADERS).not.toContain('x-github-api-version');
+    expect(Object.keys(githubRequestHeaders('t', 'application/vnd.github.raw+json'))).not.toContain(
+      'X-GitHub-Api-Version',
+    );
+  });
+
+  it('rate limit の判定に使う応答ヘッダは、ブラウザから読めるものだけ', () => {
+    for (const name of ['link', 'x-ratelimit-remaining', 'x-ratelimit-reset']) {
+      expect(GITHUB_CORS_EXPOSED_RESPONSE_HEADERS).toContain(name);
+    }
+    expect(GITHUB_CORS_EXPOSED_RESPONSE_HEADERS).not.toContain('retry-after');
+    expect(GITHUB_CORS_EXPOSED_RESPONSE_HEADERS).not.toContain('x-github-sso');
+  });
+});
+
+describe('readErrorMessage', () => {
+  it('本文の message を取り出す。読めなければ空文字', () => {
+    expect(readErrorMessage('{"message":"Not Found"}')).toBe('Not Found');
+    expect(readErrorMessage('{"message":1}')).toBe('');
+    expect(readErrorMessage('<html>')).toBe('');
+    expect(readErrorMessage('')).toBe('');
+  });
+});
+
+describe('classifyErrorResponse', () => {
+  const now = 1_000_000;
+  const SECONDARY =
+    'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.';
+  const SAML =
+    'Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization.';
+
+  it('401 は接続切れ', () => {
+    expect(classifyErrorResponse(401, headers({}), '', now).kind).toBe('unauthorized');
+  });
+
+  it('残数0は primary rate limit として、x-ratelimit-reset を解除時刻にする', () => {
     expect(
       classifyErrorResponse(
         403,
         headers({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '2000' }),
+        'API rate limit exceeded',
         now,
       ),
     ).toEqual({ kind: 'rateLimited', status: 403, resetAt: 2_000_000 });
+    expect(
+      classifyErrorResponse(429, headers({ 'x-ratelimit-remaining': '0' }), '', now).resetAt,
+    ).toBe(now + 60_000);
   });
 
-  it('retry-after は秒数として解除時刻を出す（secondary rate limit）', () => {
-    expect(classifyErrorResponse(403, headers({ 'retry-after': '30' }), now)).toEqual({
-      kind: 'rateLimited',
-      status: 403,
-      resetAt: now + 30_000,
-    });
-    expect(classifyErrorResponse(429, headers({}), now)).toEqual({
+  it('secondary rate limit は本文で見分け、最低1分待つよう案内する（retry-after は読めない）', () => {
+    expect(
+      classifyErrorResponse(403, headers({ 'x-ratelimit-remaining': '4999' }), SECONDARY, now),
+    ).toEqual({ kind: 'rateLimited', status: 403, resetAt: now + 60_000 });
+    expect(classifyErrorResponse(429, headers({}), '', now)).toEqual({
       kind: 'rateLimited',
       status: 429,
-      resetAt: null,
+      resetAt: now + 60_000,
     });
   });
 
-  it('rate limit でない 403 は権限不足、SSO の指示があれば SSO', () => {
-    expect(classifyErrorResponse(403, headers({ 'x-ratelimit-remaining': '10' }), now).kind).toBe(
-      'forbidden',
-    );
+  it('rate limit でない 403 は権限不足、SAML の保護なら SSO', () => {
     expect(
-      classifyErrorResponse(403, headers({ 'x-github-sso': 'required; url=https://x' }), now).kind,
-    ).toBe('sso');
+      classifyErrorResponse(403, headers({ 'x-ratelimit-remaining': '10' }), 'Forbidden', now).kind,
+    ).toBe('forbidden');
+    expect(classifyErrorResponse(403, headers({}), SAML, now).kind).toBe('sso');
   });
 
   it('404・409・5xx・その他', () => {
-    expect(classifyErrorResponse(404, headers({}), now).kind).toBe('notFound');
-    expect(classifyErrorResponse(409, headers({}), now).kind).toBe('emptyRepository');
-    expect(classifyErrorResponse(502, headers({}), now).kind).toBe('server');
-    expect(classifyErrorResponse(422, headers({}), now).kind).toBe('invalidResponse');
+    expect(classifyErrorResponse(404, headers({}), '', now).kind).toBe('notFound');
+    expect(classifyErrorResponse(409, headers({}), '', now).kind).toBe('emptyRepository');
+    expect(classifyErrorResponse(502, headers({}), '', now).kind).toBe('server');
+    expect(classifyErrorResponse(422, headers({}), '', now).kind).toBe('invalidResponse');
   });
 
-  it('壊れたヘッダは解除時刻として使わない', () => {
+  it('壊れた x-ratelimit-reset は解除時刻として使わない', () => {
     expect(
-      classifyErrorResponse(429, headers({ 'retry-after': 'soon', 'x-ratelimit-reset': 'x' }), now)
-        .resetAt,
-    ).toBeNull();
+      classifyErrorResponse(
+        403,
+        headers({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': 'x' }),
+        '',
+        now,
+      ).resetAt,
+    ).toBe(now + 60_000);
   });
 });
 
@@ -306,7 +358,7 @@ describe('buildCandidate', () => {
   const entry = { path: 'chapters/ch1.md', sha: SHA_C, status: 'importable' as const };
 
   it('固定したスナップショットの出自を付けて、本文を decodeText で読む', () => {
-    const result = buildCandidate(SNAPSHOT, entry, bytes('﻿本文'));
+    const result = buildCandidate(SNAPSHOT, entry, bytes(`${BOM}本文`));
     expect(result).toEqual({
       kind: 'ok',
       candidate: {

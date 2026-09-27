@@ -119,7 +119,7 @@ Requirements:
 - if GitHub returns a refresh token, discard it server-side and do not return it
 - send `Cache-Control: no-store`
 - never log token, refresh token, code, verifier, or the raw token response
-- pin `X-GitHub-Api-Version: 2026-03-10`
+- do not send `X-GitHub-Api-Version` (see **REST API version and CORS** below); the OAuth token endpoint is not a versioned REST API endpoint
 
 ### Access token lifetime
 
@@ -215,7 +215,26 @@ If a recursive response is truncated, fall back to non-recursive subtree travers
 
 Blob fetch concurrency starts at 4 or fewer concurrent requests.
 
-Respect rate-limit response headers such as `x-ratelimit-remaining`, `x-ratelimit-reset`, and `retry-after`. Do not retry continuously.
+Respect rate-limit signals the browser can actually read: `x-ratelimit-remaining` / `x-ratelimit-reset` (exposed through CORS) and the error `message` in the response body. `retry-after` is **not** in GitHub's `Access-Control-Expose-Headers`, so browser code cannot read it; when a secondary rate limit is detected from the status and message, wait at least one minute as GitHub's rate-limit documentation advises. Do not retry continuously.
+
+### REST API version and CORS
+
+Repository data is fetched browser → `api.github.com` directly, so every request must pass GitHub's CORS policy. GitHub's CORS documentation shows the preflight response:
+
+```text
+Access-Control-Allow-Headers: Authorization, Content-Type, If-Match, If-Modified-Since, If-None-Match, If-Unmodified-Since, X-Requested-With
+Access-Control-Expose-Headers: ETag, Link, x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval
+```
+
+(https://docs.github.com/en/rest/using-the-rest-api/using-cors-and-jsonp-to-make-cross-origin-requests)
+
+`X-GitHub-Api-Version` is not in `Access-Control-Allow-Headers`, so a browser request carrying it would be rejected at preflight. Therefore:
+
+- browser requests send only `Accept` (CORS-safelisted) and `Authorization`
+- the API version is **not pinned** from the browser; GitHub serves unversioned requests with its default version (currently `2022-11-28`, supported until 2028-03-10)
+- the fields this feature reads (repository `id` / `name` / `owner.login` / `default_branch` / `private`, git ref / commit / tree / blob) are not affected by the `2026-03-10` breaking changes, so responses have the same shape under either version
+- when GitHub announces the end of the default version, re-check the breaking changes of the version unversioned requests move to, and re-check whether the CORS policy allows `X-GitHub-Api-Version`
+- the allowed / exposed header lists live in `src/lib/githubApi.ts`, and `e2e/githubCors.spec.ts` runs the app's headers and fetch options against a server that reproduces this policy in real browsers
 
 ## 7. Atomic import
 
@@ -473,7 +492,7 @@ On Vercel preview/production with a real GitHub App:
 - [ ] repository contents never transit the Vercel backend
 - [ ] local/manual flow retains the existing privacy behavior
 - [ ] backup v1 remains importable by V2; V2 writes backup v2
-- [ ] GitHub REST API version is explicitly pinned
+- [ ] browser requests to GitHub use only headers allowed by GitHub's documented CORS policy (no `X-GitHub-Api-Version`; default API version, see §6)
 - [ ] rate limits, pagination, and truncation are handled
 - [ ] `npm run check` passes
 - [ ] GitHub import E2E passes
@@ -501,6 +520,7 @@ Implementation decisions:
 - callback URL is the origin root (`https://<origin>/`) because the build uses relative asset paths (`base: './'`)
 - Client ID and App slug are build-time public values (`VITE_GITHUB_APP_CLIENT_ID`, `VITE_GITHUB_APP_SLUG`); without them the button is disabled. No runtime config endpoint. See `docs/github-app-setup.md`
 - the Vercel Function is written in JavaScript with JSDoc types (TypeScript 7 has no JS transpile API for the Vercel builder to use)
+- browser requests do not send `X-GitHub-Api-Version` because GitHub's documented CORS policy does not allow it (§6 **REST API version and CORS**); rate limits are classified from exposed `x-ratelimit-*` headers and the response `message`
 
 ### Slice 2 (planned)
 
