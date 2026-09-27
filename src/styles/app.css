@@ -1536,6 +1536,191 @@ button.github__entry:hover {
   gap: 8px;
 }
 
+/* ------------------------------------------------ GitHub：複数選択と一括取り込み */
+
+.github__picker-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.github__filter {
+  flex: 1 1 14rem;
+  max-width: 24rem;
+}
+
+.github__filter input {
+  width: 100%;
+  min-height: var(--control-height);
+  padding: 8px 10px;
+  color: var(--color-text);
+  font: 15px / 1.3 var(--font-body);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+}
+
+.github__selection-summary {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.github__current-selection {
+  border: 1px solid var(--color-divider-soft);
+}
+
+.github__select-row {
+  display: grid;
+  grid-template-columns: var(--control-height-touch) minmax(0, 1fr);
+  align-items: stretch;
+  border-bottom: 1px solid var(--color-divider-soft);
+}
+
+.github__select-row .github__entry {
+  border-bottom: 0;
+}
+
+/* 押せる範囲はチェックボックスそのものではなく、この label 全体（44px 四方以上）。 */
+.github__select-check {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--control-height-touch);
+  min-height: var(--control-height-touch);
+  cursor: pointer;
+}
+
+.github__current-selection .github__select-check {
+  justify-content: flex-start;
+  padding: 0 12px;
+}
+
+.github__select-check input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+.github__select-check:has(input:disabled) {
+  cursor: default;
+}
+
+.github__select-label {
+  color: var(--color-text);
+  font-size: 15px;
+}
+
+.github__selection-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.github__plan-warnings {
+  margin: 0;
+  padding: 10px 12px 10px 32px;
+  color: var(--color-text);
+  font-size: 13px;
+  line-height: 1.7;
+  background: var(--color-surface-strong);
+  border-left: 3px solid var(--color-accent);
+}
+
+.github__plan-list,
+.github__batch-list {
+  display: grid;
+  max-height: min(46vh, 28rem);
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+  border: 1px solid var(--color-divider-soft);
+}
+
+.github__plan-list li {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 6px 12px;
+  color: var(--color-muted);
+  font-size: 13px;
+  border-bottom: 1px solid var(--color-divider-soft);
+}
+
+.github__plan-list li:last-child,
+.github__batch-item:last-child {
+  border-bottom: 0;
+}
+
+.github__plan-path {
+  min-width: 0;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+.github__batch-item {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-divider-soft);
+}
+
+.github__batch-file {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.github__batch-file strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.github__batch-file span,
+.github__batch-new {
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.github__batch-warning {
+  color: var(--color-accent-text);
+  font-size: 13px;
+}
+
+.github__batch-decision {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.github__batch-decision select {
+  width: 100%;
+  min-height: var(--control-height);
+  padding: 6px 8px;
+  color: var(--color-text);
+  font: 15px / 1.3 var(--font-body);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+}
+
+@media (max-width: 640px) {
+  .github__filter {
+    flex-basis: 100%;
+    max-width: none;
+  }
+
+  .github__batch-file {
+    display: grid;
+  }
+
+  .github__selection-actions .btn {
+    width: 100%;
+  }
+}
+
 /* ============================================================ タッチ環境の調整 */
 
 /*
@@ -1551,154 +1736,9 @@ button.github__entry:hover {
   .input-card__preview,
   .editor__textarea,
   .dialog__textarea,
-  .file-card__plain {
+  .file-card__plain,
+  .github__filter input,
+  .github__batch-decision select {
     font-size: 16px;
-  }
-}
-
-/* GitHub Slice 2 selection */
-.github__picker-tools {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-}
-
-.github__filter {
-  flex: 1 1 14rem;
-  max-width: 24rem;
-}
-
-.github__filter input {
-  width: 100%;
-  min-height: 2.5rem;
-  padding: 0.5rem 0.7rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: inherit;
-  font: inherit;
-}
-
-.github__selection-summary {
-  margin: var(--space-2) 0;
-  font-size: 0.88rem;
-  color: var(--text-muted);
-}
-
-.github__current-selection {
-  display: grid;
-  grid-template-columns: 2.75rem minmax(0, 1fr);
-  align-items: center;
-  min-height: 2.75rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-}
-
-.github__select-row {
-  display: grid;
-  grid-template-columns: 2.75rem minmax(0, 1fr);
-  align-items: stretch;
-}
-
-.github__select-check {
-  display: grid;
-  place-items: center;
-  min-width: 2.75rem;
-  cursor: pointer;
-}
-
-.github__select-check input {
-  width: 1.15rem;
-  height: 1.15rem;
-  margin: 0;
-}
-
-@media (max-width: 640px) {
-  .github__select-row {
-    grid-template-columns: 3rem minmax(0, 1fr);
-  }
-
-  .github__select-check {
-    min-width: 3rem;
-  }
-
-  .github__filter {
-    flex-basis: 100%;
-    max-width: none;
-  }
-}
-
-/* GitHub Slice 2 batch */
-.github__selection-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: var(--space-3);
-}
-
-.github__batch-list {
-  display: grid;
-  gap: var(--space-2);
-  max-height: min(46vh, 28rem);
-  margin: var(--space-3) 0;
-  padding: 0;
-  overflow: auto;
-  list-style: none;
-}
-
-.github__batch-item {
-  display: grid;
-  gap: 0.45rem;
-  padding: 0.7rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-}
-
-.github__batch-file {
-  display: flex;
-  gap: var(--space-2);
-  justify-content: space-between;
-  min-width: 0;
-}
-
-.github__batch-file strong {
-  overflow-wrap: anywhere;
-}
-
-.github__batch-file span,
-.github__batch-new,
-.github__batch-warning {
-  color: var(--text-muted);
-  font-size: 0.85rem;
-}
-
-.github__batch-warning {
-  color: var(--warning-text, var(--text-muted));
-}
-
-.github__batch-decision {
-  display: grid;
-  gap: 0.35rem;
-}
-
-.github__batch-decision select {
-  width: 100%;
-  min-height: 2.5rem;
-  padding: 0.45rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: inherit;
-  font: inherit;
-}
-
-@media (max-width: 640px) {
-  .github__batch-file {
-    display: grid;
-  }
-
-  .github__selection-actions .btn {
-    width: 100%;
   }
 }

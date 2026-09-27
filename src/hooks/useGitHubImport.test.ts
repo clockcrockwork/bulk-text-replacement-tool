@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { GitHubClient } from '../github/client';
 import { emptyTreeSelection, setTreeSelection } from '../lib/githubSelection';
 import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types';
-import { enumerateSelectedEntries, mapWithConcurrency } from './useGitHubImport';
+import { enumerateSelectedEntries, GitHubBatchPreparationError } from './useGitHubImport';
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
@@ -72,7 +72,7 @@ describe('enumerateSelectedEntries', () => {
       api,
       SNAPSHOT,
       selection,
-      { chapters: entry('chapters', 'dir', SHA_C) },
+      new Map([['chapters', entry('chapters', 'dir', SHA_C)]]),
       new AbortController().signal,
     );
 
@@ -102,7 +102,7 @@ describe('enumerateSelectedEntries', () => {
       api,
       SNAPSHOT,
       selection,
-      { chapters: entry('chapters', 'dir', SHA_C) },
+      new Map([['chapters', entry('chapters', 'dir', SHA_C)]]),
       new AbortController().signal,
     );
 
@@ -110,59 +110,104 @@ describe('enumerateSelectedEntries', () => {
     expect(directCalls).toEqual(['chapters']);
     expect(files.map((item) => item.path)).toEqual(['chapters/ch1.md', 'chapters/ch2.txt']);
   });
-});
-
-describe('mapWithConcurrency', () => {
-  it('同時実行数を指定値以下に抑える', async () => {
-    let active = 0;
-    let maxActive = 0;
-    const results = await mapWithConcurrency(
-      [1, 2, 3, 4, 5, 6],
-      2,
-      new AbortController().signal,
-      async (value) => {
-        active += 1;
-        maxActive = Math.max(maxActive, active);
-        await Promise.resolve();
-        active -= 1;
-        return value * 2;
+  it('除外した部分木の下で選び直したファイルも、truncated の fallback で拾う', async () => {
+    const api = client({
+      getTreeRecursive: async () => ({ entries: [], truncated: true }),
+      getTree: async (_snapshot, _sha, dir) => {
+        if (dir === 'chapters') {
+          return {
+            entries: [entry('chapters/drafts', 'dir', SHA_A), entry('chapters/live.md')],
+            truncated: false,
+          };
+        }
+        return {
+          entries: [entry('chapters/drafts/old.md'), entry('chapters/drafts/keep.md')],
+          truncated: false,
+        };
       },
+    });
+    let selection = setTreeSelection(emptyTreeSelection(), 'chapters', true);
+    selection = setTreeSelection(selection, 'chapters/drafts', false);
+    selection = setTreeSelection(selection, 'chapters/drafts/keep.md', true);
+
+    const files = await enumerateSelectedEntries(
+      api,
+      SNAPSHOT,
+      selection,
+      new Map([['chapters', entry('chapters', 'dir', SHA_C)]]),
+      new AbortController().signal,
     );
 
-    expect(results).toEqual([2, 4, 6, 8, 10, 12]);
-    expect(maxActive).toBeLessThanOrEqual(2);
+    expect(files.map((item) => item.path)).toEqual(['chapters/drafts/keep.md', 'chapters/live.md']);
   });
 
-  it('1件失敗したら新しい worker を始めず、実行中の worker も abort する', async () => {
-    const started: number[] = [];
-    const aborted: number[] = [];
+  it('非再帰でも打ち切られた一覧は、途中までで成功させずに止める', async () => {
+    const api = client({
+      getTreeRecursive: async () => ({ entries: [], truncated: true }),
+      getTree: async () => ({ entries: [entry('chapters/ch1.md')], truncated: true }),
+    });
+    const selection = setTreeSelection(emptyTreeSelection(), 'chapters', true);
 
     await expect(
-      mapWithConcurrency(
-        [1, 2, 3, 4, 5],
-        2,
+      enumerateSelectedEntries(
+        api,
+        SNAPSHOT,
+        selection,
+        new Map([['chapters', entry('chapters', 'dir', SHA_C)]]),
         new AbortController().signal,
-        async (value, signal) => {
-          started.push(value);
-          if (value === 1) throw new Error('boom');
-          await new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(resolve, 50);
-            signal.addEventListener(
-              'abort',
-              () => {
-                clearTimeout(timer);
-                aborted.push(value);
-                reject(new DOMException('Aborted', 'AbortError'));
-              },
-              { once: true },
-            );
-          });
-          return value;
-        },
       ),
-    ).rejects.toThrow('boom');
+    ).rejects.toBeInstanceOf(GitHubBatchPreparationError);
+  });
 
-    expect(started).toEqual([1, 2]);
-    expect(aborted).toEqual([2]);
+  it('読み込んでいない場所の規則があれば、ルートから全体を辿り直さずに止める', async () => {
+    const calls: string[] = [];
+    const api = client({
+      getTreeRecursive: async (_snapshot, _sha, dir) => {
+        calls.push(dir);
+        return { entries: [], truncated: false };
+      },
+    });
+    const selection = setTreeSelection(emptyTreeSelection(), 'unknown', true);
+
+    await expect(
+      enumerateSelectedEntries(api, SNAPSHOT, selection, new Map(), new AbortController().signal),
+    ).rejects.toBeInstanceOf(GitHubBatchPreparationError);
+    expect(calls).toEqual([]);
+  });
+
+  it('ファイルを直接選んだ規則は、tree を取らずにそのまま候補にする', async () => {
+    const calls: string[] = [];
+    const api = client({
+      getTreeRecursive: async (_snapshot, _sha, dir) => {
+        calls.push(dir);
+        return { entries: [], truncated: false };
+      },
+    });
+    const selection = setTreeSelection(emptyTreeSelection(), 'ch1.md', true);
+
+    const files = await enumerateSelectedEntries(
+      api,
+      SNAPSHOT,
+      selection,
+      new Map([['ch1.md', entry('ch1.md')]]),
+      new AbortController().signal,
+    );
+    expect(files.map((item) => item.path)).toEqual(['ch1.md']);
+    expect(calls).toEqual([]);
+  });
+
+  it('中断されていたら、次の tree を取りに行かない', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const api = client({
+      getTreeRecursive: async () => {
+        throw new Error('呼ばれないはず');
+      },
+    });
+    const selection = setTreeSelection(emptyTreeSelection(), '', true);
+
+    await expect(
+      enumerateSelectedEntries(api, SNAPSHOT, selection, new Map(), controller.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' });
   });
 });

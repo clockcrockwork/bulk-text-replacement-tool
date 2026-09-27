@@ -49,6 +49,20 @@ function entry(page: Page, name: string) {
   return dialog(page).getByRole('button', { name: new RegExp(`^${name}`) });
 }
 
+/**
+ * 選択を列挙して計画画面で件数を確かめ、取得して、取り込み方法の確認画面を返す。
+ * 取得（blob）は計画画面で「取得」を押すまで始まらない。
+ */
+async function fetchSelection(page: Page, files: number) {
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
+  await expect(
+    plan.getByRole('heading', { name: `${files}ファイルが見つかりました` }),
+  ).toBeVisible();
+  await plan.getByRole('button', { name: `${files}ファイルを取得` }).click();
+  return dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+}
+
 async function start(page: Page, mock: GitHubMock): Promise<void> {
   await mock.install(page);
   await seed(page);
@@ -217,10 +231,9 @@ test('フォルダ選択を未展開の子へ継承し、子を外すと親が m
     .getByRole('navigation', { name: '現在の場所' })
     .getByRole('button', { name: 'novel' })
     .click();
-  await expect(chapters).toHaveAttribute('aria-checked', 'mixed');
+  await expect(chapters).toBeChecked({ indeterminate: true });
 
-  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
-  const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+  const batch = await fetchSelection(page, 1);
   await expect(batch).toContainText('chapters/ch1.md');
   await expect(batch).not.toContainText('chapters/ch2.txt');
   await batch.getByRole('button', { name: '1ファイルを取り込む' }).click();
@@ -230,7 +243,9 @@ test('フォルダ選択を未展開の子へ継承し、子を外すと親が m
   expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(1);
 });
 
-test('checkbox はキーボードで操作でき、mixed state を aria-checked で伝える', async ({ page }) => {
+test('checkbox はキーボードで操作でき、mixed はネイティブの indeterminate で伝える', async ({
+  page,
+}) => {
   const mock = new GitHubMock([REPO]);
   await start(page, mock);
   await connect(page);
@@ -251,7 +266,9 @@ test('checkbox はキーボードで操作でき、mixed state を aria-checked 
     .getByRole('navigation', { name: '現在の場所' })
     .getByRole('button', { name: 'novel' })
     .click();
-  await expect(chapters).toHaveAttribute('aria-checked', 'mixed');
+  await expect(chapters).toBeChecked({ indeterminate: true });
+  // 状態は indeterminate から伝わるので、食い違い得る aria-checked は付けない。
+  await expect(chapters).not.toHaveAttribute('aria-checked');
 });
 
 test('複数選択の列挙は recursive tree を fast path として使う', async ({ page }) => {
@@ -262,9 +279,7 @@ test('複数選択の列挙は recursive tree を fast path として使う', as
 
   await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
   const before = mock.requests.length;
-  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
-
-  const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+  const batch = await fetchSelection(page, 2);
   await expect(batch).toContainText('chapters/ch1.md');
   await expect(batch).toContainText('chapters/ch2.txt');
 
@@ -286,9 +301,7 @@ test('recursive tree が truncated なら partial list を捨て、非再帰 tra
   await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
   mock.recursiveTreeTruncations = 1;
   const before = mock.requests.length;
-  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
-
-  const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+  const batch = await fetchSelection(page, 2);
   await expect(batch).toContainText('chapters/ch1.md');
   await expect(batch).toContainText('chapters/ch2.txt');
 
@@ -320,6 +333,8 @@ test('複数取得の途中でblobが1件でも失敗したら入力を1件も�
   mock.failPaths = ['/git/blobs/'];
 
   await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
+  await plan.getByRole('button', { name: '2ファイルを取得' }).click();
   const failure = dialog(page).getByRole('alert');
   await expect(failure).toBeVisible();
   await expect(failure).toContainText(/one\.md|two\.md/);
@@ -368,9 +383,7 @@ test('batch で同じsourceが複数あると更新先を推測せず、明示�
   await openRepository(page);
 
   await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
-  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
-
-  const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+  const batch = await fetchSelection(page, 1);
   const decision = batch.getByRole('combobox', { name: 'chapters/ch1.md の取り込み方法' });
   await expect(decision).toHaveValue('');
   const commitButton = batch.getByRole('button', { name: '1ファイルを取り込む' });
@@ -410,14 +423,156 @@ test('同じbasenameの別パスを一括選択すると衝突を知らせ、別
 
   await dialog(page).getByRole('checkbox', { name: 'a フォルダを選択' }).check();
   await dialog(page).getByRole('checkbox', { name: 'b フォルダを選択' }).check();
-  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
-
-  const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+  const batch = await fetchSelection(page, 2);
   await expect(batch.locator('.github__batch-warning')).toHaveCount(2);
   await batch.getByRole('button', { name: '2ファイルを取り込む' }).click();
 
   await expect(page.locator('.input-card')).toHaveCount(3);
   await expect(page.locator('.input-card__source')).toHaveText([/a\/ch1\.md/, /b\/ch1\.md/]);
+});
+
+test('未展開のフォルダを選ぶと、blob を取る前に正確な件数と容量を見せ、戻れば選択は残る', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  // 文字を押しても切り替わる（チェックボックスの label の中にある）。
+  await dialog(page).getByText('このフォルダ全体を選択').click();
+  const root = dialog(page).getByRole('checkbox', { name: 'このフォルダ全体を選択' });
+  await expect(root).toBeChecked();
+  await dialog(page).getByRole('checkbox', { name: 'drafts フォルダを選択' }).uncheck();
+  await expect(root).toBeChecked({ indeterminate: true });
+
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
+  await expect(plan.getByRole('heading', { name: '3ファイルが見つかりました' })).toBeVisible();
+  const files = plan.getByRole('list', { name: '取り込むファイル' });
+  await expect(files.getByRole('listitem')).toHaveText([
+    /^README\.md/,
+    /^chapters\/ch1\.md/,
+    /^chapters\/ch2\.txt/,
+  ]);
+  const bytes =
+    Buffer.byteLength('# novel\n') +
+    Buffer.byteLength('アリスは川辺に座っていた。\n') +
+    Buffer.byteLength('ビルがやってきた。\n');
+  await expect(plan).toContainText(`合計 ${bytes}B`);
+  // 数えただけで、本文はまだ1件も取っていない。
+  expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(0);
+  await expect(plan).not.toContainText('利用上限');
+
+  await plan.getByRole('button', { name: '選択へ戻る' }).click();
+  await expect(root).toBeChecked({ indeterminate: true });
+  await expect(page.locator('.input-card')).toHaveCount(1);
+});
+
+test('大きな選択は、取得の前にブラウザへ保存できない可能性を警告する', async ({ page }) => {
+  const repository = novelRepository({
+    branches: {
+      main: [
+        { path: 'big/huge.md', content: 'あ'.repeat(800_000) },
+        { path: 'big/small.md', content: '小さい\n' },
+      ],
+    },
+  });
+  const mock = new GitHubMock([repository]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'big フォルダを選択' }).check();
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
+  await expect(plan).toContainText('保存に失敗する可能性があります');
+  expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(0);
+});
+
+test('数えている間はチェックを変えられず、取得の途中で閉じれば何も反映しない', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  const chapters = dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' });
+  await chapters.check();
+
+  await page.route('https://api.github.com/**/git/trees/**', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await route.fallback();
+  });
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  // 数えている一覧と画面の選択が食い違わないよう、終わるまで選択は固定する。
+  await expect(chapters).toBeDisabled();
+  const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
+  await expect(plan.getByRole('heading', { name: '2ファイルが見つかりました' })).toBeVisible();
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+  await mock.install(page);
+
+  await page.route('https://api.github.com/**/git/blobs/**', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await route.fallback();
+  });
+  await plan.getByRole('button', { name: '2ファイルを取得' }).click();
+  await expect(dialog(page).getByRole('status')).toContainText('取得しています');
+  await dialog(page).getByRole('button', { name: '閉じる' }).click();
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+  await mock.install(page);
+
+  // 中断したので、遅れて返っても入力は増えない。開き直すと選択の画面から続けられる。
+  await page.waitForTimeout(700);
+  await expect(page.locator('.input-card')).toHaveCount(1);
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await expect(dialog(page).getByRole('heading', { name: 'ファイルを選ぶ' })).toBeVisible();
+  await expect(chapters).toBeChecked();
+});
+
+test('「最新に更新」でコミットが進んだら、選択を解除したことを知らせる', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  const chapters = dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' });
+  await chapters.check();
+
+  // 先頭が変わっていなければ、選択はそのまま残る。
+  await dialog(page).getByRole('button', { name: '最新に更新' }).click();
+  await expect(dialog(page).getByRole('status')).toContainText('最新です');
+  await expect(chapters).toBeChecked();
+
+  const moved = mock.setBranch(REPO.id, 'main', [
+    { path: 'chapters/ch1.md', content: '新しい版の ch1。\n' },
+  ]);
+  await dialog(page).getByRole('button', { name: '最新に更新' }).click();
+  await expect(dialog(page).getByRole('status')).toContainText(
+    `${moved.slice(0, 7)} に更新しました。選択は解除しました`,
+  );
+  await expect(chapters).not.toBeChecked();
+});
+
+test('絞り込みは、NFD で保存されたファイル名にも NFC の入力で一致する', async ({ page }) => {
+  const decomposed = 'がくや.md'.normalize('NFD');
+  const repository = novelRepository({
+    branches: {
+      main: [
+        { path: decomposed, content: '楽屋\n' },
+        { path: 'other.md', content: '別\n' },
+      ],
+    },
+  });
+  const mock = new GitHubMock([repository]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page)
+    .getByRole('searchbox', { name: 'このフォルダを絞り込み' })
+    .fill('がく'.normalize('NFC'));
+  await expect(dialog(page).getByRole('checkbox', { name: `${decomposed} を選択` })).toBeVisible();
+  await expect(dialog(page).getByRole('checkbox', { name: 'other.md を選択' })).toHaveCount(0);
 });
 
 test('取得の途中で閉じても、開き直せば続きから読み込む', async ({ page }) => {

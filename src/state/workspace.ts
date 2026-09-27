@@ -79,6 +79,8 @@ export type WorkspaceAction =
       type: 'inputs/applyGitHubBatch';
       updates: Array<{ id: string; text: string; source: NonNullable<InputText['source']> }>;
       adds: InputText[];
+      /** 手つかずのサンプルだったときに置く初期状態。サンプルでなければ使わない。 */
+      sampleReset: SampleReset;
     }
   | { type: 'inputs/update'; id: string; patch: Partial<Omit<InputText, 'id'>> }
   | { type: 'inputs/remove'; id: string }
@@ -104,7 +106,7 @@ export type WorkspaceAction =
   | { type: 'output/setFileView'; key: string; view: FileView }
   | { type: 'cellEdit/open'; target: CellEditTarget }
   | { type: 'cellEdit/close' }
-  | { type: 'sample/clear' }
+  | { type: 'sample/clear'; reset: SampleReset }
   | { type: 'sample/restore'; workspace: PersistedWorkspace };
 
 /** 置換元が空の新規行。表の末尾に置いて入力待ちにする。 */
@@ -118,6 +120,36 @@ export function createGroup(name: string): Group {
 
 export function createInput(title: string, text = ''): InputText {
   return { id: createId(), title, text };
+}
+
+/** サンプルを片付けたあとに残す、既定のグループ1つと空のルール1行。 */
+export interface SampleReset {
+  group: Group;
+  rule: Rule;
+}
+
+/** ID を作るので reducer の外で呼び、action に載せて渡す（reducer を純粋に保つ）。 */
+export function createSampleReset(): SampleReset {
+  return { group: createGroup('グループ1'), rule: createEmptyRule() };
+}
+
+/**
+ * サンプルを片付けた状態。グループは空にできない（置換先を書く場所が無くなる）ので
+ * 1つだけ残し、名前も既定に戻す。
+ */
+function clearedSample(reset: SampleReset) {
+  return {
+    inputs: [],
+    groups: [reset.group],
+    rules: [reset.rule],
+    isSample: false,
+    editingId: null,
+    result: null,
+    lastSignature: null,
+    outGroupId: null,
+    fileViews: {},
+    cellEdit: null,
+  } satisfies Partial<WorkspaceState>;
 }
 
 /**
@@ -255,20 +287,10 @@ function reduce(state: WorkspaceState, action: WorkspaceAction): WorkspaceState 
 
     case 'inputs/applyGitHubBatch': {
       if (action.updates.length === 0 && action.adds.length === 0) return state;
-      // batch は候補を全件取得・検証した後の1 actionでだけ反映する。
-      // 初期サンプルなら、入力だけでなくサンプル用ルール/グループも同じ mutation 内で片付ける。
-      const sampleReset = state.isSample
-        ? {
-            groups: [createGroup('グループ1')],
-            rules: [createEmptyRule()],
-            editingId: null,
-            result: null,
-            lastSignature: null,
-            outGroupId: null,
-            fileViews: {},
-            cellEdit: null,
-          }
-        : {};
+      // 一括取り込みは、全件の取得・検証が終わったあとの1つの action でだけ反映する。
+      // 手つかずのサンプルなら、入力だけでなくサンプルのルール・グループも同じ action で
+      // 片付ける（途中の状態を作らない）。
+      const sampleReset = state.isSample ? clearedSample(action.sampleReset) : {};
       const base = state.isSample ? [] : state.inputs;
       const updates = new Map(action.updates.map((update) => [update.id, update]));
       const replaced = base.map((input) => {
@@ -419,21 +441,7 @@ function reduce(state: WorkspaceState, action: WorkspaceAction): WorkspaceState 
       return { ...state, fileViews: { ...state.fileViews, [action.key]: action.view } };
 
     case 'sample/clear':
-      // サンプルを片付ける。グループは空にできない（置換先を書く場所が無くなる）ので
-      // 1つだけ残し、名前も既定に戻す。
-      return {
-        ...state,
-        inputs: [],
-        groups: [createGroup('グループ1')],
-        rules: [createEmptyRule()],
-        isSample: false,
-        editingId: null,
-        result: null,
-        lastSignature: null,
-        outGroupId: null,
-        fileViews: {},
-        cellEdit: null,
-      };
+      return { ...state, ...clearedSample(action.reset) };
 
     case 'sample/restore':
       return { ...state, ...action.workspace, result: null, lastSignature: null };

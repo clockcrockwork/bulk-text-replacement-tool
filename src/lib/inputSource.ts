@@ -67,6 +67,57 @@ export function findSameSource(
   return inputs.filter((input) => input.source && sourceIdentity(input.source) === key);
 }
 
+export interface BatchSourceMatch {
+  path: string;
+  /** 同じ取り込み元を持つ既存の入力。2件以上なら更新先を推測しない。 */
+  sameSource: Array<{ id: string; label: string }>;
+  /** 同じファイル名の、別の取り込み元の入力（既存または同じ一括の中）があるか。 */
+  titleCollision: boolean;
+}
+
+/**
+ * 一括取り込みの候補それぞれについて、同じ取り込み元の入力と、ファイル名の衝突を調べる。
+ *
+ * 候補は数千件になり得るので、候補ごとに入力を全走査せず、先に索引を作って引く。
+ * `label` は入力の表示名（何番目の入力か、など画面の都合）を呼び出し側が決める。
+ */
+export function matchBatchSources(
+  inputs: readonly InputText[],
+  candidates: ReadonlyArray<{ title: string; source: GitHubInputSource }>,
+  label: (input: InputText, index: number) => string,
+): BatchSourceMatch[] {
+  const bySource = new Map<string, Array<{ id: string; label: string }>>();
+  /** タイトル → その入力の取り込み元（出自の無い入力は null）。 */
+  const byTitle = new Map<string, Array<string | null>>();
+  inputs.forEach((input, index) => {
+    const identity = input.source ? sourceIdentity(input.source) : null;
+    if (identity !== null) {
+      const list = bySource.get(identity) ?? [];
+      list.push({ id: input.id, label: label(input, index) });
+      bySource.set(identity, list);
+    }
+    const titles = byTitle.get(input.title) ?? [];
+    titles.push(identity);
+    byTitle.set(input.title, titles);
+  });
+  const batchTitles = new Map<string, number>();
+  for (const candidate of candidates) {
+    batchTitles.set(candidate.title, (batchTitles.get(candidate.title) ?? 0) + 1);
+  }
+
+  return candidates.map((candidate) => {
+    const identity = sourceIdentity(candidate.source);
+    const titleCollision =
+      (byTitle.get(candidate.title) ?? []).some((other) => other !== identity) ||
+      (batchTitles.get(candidate.title) ?? 0) > 1;
+    return {
+      path: candidate.source.path,
+      sameSource: bySource.get(identity) ?? [],
+      titleCollision,
+    };
+  });
+}
+
 /** パスの末尾（ファイル名）。取り込んだ入力のタイトルの初期値に使う。 */
 export function baseName(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1);

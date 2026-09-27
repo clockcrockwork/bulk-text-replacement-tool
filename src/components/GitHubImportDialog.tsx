@@ -1,11 +1,21 @@
-import { type JSX, type RefObject, useEffect, useMemo, useRef, useState } from 'react';
-import { formatTextMeta } from '../lib/format';
-import { describeEntryStatus, formatBytes } from '../lib/githubApi';
 import {
+  type JSX,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { formatTextMeta } from '../lib/format';
+import { describeEntryStatus, formatBytes, type GitHubCandidate } from '../lib/githubApi';
+import {
+  type BatchWarning,
   type GitHubSelectionMark,
   type GitHubTreeSelection,
   hasAnySelection,
   isPathSelected,
+  planBatch,
   selectionMark,
   summarizeKnownSelection,
 } from '../lib/githubSelection';
@@ -33,6 +43,7 @@ export interface GitHubDialogHandlers {
   setSelected: (path: string, selected: boolean) => void;
   clearCandidate: () => void;
   prepareSelection: () => void;
+  fetchBatch: () => void;
   clearBatch: () => void;
   close: () => void;
 }
@@ -50,11 +61,10 @@ export interface GitHubBatchMatch {
   titleCollision: boolean;
 }
 
-export interface GitHubBatchDecision {
-  path: string;
-  /** null は新しい入力として追加。文字列ならその input id を更新。 */
-  updateInputId: string | null;
-}
+/** 候補1件の取り込み方法。未決定の候補は App に渡さない。 */
+export type GitHubBatchDecision =
+  | { path: string; action: 'add' }
+  | { path: string; action: 'update'; inputId: string };
 
 interface GitHubImportDialogProps {
   state: GitHubImportState;
@@ -78,6 +88,7 @@ interface GitHubImportDialogProps {
 function viewKey(state: GitHubImportState): string {
   if (state.connection !== 'connected') return `consent:${state.connection}`;
   if (state.batchCandidates) return `batch:${state.batchCandidates.length}`;
+  if (state.batchPlan) return `plan:${state.batchPlan.entries.length}`;
   if (state.candidate) return `candidate:${state.candidate.source.path}`;
   if (state.choosingBranch) return 'branches';
   if (state.snapshot) return `browse:${state.snapshot.commitSha}:${state.trail.at(-1)?.path ?? ''}`;
@@ -368,6 +379,13 @@ function ConnectedView(props: ConnectedViewProps): JSX.Element | null {
       <RepositoryContext state={state} handlers={handlers} />
       {state.batchCandidates ? (
         <BatchCandidateView {...props} candidates={state.batchCandidates} />
+      ) : state.batchPlan ? (
+        <BatchPlanView
+          state={state}
+          handlers={handlers}
+          headingRef={headingRef}
+          entries={state.batchPlan.entries}
+        />
       ) : state.candidate ? (
         <CandidateView {...props} candidate={state.candidate} />
       ) : state.choosingBranch || !state.snapshot ? (
@@ -413,7 +431,7 @@ function RepositoryContext({
           </>
         ) : null}
       </dl>
-      {state.candidate || state.batchCandidates ? null : (
+      {state.candidate || state.batchPlan || state.batchCandidates ? null : (
         <div className="github__context-actions">
           {snapshot && !state.choosingBranch ? (
             <>
@@ -507,15 +525,18 @@ function Explorer({
 
   const visibleEntries = useMemo(() => {
     if (!listing) return [];
-    const query = filter.trim().toLocaleLowerCase();
+    const query = normalizeForFilter(filter.trim());
     if (!query) return listing.entries;
-    return listing.entries.filter((entry) => entry.name.toLocaleLowerCase().includes(query));
+    return listing.entries.filter((entry) => normalizeForFilter(entry.name).includes(query));
   }, [listing, filter]);
 
   const known = useMemo(
-    () => summarizeKnownSelection(selection, Object.values(state.knownEntries)),
+    () => summarizeKnownSelection(selection, state.knownEntries.values()),
     [selection, state.knownEntries],
   );
+  // 列挙の最中に選択を変えると、数えている一覧と画面の選択が食い違う。取得が終わるまで
+  // 選択は変えさせない（止めたいときは閉じれば中断する）。
+  const selectionLocked = state.busy !== null;
 
   return (
     <section className="github__section" aria-label="ファイルを選ぶ">
@@ -579,10 +600,11 @@ function Explorer({
         <div className="github__current-selection">
           <SelectionCheckbox
             mark={selectionMark(selection, here.path)}
-            label={`${here.path || rootLabel} フォルダ全体を選択`}
+            disabled={selectionLocked}
             onChange={(selected) => handlers.setSelected(here.path, selected)}
-          />
-          <span>このフォルダ全体を選択</span>
+          >
+            このフォルダ全体を選択
+          </SelectionCheckbox>
         </div>
       ) : null}
 
@@ -602,7 +624,12 @@ function Explorer({
           <ul className="github__list" aria-label={here.path || rootLabel}>
             {visibleEntries.map((entry) => (
               <li key={entry.sha + entry.name}>
-                <TreeEntryRow entry={entry} handlers={handlers} selection={selection} />
+                <TreeEntryRow
+                  entry={entry}
+                  handlers={handlers}
+                  selection={selection}
+                  selectionLocked={selectionLocked}
+                />
               </li>
             ))}
           </ul>
@@ -623,14 +650,25 @@ function Explorer({
   );
 }
 
+/**
+ * 3状態のチェックボックス。mixed はネイティブの `indeterminate` で表す（支援技術へも
+ * そこから伝わるので `aria-checked` は付けない。付けると2つの値がずれ得る）。
+ *
+ * 見出しの文字がある場合は `<label>` の中に入れる。文字を押しても切り替わり、
+ * 読み上げ名も表示と一致する。一覧の行のように文字が隣のボタンにある場合は `label` で名前を付ける。
+ */
 function SelectionCheckbox({
   mark,
   label,
+  disabled,
   onChange,
+  children,
 }: {
   mark: GitHubSelectionMark;
-  label: string;
+  label?: string;
+  disabled: boolean;
   onChange: (selected: boolean) => void;
+  children?: ReactNode;
 }): JSX.Element {
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -642,22 +680,34 @@ function SelectionCheckbox({
         ref={ref}
         type="checkbox"
         checked={mark === 'checked'}
+        disabled={disabled}
         aria-label={label}
-        aria-checked={mark === 'mixed' ? 'mixed' : mark === 'checked'}
         onChange={(event) => onChange(event.currentTarget.checked)}
       />
+      {children ? <span className="github__select-label">{children}</span> : null}
     </label>
   );
+}
+
+/**
+ * 絞り込みの比較用。macOS で作られたリポジトリには NFD（「か」＋濁点）のファイル名が
+ * 混じるが、入力欄に打つ文字は通常 NFC なので、比べるときだけ揃える。表示と出自の
+ * パスには使わない（ファイル名そのものは変えない）。
+ */
+function normalizeForFilter(value: string): string {
+  return value.normalize('NFC').toLocaleLowerCase();
 }
 
 function TreeEntryRow({
   entry,
   handlers,
   selection,
+  selectionLocked,
 }: {
   entry: GitHubTreeEntry;
   handlers: GitHubDialogHandlers;
   selection: GitHubTreeSelection;
+  selectionLocked: boolean;
 }): JSX.Element {
   if (entry.status === 'dir') {
     const mark = selectionMark(selection, entry.path);
@@ -666,6 +716,7 @@ function TreeEntryRow({
         <SelectionCheckbox
           mark={mark}
           label={`${entry.name} フォルダを選択`}
+          disabled={selectionLocked}
           onChange={(selected) => handlers.setSelected(entry.path, selected)}
         />
         <button
@@ -686,6 +737,7 @@ function TreeEntryRow({
         <SelectionCheckbox
           mark={selected ? 'checked' : 'unchecked'}
           label={`${entry.name} を選択`}
+          disabled={selectionLocked}
           onChange={(checked) => handlers.setSelected(entry.path, checked)}
         />
         <button type="button" className="github__entry" onClick={() => handlers.selectFile(entry)}>
@@ -708,9 +760,98 @@ function TreeEntryRow({
   );
 }
 
+// ---- 複数取り込み：取得前の計画 ------------------------------------------------
+
+function describeBatchWarning(warning: BatchWarning): string {
+  switch (warning.kind) {
+    case 'requests':
+      return `GitHub へ ${warning.files}回リクエストします。GitHub の利用上限は通常 1時間 5,000回で、使い切るとしばらく取り込めなくなります。`;
+    case 'storage':
+      return `合計 ${formatBytes(warning.bytes)} あります。ブラウザへの保存は数MBで打ち止めになるため、取り込んだあと保存に失敗する可能性があります。`;
+  }
+}
+
+/**
+ * 列挙が終わり、blob を取る前の確認。まだ開いていないフォルダを選んだときは、
+ * ここで初めて正確な件数と容量が分かる。取得には GitHub の利用上限を使うので、
+ * 数字を見てから進めるようにする。
+ */
+function BatchPlanView({
+  state,
+  handlers,
+  headingRef,
+  entries,
+}: {
+  state: GitHubImportState;
+  handlers: GitHubDialogHandlers;
+  headingRef: RefObject<HTMLHeadingElement | null>;
+  entries: readonly GitHubTreeEntry[];
+}): JSX.Element {
+  const plan = useMemo(() => planBatch(entries), [entries]);
+  return (
+    <section className="github__section" aria-label="取り込むファイルの確認">
+      <h3 ref={headingRef} className="github__heading" tabIndex={-1}>
+        {plan.files}ファイルが見つかりました
+      </h3>
+      <p className="dialog__lead">
+        まだ取得していません。件数と容量を確かめてから取得してください。取得と検証が終わるまで入力テキストは変更されません。
+      </p>
+      <ul className="dialog__details">
+        <li>
+          合計 {formatBytes(plan.bytes)}
+          {plan.unknownSizes > 0 ? `以上（${plan.unknownSizes}件は大きさ不明）` : ''}
+        </li>
+      </ul>
+      {plan.warnings.length > 0 ? (
+        <ul className="github__plan-warnings">
+          {plan.warnings.map((warning) => (
+            <li key={warning.kind}>{describeBatchWarning(warning)}</li>
+          ))}
+        </ul>
+      ) : null}
+      <ul className="github__plan-list" aria-label="取り込むファイル">
+        {entries.map((entry) => (
+          <li key={entry.path}>
+            <span className="github__plan-path">{entry.path}</span>
+            {entry.size === null ? null : <span>{formatBytes(entry.size)}</span>}
+          </li>
+        ))}
+      </ul>
+      <div className="dialog__row">
+        <button type="button" className="btn" onClick={handlers.clearBatch}>
+          選択へ戻る
+        </button>
+        <button
+          type="button"
+          className="btn btn--primary"
+          disabled={state.busy !== null}
+          onClick={handlers.fetchBatch}
+        >
+          {plan.files}ファイルを取得
+        </button>
+      </div>
+    </section>
+  );
+}
+
 // ---- 複数取り込みの確認 --------------------------------------------------------
 
 const ADD_NEW = '__add__';
+
+/** 選択欄の値を取り込み方法にする。未決定（空）のものは含めない。 */
+function toBatchDecisions(
+  candidates: readonly GitHubCandidate[],
+  decisions: ReadonlyMap<string, string>,
+): GitHubBatchDecision[] {
+  return candidates.flatMap((candidate): GitHubBatchDecision[] => {
+    const path = candidate.source.path;
+    const value = decisions.get(path);
+    if (!value) return [];
+    return value === ADD_NEW
+      ? [{ path, action: 'add' }]
+      : [{ path, action: 'update', inputId: value }];
+  });
+}
 
 function BatchCandidateView({
   state,
@@ -722,15 +863,22 @@ function BatchCandidateView({
 }: ConnectedViewProps & {
   candidates: NonNullable<GitHubImportState['batchCandidates']>;
 }): JSX.Element {
-  const [decisions, setDecisions] = useState<Record<string, string>>(() =>
-    Object.fromEntries(
-      candidates.map((candidate) => {
-        const match = batchMatches.find((item) => item.path === candidate.source.path);
-        return [candidate.source.path, match && match.sameSource.length > 0 ? '' : ADD_NEW];
-      }),
-    ),
+  // 候補は数千件になり得るので、パスから引ける索引にしておく（行ごとに全体を探さない）。
+  const matchByPath = useMemo(
+    () => new Map(batchMatches.map((match) => [match.path, match])),
+    [batchMatches],
   );
-  const unresolved = candidates.some((candidate) => !decisions[candidate.source.path]);
+  // 同じ取り込み元が既にある候補は未決定（空）から始め、利用者に選ばせる。
+  const [decisions, setDecisions] = useState<ReadonlyMap<string, string>>(
+    () =>
+      new Map(
+        candidates.map((candidate) => {
+          const match = matchByPath.get(candidate.source.path);
+          return [candidate.source.path, match && match.sameSource.length > 0 ? '' : ADD_NEW];
+        }),
+      ),
+  );
+  const unresolved = candidates.some((candidate) => !decisions.get(candidate.source.path));
   const bytes = candidates.reduce((sum, candidate) => sum + candidate.size, 0);
   const shiftJis = candidates.filter((candidate) => candidate.encoding === 'shift_jis').length;
 
@@ -751,7 +899,7 @@ function BatchCandidateView({
 
       <ul className="github__batch-list">
         {candidates.map((candidate) => {
-          const match = batchMatches.find((item) => item.path === candidate.source.path);
+          const match = matchByPath.get(candidate.source.path);
           const sameSource = match?.sameSource ?? [];
           return (
             <li key={candidate.source.path} className="github__batch-item">
@@ -772,13 +920,11 @@ function BatchCandidateView({
                   <span>同じ取り込み元があります</span>
                   <select
                     aria-label={`${candidate.source.path} の取り込み方法`}
-                    value={decisions[candidate.source.path] ?? ''}
-                    onChange={(event) =>
-                      setDecisions((current) => ({
-                        ...current,
-                        [candidate.source.path]: event.currentTarget.value,
-                      }))
-                    }
+                    value={decisions.get(candidate.source.path) ?? ''}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      setDecisions((current) => new Map(current).set(candidate.source.path, value));
+                    }}
                   >
                     <option value="">取り込み方法を選ぶ</option>
                     <option value={ADD_NEW}>別の入力として追加</option>
@@ -805,17 +951,7 @@ function BatchCandidateView({
           type="button"
           className="btn btn--primary"
           disabled={state.busy !== null || unresolved}
-          onClick={() =>
-            onApplyBatch(
-              candidates.map((candidate) => ({
-                path: candidate.source.path,
-                updateInputId:
-                  decisions[candidate.source.path] === ADD_NEW
-                    ? null
-                    : decisions[candidate.source.path] || null,
-              })),
-            )
-          }
+          onClick={() => onApplyBatch(toBatchDecisions(candidates, decisions))}
         >
           {candidates.length}ファイルを取り込む
         </button>

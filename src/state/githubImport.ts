@@ -35,6 +35,15 @@ export interface DirectoryListing {
   truncated: boolean;
 }
 
+/**
+ * 列挙が終わり、blob を取る前の計画。件数と容量を見せてから取得に進む。
+ * `selection` は列挙に使った選択そのもの（同一性で照合する）。
+ */
+export interface GitHubBatchPlan {
+  entries: GitHubTreeEntry[];
+  selection: GitHubTreeSelection;
+}
+
 /** 画面に出す失敗。`recover` は利用者が取れる次の手。 */
 export interface GitHubImportError {
   message: string;
@@ -64,12 +73,20 @@ export interface GitHubImportState {
   trail: TrailStep[];
   /** 今いるディレクトリの一覧。null は取得中。 */
   listing: DirectoryListing | null;
-  /** このsnapshotで一度読み込んだ項目。選択件数/既知byteを場所を跨いで数える。 */
-  knownEntries: Readonly<Record<string, GitHubTreeEntry>>;
+  /**
+   * このスナップショットで一度読み込んだ項目（キーはパス）。場所を移っても選択の件数と
+   * 既知の容量を数えられるように持つ。パスは任意の名前なので Map にする。
+   */
+  knownEntries: ReadonlyMap<string, GitHubTreeEntry>;
   candidate: GitHubCandidate | null;
+  /** 複数選択を列挙し終え、取得の前に件数・容量を確かめる段階。 */
+  batchPlan: GitHubBatchPlan | null;
   /** 複数選択を全件取得・検証したあとの候補。null は確認画面ではない。 */
   batchCandidates: GitHubCandidate[] | null;
-  /** lazy tree の選択。未展開ディレクトリの選択も規則として保持する。 */
+  /**
+   * 遅延読み込みする tree の選択。未展開のディレクトリの選択も規則として持つ。
+   * 変わるたびに別のオブジェクトになるので、同一性で「その選択から作った結果か」を照合できる。
+   */
   selection: GitHubTreeSelection;
   /** 取得中の内容。null なら待っていない。 */
   busy: string | null;
@@ -104,7 +121,15 @@ export type GitHubImportAction =
   | { type: 'dir/goTo'; index: number }
   | { type: 'candidate/set'; candidate: GitHubCandidate }
   | { type: 'candidate/clear' }
-  | { type: 'batch/set'; candidates: GitHubCandidate[] }
+  /** 列挙が終わった。`selection` は列挙を始めたときの選択。 */
+  | {
+      type: 'batch/planned';
+      commitSha: string;
+      selection: GitHubTreeSelection;
+      entries: GitHubTreeEntry[];
+    }
+  /** 計画した全件を取得・検証し終えた。`selection` は計画を作ったときの選択。 */
+  | { type: 'batch/set'; selection: GitHubTreeSelection; candidates: GitHubCandidate[] }
   | { type: 'batch/clear' }
   | { type: 'selection/set'; path: string; selected: boolean }
   | { type: 'selection/clear' };
@@ -120,8 +145,9 @@ export const initialGitHubImportState: GitHubImportState = {
   snapshot: null,
   trail: [],
   listing: null,
-  knownEntries: {},
+  knownEntries: new Map(),
   candidate: null,
+  batchPlan: null,
   batchCandidates: null,
   selection: emptyTreeSelection(),
   busy: null,
@@ -142,8 +168,9 @@ const CLEARED_SELECTION = {
   snapshot: null,
   trail: [],
   listing: null,
-  knownEntries: {},
+  knownEntries: new Map(),
   candidate: null,
+  batchPlan: null,
   batchCandidates: null,
   selection: emptyTreeSelection(),
 } satisfies Partial<GitHubImportState>;
@@ -173,6 +200,7 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
         busy: null,
         error: null,
         candidate: null,
+        batchPlan: null,
         batchCandidates: null,
       };
 
@@ -234,8 +262,9 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
         branches: null,
         trail: [{ path: '', treeSha: action.snapshot.treeSha }],
         listing: null,
-        knownEntries: {},
+        knownEntries: new Map(),
         candidate: null,
+        batchPlan: null,
         batchCandidates: null,
         selection: emptyTreeSelection(),
         busy: null,
@@ -251,8 +280,8 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
       if (here?.treeSha !== action.listing.treeSha || here.path !== action.listing.path) {
         return state;
       }
-      const knownEntries = { ...state.knownEntries };
-      for (const entry of action.listing.entries) knownEntries[entry.path] = entry;
+      const knownEntries = new Map(state.knownEntries);
+      for (const entry of action.listing.entries) knownEntries.set(entry.path, entry);
       return { ...state, listing: action.listing, knownEntries, busy: null, error: null };
     }
 
@@ -285,6 +314,7 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
       return {
         ...state,
         candidate: action.candidate,
+        batchPlan: null,
         batchCandidates: null,
         busy: null,
         error: null,
@@ -293,27 +323,14 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
     case 'candidate/clear':
       return { ...state, candidate: null, error: null };
 
+    case 'batch/planned':
+      return acceptBatchPlan(state, action);
+
     case 'batch/set':
-      if (!state.snapshot) return state;
-      if (
-        action.candidates.some(
-          (candidate) =>
-            candidate.source.commitSha !== state.snapshot?.commitSha ||
-            candidate.source.repositoryId !== state.snapshot?.repository.id,
-        )
-      ) {
-        return state;
-      }
-      return {
-        ...state,
-        candidate: null,
-        batchCandidates: action.candidates,
-        busy: null,
-        error: null,
-      };
+      return acceptBatchCandidates(state, action);
 
     case 'batch/clear':
-      return { ...state, batchCandidates: null, error: null };
+      return { ...state, batchPlan: null, batchCandidates: null, error: null };
 
     case 'selection/set':
       if (!state.snapshot) return state;
@@ -321,6 +338,7 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
         ...state,
         selection: setTreeSelection(state.selection, action.path, action.selected),
         candidate: null,
+        batchPlan: null,
         batchCandidates: null,
         error: null,
       };
@@ -330,8 +348,52 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
         ...state,
         selection: emptyTreeSelection(),
         candidate: null,
+        batchPlan: null,
         batchCandidates: null,
         error: null,
       };
   }
+}
+
+function acceptBatchPlan(
+  state: GitHubImportState,
+  action: Extract<GitHubImportAction, { type: 'batch/planned' }>,
+): GitHubImportState {
+  // 列挙のあいだに固定し直した、または選択を変えたなら、その一覧は今の選択ではない。
+  if (state.snapshot?.commitSha !== action.commitSha) return state;
+  if (state.selection !== action.selection) return state;
+  return {
+    ...state,
+    candidate: null,
+    batchPlan: { entries: action.entries, selection: action.selection },
+    batchCandidates: null,
+    busy: null,
+    error: null,
+  };
+}
+
+function acceptBatchCandidates(
+  state: GitHubImportState,
+  action: Extract<GitHubImportAction, { type: 'batch/set' }>,
+): GitHubImportState {
+  const snapshot = state.snapshot;
+  if (!snapshot) return state;
+  // 確かめた計画と、それを作った選択のままのときだけ受け取る。
+  if (state.batchPlan?.selection !== action.selection) return state;
+  if (state.selection !== action.selection) return state;
+  // 取得中に固定し直していたら、古いコミットの内容なので使わない（1件でも混じれば全体を捨てる）。
+  const stale = action.candidates.some(
+    (candidate) =>
+      candidate.source.commitSha !== snapshot.commitSha ||
+      candidate.source.repositoryId !== snapshot.repository.id,
+  );
+  if (stale) return state;
+  return {
+    ...state,
+    candidate: null,
+    batchPlan: null,
+    batchCandidates: action.candidates,
+    busy: null,
+    error: null,
+  };
 }

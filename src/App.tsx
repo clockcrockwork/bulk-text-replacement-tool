@@ -42,7 +42,7 @@ import { copyText, downloadBlob } from './lib/browser';
 import { collectRuleErrors, findUnmatchedRules } from './lib/diagnostics';
 import { formatFallbackTitle, formatIndex, timestampForFileName } from './lib/format';
 import { readInputFiles } from './lib/inputFiles';
-import { findSameSource, sourceIdentity } from './lib/inputSource';
+import { findSameSource, matchBatchSources, sourceIdentity } from './lib/inputSource';
 import { runConversion } from './lib/replace';
 import {
   buildRulesFromTable,
@@ -57,6 +57,7 @@ import {
   createEmptyRule,
   createGroup,
   createInput,
+  createSampleReset,
   initWorkspace,
   workspaceReducer,
   workspaceSignature,
@@ -193,7 +194,7 @@ export function App(): JSX.Element {
       theme: state.theme,
       isSample: true,
     };
-    dispatch({ type: 'sample/clear' });
+    dispatch({ type: 'sample/clear', reset: createSampleReset() });
     // 呼び出し側が自分のトーストを出すので、ここでは出さずに取り消し手段だけ返す。
     // 別々に出すと、あとから出た方が前のトーストを消してしまう。
     return {
@@ -290,27 +291,13 @@ export function App(): JSX.Element {
       )
     : false;
 
-  const githubBatchMatches: GitHubBatchMatch[] = (github.state.batchCandidates ?? []).map(
-    (candidate) => {
-      const sameSource = findSameSource(state.inputs, candidate.source).map((input) => {
-        const index = state.inputs.indexOf(input);
-        return {
-          id: input.id,
-          label: `${formatIndex(index)} ${input.title || formatFallbackTitle(index)}`,
-        };
-      });
-      const titleCollision =
-        state.inputs.some(
-          (input) =>
-            input.title === candidate.title &&
-            !(input.source && sourceIdentity(input.source) === sourceIdentity(candidate.source)),
-        ) ||
-        (github.state.batchCandidates ?? []).some(
-          (other) => other.source.path !== candidate.source.path && other.title === candidate.title,
-        );
-      return { path: candidate.source.path, sameSource, titleCollision };
-    },
-  );
+  const githubBatchMatches: GitHubBatchMatch[] = github.state.batchCandidates
+    ? matchBatchSources(
+        state.inputs,
+        github.state.batchCandidates,
+        (input, index) => `${formatIndex(index)} ${input.title || formatFallbackTitle(index)}`,
+      )
+    : [];
 
   /** Shift_JIS は推測なので、黙って取り込まず知らせる（ローカルのファイルと同じ扱い）。 */
   const shiftJisNote = (encoding: 'utf-8' | 'shift_jis'): string =>
@@ -360,35 +347,45 @@ export function App(): JSX.Element {
   const applyGitHubBatch = (decisions: readonly GitHubBatchDecision[]): void => {
     const candidates = github.state.batchCandidates;
     if (!candidates || candidates.length === 0) return;
-    const byPath = new Map(decisions.map((decision) => [decision.path, decision.updateInputId]));
+    const byPath = new Map(decisions.map((decision) => [decision.path, decision]));
     const updates: Array<{
       id: string;
       text: string;
-      source: NonNullable<(typeof state.inputs)[number]['source']>;
+      source: NonNullable<InputText['source']>;
     }> = [];
     const adds: InputText[] = [];
 
+    // 取り込み方法は画面で全件決めてから呼ばれるはずだが、決まっていない候補があれば
+    // 「追加」とみなさずに止める。同じ取り込み元の更新先を推測しない（仕様 §9）ことを、
+    // 画面側のボタンの無効化だけに任せない。
     for (const candidate of candidates) {
-      if (!byPath.has(candidate.source.path)) {
+      const decision = byPath.get(candidate.source.path);
+      if (!decision) {
         flash('取り込み方法が決まっていないファイルがあります');
         return;
       }
-      const inputId = byPath.get(candidate.source.path) ?? null;
-      if (inputId === null) {
+      if (decision.action === 'add') {
         adds.push({ ...createInput(candidate.title, candidate.text), source: candidate.source });
         continue;
       }
-      const target = state.inputs.find((input) => input.id === inputId);
+      const target = state.inputs.find((input) => input.id === decision.inputId);
       if (!target?.source || sourceIdentity(target.source) !== sourceIdentity(candidate.source)) {
         flash('更新先が変わったため、取り込み方法を選び直してください');
         return;
       }
-      updates.push({ id: inputId, text: candidate.text, source: candidate.source });
+      updates.push({ id: target.id, text: candidate.text, source: candidate.source });
     }
 
     guard('GitHub からの一括取り込み', () => {
+      // 一括ではサンプルの片付けに「元に戻す」を付けない。戻すと取り込んだ全件も消えるため
+      // （docs/github-import-v2.md §7 Untouched sample workspace）。
       const clearedSample = state.isSample;
-      dispatch({ type: 'inputs/applyGitHubBatch', updates, adds });
+      dispatch({
+        type: 'inputs/applyGitHubBatch',
+        updates,
+        adds,
+        sampleReset: createSampleReset(),
+      });
       github.finish();
       const shiftJis = candidates.filter((candidate) => candidate.encoding === 'shift_jis').length;
       flash(

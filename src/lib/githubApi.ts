@@ -323,7 +323,7 @@ export function normalizeCommitTreeSha(value: unknown): string | null {
 }
 
 /** 名前順。ロケールに依らず毎回同じ並びにするため、コードポイントで比べる。 */
-function compareCodePoints(a: string, b: string): number {
+export function compareCodePoints(a: string, b: string): number {
   if (a === b) return 0;
   return a < b ? -1 : 1;
 }

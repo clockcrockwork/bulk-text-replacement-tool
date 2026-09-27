@@ -1,7 +1,9 @@
 import { useEffect, useReducer, useRef } from 'react';
 import { createGitHubClient, type GitHubClient, GitHubRequestError } from '../github/client';
+import { mapWithConcurrency } from '../lib/concurrency';
 import {
   buildCandidate,
+  compareCodePoints,
   describeGitHubError,
   type NormalizedTree,
   orderBranches,
@@ -50,7 +52,7 @@ const EXPIRED_NOTICE = 'GitHub との接続の有効期限が切れました。�
 
 const BLOB_CONCURRENCY = 4;
 
-class GitHubBatchPreparationError extends Error {}
+export class GitHubBatchPreparationError extends Error {}
 
 class GitHubBatchRequestError extends Error {
   constructor(
@@ -59,52 +61,6 @@ class GitHubBatchRequestError extends Error {
   ) {
     super(`${path}: ${requestError.message}`);
   }
-}
-
-export async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  signal: AbortSignal,
-  worker: (item: T, signal: AbortSignal) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  const controller = new AbortController();
-  const abortFromParent = (): void => controller.abort();
-  if (signal.aborted) controller.abort();
-  else signal.addEventListener('abort', abortFromParent, { once: true });
-
-  let cursor = 0;
-  let firstError: unknown = null;
-  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (cursor < items.length && firstError === null) {
-      if (controller.signal.aborted) {
-        firstError ??= new DOMException('Aborted', 'AbortError');
-        return;
-      }
-      const index = cursor;
-      cursor += 1;
-      const item = items[index];
-      if (item === undefined) continue;
-      try {
-        results[index] = await worker(item, controller.signal);
-      } catch (error) {
-        if (firstError === null) {
-          firstError = error;
-          // 1件でも失敗したら、他 runner の in-flight fetch も止め、新しい fetch を始めない。
-          controller.abort();
-        }
-        return;
-      }
-    }
-  });
-
-  try {
-    await Promise.all(runners);
-  } finally {
-    signal.removeEventListener('abort', abortFromParent);
-  }
-  if (firstError !== null) throw firstError;
-  return results;
 }
 
 async function loadBatchTree(
@@ -130,10 +86,10 @@ export async function enumerateSelectedEntries(
   api: GitHubClient,
   snapshot: GitHubSnapshot,
   selection: GitHubTreeSelection,
-  knownEntries: Readonly<Record<string, GitHubTreeEntry>>,
+  knownEntries: ReadonlyMap<string, GitHubTreeEntry>,
   signal: AbortSignal,
 ): Promise<GitHubTreeEntry[]> {
-  let queue: Array<{ path: string; treeSha: string }> = [];
+  const queue: Array<{ path: string; treeSha: string }> = [];
   const files: GitHubTreeEntry[] = [];
   const seen = new Set<string>();
 
@@ -150,30 +106,25 @@ export async function enumerateSelectedEntries(
     }
   };
 
-  let unresolvedRoot = false;
   for (const path of includedSelectionRoots(selection)) {
     if (path === '') {
       queue.push({ path: '', treeSha: snapshot.treeSha });
       continue;
     }
-    const entry = knownEntries[path];
+    // 規則は画面に出たチェックボックスからしか作られないので、項目は読み込み済みのはず。
+    // 無ければ想定外の状態。黙って落とすのも、ルートから全体を辿り直して GitHub の
+    // 利用上限を使うのも避け、はっきり止める。
+    const entry = knownEntries.get(path);
     if (!entry) {
-      unresolvedRoot = true;
-      break;
+      throw new GitHubBatchPreparationError(
+        `${path} の場所を確認できませんでした。フォルダを開き直して選び直してください。`,
+      );
     }
     if (entry.status === 'importable') {
       collect([entry]);
     } else if (entry.status === 'dir') {
       queue.push({ path: entry.path, treeSha: entry.sha });
     }
-  }
-
-  // Normally every explicit rule came from a visible checkbox and therefore has a known entry.
-  // If that invariant is broken, fall back to the pinned root rather than silently omitting data.
-  if (unresolvedRoot) {
-    files.length = 0;
-    seen.clear();
-    queue = [{ path: '', treeSha: snapshot.treeSha }];
   }
 
   while (queue.length > 0) {
@@ -204,7 +155,7 @@ export async function enumerateSelectedEntries(
     }
   }
 
-  files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  files.sort((a, b) => compareCodePoints(a.path, b.path));
   return files;
 }
 
@@ -233,7 +184,10 @@ export interface GitHubImport {
   selectFile: (entry: GitHubTreeEntry) => void;
   setSelected: (path: string, selected: boolean) => void;
   clearCandidate: () => void;
+  /** 選択を列挙し、取得の前に件数・容量を確かめる画面へ進む。 */
   prepareSelection: () => void;
+  /** 確かめた計画の全件を取得・検証する。 */
+  fetchBatch: () => void;
   clearBatch: () => void;
   /** 取り込みを確定したあとに呼ぶ。ダイアログを閉じる。 */
   finish: () => void;
@@ -387,41 +341,51 @@ export function useGitHubImport(): GitHubImport {
       });
       return;
     }
+    const knownEntries = state.knownEntries;
 
     run(
-      '選択したファイルを準備しています',
+      '選択したファイルを数えています',
       async (api, signal) => {
         const entries = await enumerateSelectedEntries(
           api,
           snapshot,
           selection,
-          state.knownEntries,
+          knownEntries,
           signal,
         );
         if (entries.length === 0) {
           throw new GitHubBatchPreparationError('選択範囲に取り込めるファイルがありません。');
         }
-        return mapWithConcurrency(
-          entries,
-          BLOB_CONCURRENCY,
-          signal,
-          async (entry, requestSignal) => {
-            let buffer: ArrayBuffer;
-            try {
-              buffer = await api.getBlob(snapshot, entry.sha, requestSignal);
-            } catch (error) {
-              if (error instanceof GitHubRequestError) {
-                throw new GitHubBatchRequestError(entry.path, error);
-              }
-              throw error;
-            }
-            const result = buildCandidate(snapshot, entry, buffer);
-            if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
-            return result.candidate;
-          },
-        );
+        return entries;
       },
-      (candidates) => dispatch({ type: 'batch/set', candidates }),
+      (entries) =>
+        dispatch({ type: 'batch/planned', commitSha: snapshot.commitSha, selection, entries }),
+    );
+  };
+
+  const fetchBatch = (): void => {
+    const snapshot = state.snapshot;
+    const plan = state.batchPlan;
+    if (!snapshot || !plan) return;
+
+    run(
+      '選択したファイルを取得しています',
+      (api, signal) =>
+        mapWithConcurrency(plan.entries, BLOB_CONCURRENCY, signal, async (entry, requestSignal) => {
+          let buffer: ArrayBuffer;
+          try {
+            buffer = await api.getBlob(snapshot, entry.sha, requestSignal);
+          } catch (error) {
+            if (error instanceof GitHubRequestError) {
+              throw new GitHubBatchRequestError(entry.path, error);
+            }
+            throw error;
+          }
+          const result = buildCandidate(snapshot, entry, buffer);
+          if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
+          return result.candidate;
+        }),
+      (candidates) => dispatch({ type: 'batch/set', selection: plan.selection, candidates }),
     );
   };
 
@@ -464,8 +428,18 @@ export function useGitHubImport(): GitHubImport {
     );
   };
 
-  /** ブランチの HEAD を解決して固定し、ルートを開く。 */
-  const pin = (repository: GitHubRepository, ref: string, previous?: GitHubSnapshot): void => {
+  /**
+   * ブランチの HEAD を解決して固定し、ルートを開く。
+   *
+   * 固定し直すと選択は捨てる（古いコミットで選んだものを新しいコミットへ持ち越さない）ので、
+   * 捨てる選択があったときはそれも知らせる。黙って消えると、選び直しが要ることに気づけない。
+   */
+  const pin = (
+    repository: GitHubRepository,
+    ref: string,
+    options: { previous?: GitHubSnapshot; hadSelection?: boolean } = {},
+  ): void => {
+    const { previous, hadSelection = false } = options;
     run(
       `${ref} の最新コミットを確認しています`,
       (api, signal) => api.resolveSnapshot(repository, ref, signal),
@@ -475,10 +449,14 @@ export function useGitHubImport(): GitHubImport {
           return;
         }
         dispatch({ type: 'snapshot/pinned', snapshot });
+        const notes = [
+          previous ? `${shortSha(snapshot.commitSha)} に更新しました` : null,
+          hadSelection ? '選択は解除しました' : null,
+        ].filter((note) => note !== null);
         loadListing(
           snapshot,
           { path: '', treeSha: snapshot.treeSha },
-          previous ? `${shortSha(snapshot.commitSha)} に更新しました` : undefined,
+          notes.length > 0 ? notes.join('。') : undefined,
         );
       },
     );
@@ -664,11 +642,18 @@ export function useGitHubImport(): GitHubImport {
       dispatch({ type: 'branches/hide' });
     },
     selectBranch: (ref) => {
-      if (state.repository) pin(state.repository, ref);
+      if (state.repository) {
+        pin(state.repository, ref, { hadSelection: hasAnySelection(state.selection) });
+      }
     },
     refreshSnapshot: () => {
       const snapshot = state.snapshot;
-      if (snapshot) pin(snapshot.repository, snapshot.ref, snapshot);
+      if (snapshot) {
+        pin(snapshot.repository, snapshot.ref, {
+          previous: snapshot,
+          hadSelection: hasAnySelection(state.selection),
+        });
+      }
     },
     enterDirectory: (entry) => {
       const snapshot = state.snapshot;
@@ -703,6 +688,7 @@ export function useGitHubImport(): GitHubImport {
     },
     clearCandidate: () => dispatch({ type: 'candidate/clear' }),
     prepareSelection,
+    fetchBatch,
     clearBatch: () => dispatch({ type: 'batch/clear' }),
     finish: () => {
       dispatch({ type: 'candidate/clear' });

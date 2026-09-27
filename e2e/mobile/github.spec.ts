@@ -81,8 +81,18 @@ test('スマホ幅でもフォルダをチェックして複数ファイルを�
   expect(size.width).toBeGreaterThanOrEqual(44);
   expect(size.height).toBeGreaterThanOrEqual(44);
 
+  // iOS Safari はフォーカスした入力欄の文字が 16px 未満だと自動で拡大する。
+  const filterSize = await dialog(page)
+    .getByRole('searchbox', { name: 'このフォルダを絞り込み' })
+    .evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize));
+  expect(filterSize).toBeGreaterThanOrEqual(16);
+
   await chapters.tap();
   await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).tap();
+  const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
+  await expect(plan.getByRole('heading', { name: '2ファイルが見つかりました' })).toBeVisible();
+  await expectFitsWidth(page);
+  await plan.getByRole('button', { name: '2ファイルを取得' }).tap();
   await expectFitsWidth(page);
 
   const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });

@@ -1,17 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import type { GitHubTreeEntry } from '../types';
 import {
+  BATCH_WARN_BYTES,
+  BATCH_WARN_FILES,
   emptyTreeSelection,
   hasAnySelection,
   includedSelectionRoots,
   isPathSelected,
+  planBatch,
   selectionMark,
   selectionMayContainSelected,
   setTreeSelection,
   summarizeKnownSelection,
 } from './githubSelection';
 
-function file(path: string, size = 10): GitHubTreeEntry {
+function file(path: string, size: number | null = 10): GitHubTreeEntry {
   return {
     name: path.slice(path.lastIndexOf('/') + 1),
     path,
@@ -31,15 +34,15 @@ function directory(path: string): GitHubTreeEntry {
   };
 }
 
-describe('GitHub lazy tree selection', () => {
-  it('selects an unopened directory conceptually and later children inherit it', () => {
+describe('遅延読み込みする tree の選択', () => {
+  it('未展開のフォルダを選ぶと、あとで開いた配下も選ばれている', () => {
     const selected = setTreeSelection(emptyTreeSelection(), 'chapters', true);
     expect(isPathSelected(selected, 'chapters')).toBe(true);
     expect(isPathSelected(selected, 'chapters/one/ch1.md')).toBe(true);
     expect(selectionMark(selected, 'chapters')).toBe('checked');
   });
 
-  it('a descendant exclusion makes the selected parent mixed', () => {
+  it('配下を外すと、選んだ親は mixed になる', () => {
     let selected = setTreeSelection(emptyTreeSelection(), 'chapters', true);
     selected = setTreeSelection(selected, 'chapters/drafts', false);
     expect(isPathSelected(selected, 'chapters/live.md')).toBe(true);
@@ -48,30 +51,30 @@ describe('GitHub lazy tree selection', () => {
     expect(selectionMark(selected, 'chapters/drafts')).toBe('unchecked');
   });
 
-  it('reselecting a mixed parent clears descendant overrides', () => {
+  it('mixed の親を選び直すと、配下の上書きを消す', () => {
     let selected = setTreeSelection(emptyTreeSelection(), 'chapters', true);
     selected = setTreeSelection(selected, 'chapters/drafts', false);
     selected = setTreeSelection(selected, 'chapters', true);
     expect(selectionMark(selected, 'chapters')).toBe('checked');
     expect(isPathSelected(selected, 'chapters/drafts/old.md')).toBe(true);
-    expect(selected.rules).toEqual({ chapters: true });
+    expect(selected.rules).toEqual(new Map([['chapters', true]]));
   });
 
-  it('selecting a child below an unselected parent makes the parent mixed', () => {
+  it('選んでいない親の下で子を選ぶと、親は mixed になる', () => {
     const selected = setTreeSelection(emptyTreeSelection(), 'chapters/ch1.md', true);
     expect(selectionMark(selected, 'chapters')).toBe('mixed');
     expect(isPathSelected(selected, 'chapters/ch1.md')).toBe(true);
     expect(isPathSelected(selected, 'chapters/ch2.md')).toBe(false);
   });
 
-  it('matches path segments, not string prefixes', () => {
+  it('文字列の前方一致ではなく、パスの区切り単位で照合する', () => {
     const selected = setTreeSelection(emptyTreeSelection(), 'a', true);
     expect(isPathSelected(selected, 'a/ch1.md')).toBe(true);
     expect(isPathSelected(selected, 'ab/ch1.md')).toBe(false);
     expect(selectionMayContainSelected(selected, 'ab')).toBe(false);
   });
 
-  it('can exclude a subtree and re-include a more specific descendant', () => {
+  it('外した部分木の中で、より具体的なパスを選び直せる', () => {
     let selected = setTreeSelection(emptyTreeSelection(), 'chapters', true);
     selected = setTreeSelection(selected, 'chapters/drafts', false);
     selected = setTreeSelection(selected, 'chapters/drafts/keep.md', true);
@@ -81,7 +84,15 @@ describe('GitHub lazy tree selection', () => {
     expect(selectionMark(selected, 'chapters')).toBe('mixed');
   });
 
-  it('uses only minimal include roots for enumeration', () => {
+  it('ルートを選んで外すと、規則は何も残らない', () => {
+    let selected = setTreeSelection(emptyTreeSelection(), 'chapters/drafts', true);
+    selected = setTreeSelection(selected, '', true);
+    expect(selected.rules).toEqual(new Map([['', true]]));
+    selected = setTreeSelection(selected, '', false);
+    expect(selected.rules.size).toBe(0);
+  });
+
+  it('列挙の起点は、ほかの「選ぶ」規則に含まれない最小の組だけ', () => {
     let selected = setTreeSelection(emptyTreeSelection(), 'chapters', true);
     selected = setTreeSelection(selected, 'chapters/drafts', false);
     selected = setTreeSelection(selected, 'chapters/drafts/keep.md', true);
@@ -90,7 +101,7 @@ describe('GitHub lazy tree selection', () => {
     expect(includedSelectionRoots(selected)).toEqual(['appendix', 'chapters']);
   });
 
-  it('prunes unselected branches but follows an explicitly selected descendant', () => {
+  it('選ばれていない枝は刈り込み、明示的に選んだ子孫がある枝は辿る', () => {
     let selected = emptyTreeSelection();
     expect(hasAnySelection(selected)).toBe(false);
     selected = setTreeSelection(selected, 'chapters/drafts/ch1.md', true);
@@ -100,7 +111,23 @@ describe('GitHub lazy tree selection', () => {
     expect(selectionMayContainSelected(selected, 'images')).toBe(false);
   });
 
-  it('known summary counts only loaded importable selected files and dedupes paths', () => {
+  it('外す規則だけなら、何も選んでいない扱いになる', () => {
+    let selected = setTreeSelection(emptyTreeSelection(), 'chapters', true);
+    selected = setTreeSelection(selected, 'chapters/drafts', false);
+    selected = setTreeSelection(selected, 'chapters', false);
+    expect(hasAnySelection(selected)).toBe(false);
+  });
+
+  it('__proto__ のような名前のフォルダも、ほかの名前と同じように選べる', () => {
+    const selected = setTreeSelection(emptyTreeSelection(), '__proto__', true);
+    expect(isPathSelected(selected, '__proto__/ch1.md')).toBe(true);
+    expect(selectionMark(selected, '__proto__')).toBe('checked');
+    expect(includedSelectionRoots(selected)).toEqual(['__proto__']);
+    // 規則に無い名前は、Object.prototype の値を拾わずに未選択のまま。
+    expect(isPathSelected(emptyTreeSelection(), 'constructor/ch1.md')).toBe(false);
+  });
+
+  it('既知の件数は、読み込み済みの取り込める項目だけを数え、同じパスは1回にする', () => {
     const selected = setTreeSelection(emptyTreeSelection(), 'chapters', true);
     const unsupported: GitHubTreeEntry = {
       ...file('chapters/image.png', 99),
@@ -113,9 +140,41 @@ describe('GitHub lazy tree selection', () => {
         file('chapters/ch1.md', 10),
         file('chapters/ch1.md', 10),
         file('chapters/ch2.txt', 20),
+        file('chapters/ch3.md', null),
         unsupported,
         file('other.md', 30),
       ]),
-    ).toEqual({ files: 2, directories: 2, bytes: 30 });
+    ).toEqual({ files: 3, directories: 2, bytes: 30 });
+  });
+});
+
+describe('取得前の計画', () => {
+  it('件数と、大きさの分かる分の合計を出す', () => {
+    expect(planBatch([file('a.md', 10), file('b.md', 20), file('c.md', null)])).toEqual({
+      files: 3,
+      bytes: 30,
+      unknownSizes: 1,
+      warnings: [],
+    });
+  });
+
+  it('しきい値ちょうどまでは警告しない', () => {
+    const entries = Array.from({ length: BATCH_WARN_FILES - 1 }, (_, index) =>
+      file(`f${index}.md`, 0),
+    );
+    entries.push(file('big.md', BATCH_WARN_BYTES));
+    expect(entries).toHaveLength(BATCH_WARN_FILES);
+    expect(planBatch(entries).warnings).toEqual([]);
+  });
+
+  it('件数と容量がしきい値を超えたら、それぞれ警告する', () => {
+    const entries = Array.from({ length: BATCH_WARN_FILES + 1 }, (_, index) =>
+      file(`f${index}.md`, 0),
+    );
+    entries.push(file('big.md', BATCH_WARN_BYTES + 1));
+    expect(planBatch(entries).warnings).toEqual([
+      { kind: 'requests', files: BATCH_WARN_FILES + 2 },
+      { kind: 'storage', bytes: BATCH_WARN_BYTES + 1 },
+    ]);
   });
 });

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { goToTab, openApp } from './fixtures';
+import { GitHubMock, novelRepository } from './githubMock';
 
 /**
  * アプリの初回サンプルそのものを見る唯一の spec。
@@ -46,6 +47,31 @@ test('原稿を取り込むとサンプルは自動で片付き、元に戻せ�
   await page.getByRole('button', { name: '元に戻す' }).click();
   await expect(page.locator('.input-card__title').first()).toHaveValue('chapter1.md');
   await expect(page.locator('.sample-notice')).toBeVisible();
+});
+
+test('GitHub から一括で取り込むとサンプルは片付くが、元に戻すは出さない', async ({ page }) => {
+  // 戻すと取り込んだ全件も消えるので、一括では意図して付けない
+  // （docs/github-import-v2.md §7 Untouched sample workspace）。
+  const mock = new GitHubMock([novelRepository()]);
+  await mock.install(page);
+  const dialog = page.getByRole('dialog', { name: 'GitHubから追加' });
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await dialog.getByRole('button', { name: 'GitHubに接続' }).click();
+  await dialog.getByRole('button', { name: 'octo/novel' }).click();
+  await dialog.getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  await dialog.getByRole('button', { name: '選択したファイルを確認' }).click();
+  await dialog.getByRole('button', { name: '2ファイルを取得' }).click();
+  await dialog.getByRole('button', { name: '2ファイルを取り込む' }).click();
+
+  await expect(page.locator('.input-card')).toHaveCount(2);
+  await expect(page.locator('.input-card__title').nth(0)).toHaveValue('ch1.md');
+  await expect(page.locator('.input-card__title').nth(1)).toHaveValue('ch2.txt');
+  await expect(page.locator('.sample-notice')).toHaveCount(0);
+  await expect(page.getByText('サンプルを片付けました')).toBeVisible();
+  await expect(page.getByRole('button', { name: '元に戻す' })).toHaveCount(0);
+  await goToTab(page, 'ルール');
+  await expect(page.locator('[data-cell="0:0"]')).toHaveValue('');
 });
 
 test('サンプルを自分で片付けられる', async ({ page }) => {

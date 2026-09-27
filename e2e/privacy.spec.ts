@@ -127,28 +127,12 @@ test('CSP は自分自身と api.github.com 以外への fetch / XHR を塞ぐ',
   expect(xhrResult).toBe('拒否された');
 });
 
-test('GitHub から取り込んでも、原稿・ルール・取り込んだ本文をバックエンドへ送らない', async ({
-  page,
-}) => {
-  const mock = new GitHubMock([
-    novelRepository({
-      branches: { main: [{ path: 'secret.md', content: `${REPOSITORY_SENTINEL}\n` }] },
-    }),
-  ]);
-  const requests = recordRequests(page);
-  await mock.install(page);
-  await seedSentinels(page);
-  await openApp(page);
-
-  const dialog = page.getByRole('dialog', { name: 'GitHubから追加' });
-  await page.getByRole('button', { name: 'GitHubから追加' }).click();
-  await dialog.getByRole('button', { name: 'GitHubに接続' }).click();
-  await dialog.getByRole('button', { name: 'octo/novel' }).click();
-  await dialog.getByRole('button', { name: /^secret\.md/ }).click();
-  await dialog.getByRole('button', { name: '入力に追加' }).click();
-  await expect(page.locator('.input-card')).toHaveCount(2);
-  await exerciseLocalFlow(page);
-
+/**
+ * GitHub の流れを通したあとの通信を調べる。手元の原稿・ルールはどこへも出ず、
+ * バックエンドへはトークン交換の3項目だけ、GitHub へは読み取り（GET）だけ、
+ * 取り込んだ本文はどこへも送り返さない。
+ */
+function expectOnlyReadsFromGitHub(requests: RecordedRequest[]): void {
   // 手元の原稿とルールは、GitHub を含めてどこにも出ていかない。
   for (const request of requests) {
     for (const sentinel of LOCAL_SENTINELS) {
@@ -183,4 +167,63 @@ test('GitHub から取り込んでも、原稿・ルール・取り込んだ本�
       .map((request) => request.method),
   );
   expect([...githubMethods].filter((method) => method !== 'OPTIONS')).toEqual(['GET']);
+}
+
+test('GitHub から取り込んでも、原稿・ルール・取り込んだ本文をバックエンドへ送らない', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([
+    novelRepository({
+      branches: { main: [{ path: 'secret.md', content: `${REPOSITORY_SENTINEL}\n` }] },
+    }),
+  ]);
+  const requests = recordRequests(page);
+  await mock.install(page);
+  await seedSentinels(page);
+  await openApp(page);
+
+  const dialog = page.getByRole('dialog', { name: 'GitHubから追加' });
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await dialog.getByRole('button', { name: 'GitHubに接続' }).click();
+  await dialog.getByRole('button', { name: 'octo/novel' }).click();
+  await dialog.getByRole('button', { name: /^secret\.md/ }).click();
+  await dialog.getByRole('button', { name: '入力に追加' }).click();
+  await expect(page.locator('.input-card')).toHaveCount(2);
+  await exerciseLocalFlow(page);
+
+  expectOnlyReadsFromGitHub(requests);
+});
+
+test('GitHub から一括で取り込んでも、原稿・ルール・取り込んだ本文をバックエンドへ送らない', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([
+    novelRepository({
+      branches: {
+        main: [
+          { path: 'book/one.md', content: `${REPOSITORY_SENTINEL} 1\n` },
+          { path: 'book/deep/two.md', content: `${REPOSITORY_SENTINEL} 2\n` },
+        ],
+      },
+    }),
+  ]);
+  const requests = recordRequests(page);
+  await mock.install(page);
+  await seedSentinels(page);
+  await openApp(page);
+
+  const dialog = page.getByRole('dialog', { name: 'GitHubから追加' });
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await dialog.getByRole('button', { name: 'GitHubに接続' }).click();
+  await dialog.getByRole('button', { name: 'octo/novel' }).click();
+  await dialog.getByRole('checkbox', { name: 'book フォルダを選択' }).check();
+  await dialog.getByRole('button', { name: '選択したファイルを確認' }).click();
+  await dialog.getByRole('button', { name: '2ファイルを取得' }).click();
+  await dialog.getByRole('button', { name: '2ファイルを取り込む' }).click();
+  await expect(page.locator('.input-card')).toHaveCount(3);
+  await exerciseLocalFlow(page);
+
+  // recursive tree と複数の blob を通っても、送り先と中身の約束は1件のときと同じ。
+  expect(requests.some((request) => request.url.includes('recursive=1'))).toBe(true);
+  expectOnlyReadsFromGitHub(requests);
 });
