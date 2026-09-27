@@ -65,7 +65,9 @@ test('接続前に同意画面を出し、読み取り専用であることと�
   const consent = dialog(page).getByRole('region', { name: 'GitHub との接続' });
   await expect(consent).toContainText('読み取り専用');
   await expect(consent).toContainText('リポジトリ単位');
-  await expect(consent).toContainText('再読み込みやタブを閉じたあとは、もう一度接続が必要');
+  await expect(consent).toContainText(
+    '再読み込み・タブを閉じる・ほかのページへ移動したあとは、もう一度接続が必要',
+  );
   // 取得するもの（一覧のためのメタデータと、選んだファイルの本文だけ）と、残るもの（出自）。
   await expect(consent).toContainText('リポジトリ・ブランチ・フォルダの情報');
   await expect(consent).toContainText('本文を取得するのは、この画面で選んだファイルだけ');
@@ -143,6 +145,82 @@ test('認可から戻った直後の読み込みで、code と state を Referer
     expect(referer ?? '', url).not.toContain('code=');
     expect(referer ?? '', url).not.toContain('state=');
   }
+});
+
+/**
+ * bfcache への出入りを起こす。
+ *
+ * Playwright の Chromium は `--disable-back-forward-cache` で起動し、route で差し替えた
+ * 要求があるページも bfcache に載らないので、本物の「戻る」では再現できない。
+ * ページが受け取るのと同じ `persisted` 付きの pagehide / pageshow を送り、アプリの
+ * 片付けがつながっていることを確かめる（実機の「戻る」は手で確かめる）。
+ */
+async function leaveAndComeBack(page: Page, persisted: boolean): Promise<void> {
+  await page.evaluate((flag) => {
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: flag }));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: flag }));
+  }, persisted);
+}
+
+test('接続したまま bfcache に入ると接続を解除し、戻っても前の接続では読めない', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+
+  // タブを離れずにページが残る（persisted でない）遷移の合図では切らない。
+  await leaveAndComeBack(page, false);
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toBeVisible();
+
+  const callsBefore = mock.requests.length;
+  await leaveAndComeBack(page, true);
+
+  // 同意画面へ戻り、理由を知らせる。リポジトリの一覧は出ない。
+  const consent = dialog(page).getByRole('region', { name: 'GitHub との接続' });
+  await expect(consent.getByRole('alert')).toContainText('ページを離れたため');
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toHaveCount(0);
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeEnabled();
+  // 閉じて開き直しても、前のトークンで GitHub へ取りに行かない。
+  await dialog(page).getByRole('button', { name: '閉じる' }).click();
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeVisible();
+  expect(mock.requests.slice(callsBefore)).toEqual([]);
+});
+
+test('トークン交換の途中で bfcache に入ったら、あとから返った交換の結果で接続し直さない', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+
+  // 交換の応答を止めておく（モックより後に張った route が先に効く）。
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reached: () => void = () => {};
+  const exchangeStarted = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  await page.route('**/api/github/token', async (route) => {
+    reached();
+    await held;
+    await route.fallback();
+  });
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).click();
+  await exchangeStarted;
+
+  await leaveAndComeBack(page, true);
+  release();
+
+  // 交換は返ってくるが、その結果でトークンを持ち直さない（一覧を取りに行かない）。
+  await expect.poll(() => mock.tokenCalls.length).toBe(1);
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeEnabled();
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toHaveCount(0);
+  expect(mock.apiCalls(/^\/user\/installations$/)).toEqual([]);
 });
 
 test('アクセストークンはどこにも保存せず、再読み込みすると接続し直しになる', async ({ page }) => {

@@ -188,3 +188,9 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
     「この画面で始めた接続ではない」が出ずにリポジトリの一覧まで進めば、sessionStorage は残っている
 11. 正規でないオリジン（例: Vercel の Deployment 画面にある Production の別名）で開くと、
     「GitHubに接続」が押せず、正規の URL へのリンクが出ること
+12. **実機の Safari（macOS と iOS）と Chrome**で、接続してリポジトリの一覧を出したあと、同じタブで
+    別のサイト（例: `https://example.com/`）へ移動し、「戻る」で戻ると、同意画面に
+    「ページを離れたため、GitHub との接続を解除しました」が出て、一覧は出ないこと
+    （bfcache から戻ったページでトークンが生き返らない）。E2E は Playwright の Chromium が
+    bfcache を無効にして起動するため、`persisted` 付きの pagehide / pageshow を合成して
+    確かめているだけで、本物の「戻る」はここで確かめる

@@ -130,6 +130,11 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
   /** 直前に失敗した操作。「再試行」で同じことをやり直す。 */
   const lastTask = useRef<(() => void) | null>(null);
   const handledCallback = useRef(false);
+  /**
+   * ページを離れた（bfcache に入った）回数。トークン交換は中断口を共有しないので、
+   * 離れる前に始めた交換が戻ったあとに返ってきても、その結果でトークンを持ち直さない。
+   */
+  const pageLeft = useRef(0);
   const canonicalUrl = APP_CONFIG ? nonCanonicalTarget(APP_CONFIG, window.location.origin) : null;
 
   /** 進行中の取得を止めて、新しい取得の中断口を作る。 */
@@ -281,6 +286,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
 
   const exchangeCode = async (code: string, verifier: string): Promise<void> => {
     dispatch({ type: 'connect/start' });
+    const startedAt = pageLeft.current;
     // 交換は中断口を共有しない。コードは1回しか使えないので、他の操作や
     // （開発時の Strict Mode による）effect の片付けで止めると、やり直せなくなる。
     try {
@@ -297,6 +303,8 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
         credentials: 'same-origin',
       });
       const token = response.ok ? parseTokenResponse(await response.json(), Date.now()) : null;
+      // 交換の途中でページを離れていたら、返ってきたトークンは捨てる（接続は解除済み）。
+      if (pageLeft.current !== startedAt) return;
       if (!token) {
         dropConnection(describeTokenExchangeFailure(response.status));
         return;
@@ -305,6 +313,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       dispatch({ type: 'connect/done' });
       loadRepositories();
     } catch (error) {
+      if (pageLeft.current !== startedAt) return;
       console.error('GitHub のトークン交換に失敗しました', error);
       dropConnection(
         'GitHub との接続に失敗しました。ネットワークを確認して、もう一度接続してください。',
@@ -345,14 +354,40 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
 
   // GitHub の画面からブラウザの「戻る」で帰ってくると、bfcache から「接続中」のまま
   // 復元される（ボタンが押せないまま残る）。引き返した認可として片付ける。
+  //
+  // 接続済みのまま bfcache に入ったページも、戻るとトークンごと復元される（JS のヒープが
+  // そのまま戻る）。共用の端末で次の人が「戻る」を押すと、前の利用者の権限でリポジトリを
+  // 読めてしまうので、bfcache に入る時点（persisted な pagehide）でトークンを捨てる。
+  // 戻ったとき（persisted な pageshow）にも念のため同じ片付けをする。
+  // タブの切り替え（visibilitychange）では切らない。ページはそのまま残っているため。
   useEffect(() => {
+    const releaseToken = (): void => {
+      pageLeft.current += 1;
+      abortRef.current?.abort();
+      abortRef.current = null;
+      tokenRef.current = null;
+      treeCache.current.clear();
+      lastTask.current = null;
+      dispatch({ type: 'page/persisted' });
+    };
+    const onPageHide = (event: PageTransitionEvent): void => {
+      if (!event.persisted) return;
+      // 認可の画面へ移るとき（接続中）もここを通る。戻り先で使う state と verifier は
+      // 消さない（新しいページの読み込みで使う）。
+      releaseToken();
+    };
     const onPageShow = (event: PageTransitionEvent): void => {
       if (!event.persisted) return;
       removePendingAuth();
       dispatch({ type: 'connect/abandon' });
+      releaseToken();
     };
+    window.addEventListener('pagehide', onPageHide);
     window.addEventListener('pageshow', onPageShow);
-    return () => window.removeEventListener('pageshow', onPageShow);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', onPageShow);
+    };
   }, []);
 
   // 画面を離れるときに取得中の通信を止める。

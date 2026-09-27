@@ -145,6 +145,10 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   - アクセストークンは `useGitHubImport` の ref（メモリ）にだけ持つ。localStorage /
     sessionStorage / ワークスペース / 作業データに書かない。sessionStorage に置いてよいのは
     リダイレクトを跨ぐ state と PKCE verifier だけで、戻った時点で消す。
+  - bfcache に入るとき（`persisted` な pagehide）と戻ったときに、トークンを捨てて切断する
+    （`page/persisted`）。戻るとヒープごと復元され、メモリのトークンも生き返るため
+    （共用の端末で次の人が「戻る」で前の利用者の権限を使える）。交換の途中で離れた場合も、
+    あとから返った交換の結果で接続し直さない（`pageLeft`）。タブの切り替えでは切らない。
   - 認可は毎回アプリが state と PKCE（S256）を付けて始める。GitHub の「インストール時に
     OAuth を要求」には頼らない。callback はオリジン直下（`base: './'` なので下位パス不可）。
   - 正規のオリジンは `VITE_GITHUB_APP_ORIGIN`（`readGitHubAppConfig`）。それ以外のオリジン
