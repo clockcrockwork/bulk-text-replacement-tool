@@ -1,6 +1,13 @@
-import { type JSX, type RefObject, useEffect, useRef, useState } from 'react';
+import { type JSX, type RefObject, useEffect, useMemo, useRef, useState } from 'react';
 import { formatTextMeta } from '../lib/format';
 import { describeEntryStatus, formatBytes } from '../lib/githubApi';
+import {
+  isPathSelected,
+  selectionMark,
+  summarizeKnownSelection,
+  type GitHubSelectionMark,
+  type GitHubTreeSelection,
+} from '../lib/githubSelection';
 import { formatSourceDetail, shortSha } from '../lib/inputSource';
 import type { GitHubImportState } from '../state/githubImport';
 import type { GitHubRepository, GitHubTreeEntry } from '../types';
@@ -22,6 +29,7 @@ export interface GitHubDialogHandlers {
   enterDirectory: (entry: GitHubTreeEntry) => void;
   goTo: (index: number) => void;
   selectFile: (entry: GitHubTreeEntry) => void;
+  setSelected: (path: string, selected: boolean) => void;
   clearCandidate: () => void;
   close: () => void;
 }
@@ -462,14 +470,34 @@ function Explorer({
   handlers: GitHubDialogHandlers;
   headingRef: RefObject<HTMLHeadingElement | null>;
 }): JSX.Element {
-  const { trail, listing, snapshot } = state;
+  const { trail, listing, snapshot, selection } = state;
   const here = trail[trail.length - 1];
   const rootLabel = snapshot?.repository.name ?? 'ルート';
+  const [filter, setFilter] = useState('');
+
+  // 絞り込みは表示だけに効かせる。場所を移ったら前の文字列を持ち越さない。
+  useEffect(() => setFilter(''), [here?.path]);
+
+  const visibleEntries = useMemo(() => {
+    if (!listing) return [];
+    const query = filter.trim().toLocaleLowerCase();
+    if (!query) return listing.entries;
+    return listing.entries.filter((entry) => entry.name.toLocaleLowerCase().includes(query));
+  }, [listing, filter]);
+
+  const known = useMemo(
+    () => summarizeKnownSelection(selection, listing?.entries ?? []),
+    [selection, listing],
+  );
+
   return (
     <section className="github__section" aria-label="ファイルを選ぶ">
       <h3 ref={headingRef} className="github__heading" tabIndex={-1}>
         ファイルを選ぶ
       </h3>
+      <p className="dialog__lead">
+        チェックは移動しても保持されます。フォルダをチェックすると、まだ開いていない配下も選択扱いになります。
+      </p>
       <nav className="github__crumbs" aria-label="現在の場所">
         <ol>
           {trail.map((step, index) => {
@@ -491,8 +519,9 @@ function Explorer({
           })}
         </ol>
       </nav>
-      {trail.length > 1 ? (
-        <div className="dialog__row">
+
+      <div className="github__picker-tools">
+        {trail.length > 1 ? (
           <button
             type="button"
             className="btn btn--small"
@@ -501,8 +530,23 @@ function Explorer({
             <Icon name="up" size={14} />
             <span>上の階層へ</span>
           </button>
-        </div>
-      ) : null}
+        ) : null}
+        <label className="github__filter">
+          <span className="sr-only">このフォルダを絞り込み</span>
+          <input
+            type="search"
+            value={filter}
+            placeholder="このフォルダを絞り込み"
+            onChange={(event) => setFilter(event.currentTarget.value)}
+          />
+        </label>
+      </div>
+
+      <p className="github__selection-summary" role="status">
+        読み込み済みのこの階層で選択中: {known.files}ファイル
+        {known.bytes > 0 ? ` · ${formatBytes(known.bytes)}` : ''}
+        {filter ? '（絞り込みで隠れた選択は解除されません）' : ''}
+      </p>
 
       {listing?.truncated ? (
         <p className="dialog__error" role="alert">
@@ -514,11 +558,13 @@ function Explorer({
       {listing && here ? (
         listing.entries.length === 0 ? (
           <p className="dialog__lead">このフォルダには何もありません。</p>
+        ) : visibleEntries.length === 0 ? (
+          <p className="dialog__lead">一致する項目がありません。</p>
         ) : (
           <ul className="github__list" aria-label={here.path || rootLabel}>
-            {listing.entries.map((entry) => (
+            {visibleEntries.map((entry) => (
               <li key={entry.sha + entry.name}>
-                <TreeEntryRow entry={entry} handlers={handlers} />
+                <TreeEntryRow entry={entry} handlers={handlers} selection={selection} />
               </li>
             ))}
           </ul>
@@ -528,34 +574,79 @@ function Explorer({
   );
 }
 
+function SelectionCheckbox({
+  mark,
+  label,
+  onChange,
+}: {
+  mark: GitHubSelectionMark;
+  label: string;
+  onChange: (selected: boolean) => void;
+}): JSX.Element {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = mark === 'mixed';
+  }, [mark]);
+  return (
+    <label className="github__select-check">
+      <input
+        ref={ref}
+        type="checkbox"
+        checked={mark === 'checked'}
+        aria-label={label}
+        aria-checked={mark === 'mixed' ? 'mixed' : mark === 'checked'}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+      />
+    </label>
+  );
+}
+
 function TreeEntryRow({
   entry,
   handlers,
+  selection,
 }: {
   entry: GitHubTreeEntry;
   handlers: GitHubDialogHandlers;
+  selection: GitHubTreeSelection;
 }): JSX.Element {
   if (entry.status === 'dir') {
+    const mark = selectionMark(selection, entry.path);
     return (
-      <button
-        type="button"
-        className="github__entry github__entry--dir"
-        onClick={() => handlers.enterDirectory(entry)}
-      >
-        <Icon name="folder" size={16} />
-        <span className="github__entry-name">{entry.name}/</span>
-      </button>
+      <div className="github__select-row">
+        <SelectionCheckbox
+          mark={mark}
+          label={`${entry.name} フォルダを選択`}
+          onChange={(selected) => handlers.setSelected(entry.path, selected)}
+        />
+        <button
+          type="button"
+          className="github__entry github__entry--dir"
+          onClick={() => handlers.enterDirectory(entry)}
+        >
+          <Icon name="folder" size={16} />
+          <span className="github__entry-name">{entry.name}/</span>
+        </button>
+      </div>
     );
   }
   if (entry.status === 'importable') {
+    const selected = isPathSelected(selection, entry.path);
     return (
-      <button type="button" className="github__entry" onClick={() => handlers.selectFile(entry)}>
-        <Icon name="file" size={16} />
-        <span className="github__entry-name">{entry.name}</span>
-        {entry.size === null ? null : (
-          <span className="github__entry-meta">{formatBytes(entry.size)}</span>
-        )}
-      </button>
+      <div className="github__select-row">
+        <SelectionCheckbox
+          mark={selected ? 'checked' : 'unchecked'}
+          label={`${entry.name} を選択`}
+          onChange={(checked) => handlers.setSelected(entry.path, checked)}
+        />
+        <button type="button" className="github__entry" onClick={() => handlers.selectFile(entry)}>
+          <Icon name="file" size={16} />
+          <span className="github__entry-name">{entry.name}</span>
+          {entry.size === null ? null : (
+            <span className="github__entry-meta">{formatBytes(entry.size)}</span>
+          )}
+        </button>
+      </div>
     );
   }
   // 選べない項目も隠さずに出す。「見当たらない」と「対象外」を区別できるように。
