@@ -167,6 +167,37 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   場合は `.toolbar` などでスコープを絞る。
 - 新しい振る舞いを足したら、ロジックならユニットテスト、画面の流れなら E2E を必ず1本足す。
 
+## リリース系統
+
+このリポジトリには、意図的に寿命の違う2系統がある。
+
+- **`main`** — 継続開発する本流。Vercel production はここから配信する。GitHub 連携を含む
+  V1 後の機能追加・改善・通常の依存更新はすべてここで行う。
+- **`release/lolipop-v1`** — コンテスト提出用の V1 保守系統。基点は PR #6 の
+  squash merge `221c233`。ロリポップ配信を維持するための最小修正以外は入れない。
+
+### release/lolipop-v1 を触る条件
+
+入れてよいのは、セキュリティ／プライバシー、データ消失・破損、起動不能、
+コンテスト要件、ロリポップ固有のホスティング互換性など、**提出版を安全に公開し続けるために
+必要な修正**だけ。
+
+次は release 側へ入れない。
+
+- GitHub 連携や新機能
+- UI / UX の通常改善やデザイン変更
+- `main` に入った機能を揃えるためだけの同期
+- 必須理由のない dependency update / refactor / cleanup
+
+**`main` を release ブランチへ丸ごと merge / rebase しない。**
+両方に必要なバグ修正は原則 `main` で先に直し、release に必要な最小 commit だけ
+cherry-pick 相当の小さな PR で backport する。ロリポップ固有の問題だけは release 起点で
+直してよいが、本流にも必要かを別途判断する。
+
+release 側の変更でも CI の2ジョブを通す。デプロイ元は必ず branch / commit を確認し、
+Vercel は `main`、ロリポップは `release/lolipop-v1` の build artifact から出す。
+詳細は `RELEASE_POLICY.md`。
+
 ## CI
 
 `.github/workflows/ci.yml` の2ジョブ（`Lint / Types / Unit tests / Build` と `E2E (Playwright)`）。
