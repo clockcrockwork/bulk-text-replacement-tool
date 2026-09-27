@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GitHubCandidate } from '../lib/githubApi';
+import { isPathSelected, selectionMark } from '../lib/githubSelection';
 import type { GitHubRepository, GitHubSnapshot } from '../types';
 import {
   currentStep,
@@ -279,6 +280,61 @@ describe('ディレクトリの移動', () => {
         step: { path: 'a', treeSha: SHA_C },
       }),
     ).toBe(initialGitHubImportState);
+  });
+});
+
+describe('複数選択', () => {
+  it('未展開フォルダの選択を移動しても保持し、snapshot を固定し直すと捨てる', () => {
+    const selected = githubImportReducer(PINNED, {
+      type: 'selection/set',
+      path: 'chapters',
+      selected: true,
+    });
+    expect(isPathSelected(selected.selection, 'chapters/deep/ch1.md')).toBe(true);
+
+    const inside = githubImportReducer(selected, {
+      type: 'dir/enter',
+      step: { path: 'other', treeSha: SHA_C },
+    });
+    expect(isPathSelected(inside.selection, 'chapters/deep/ch1.md')).toBe(true);
+
+    const repinned = githubImportReducer(inside, { type: 'snapshot/pinned', snapshot: MOVED });
+    expect(isPathSelected(repinned.selection, 'chapters/deep/ch1.md')).toBe(false);
+  });
+
+  it('親選択から子を外すと mixed になり、選び直すと配下を再選択する', () => {
+    let selected = githubImportReducer(PINNED, {
+      type: 'selection/set',
+      path: 'chapters',
+      selected: true,
+    });
+    selected = githubImportReducer(selected, {
+      type: 'selection/set',
+      path: 'chapters/drafts',
+      selected: false,
+    });
+    expect(selectionMark(selected.selection, 'chapters')).toBe('mixed');
+
+    selected = githubImportReducer(selected, {
+      type: 'selection/set',
+      path: 'chapters',
+      selected: true,
+    });
+    expect(selectionMark(selected.selection, 'chapters')).toBe('checked');
+    expect(isPathSelected(selected.selection, 'chapters/drafts/old.md')).toBe(true);
+  });
+
+  it('batch 候補は固定中の snapshot と一致するときだけ受け取る', () => {
+    const accepted = githubImportReducer(PINNED, {
+      type: 'batch/set',
+      candidates: [candidate()],
+    });
+    expect(accepted.batchCandidates).toHaveLength(1);
+
+    const repinned = githubImportReducer(PINNED, { type: 'snapshot/pinned', snapshot: MOVED });
+    expect(
+      githubImportReducer(repinned, { type: 'batch/set', candidates: [candidate()] }),
+    ).toBe(repinned);
   });
 });
 
