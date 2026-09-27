@@ -575,6 +575,17 @@ function Explorer({
         {filter ? '（絞り込みで隠れた選択は解除されません）' : ''}
       </p>
 
+      {here ? (
+        <div className="github__current-selection">
+          <SelectionCheckbox
+            mark={selectionMark(selection, here.path)}
+            label={`${here.path || rootLabel} フォルダ全体を選択`}
+            onChange={(selected) => handlers.setSelected(here.path, selected)}
+          />
+          <span>このフォルダ全体を選択</span>
+        </div>
+      ) : null}
+
       {listing?.truncated ? (
         <p className="dialog__error" role="alert">
           このフォルダは項目が多すぎるため、GitHub が一覧を途中で打ち切りました。
