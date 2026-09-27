@@ -115,9 +115,17 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
 - **選択状態**は色だけで表さない。トグルは `ToggleGroup`（`aria-pressed` 込み）を使い、
   独自に組むなら `aria-pressed` / `aria-current` を付ける。
 - **外部通信**を増やさない。README で「入力とルールは外部へ送信しない」と約束しており、
-  `index.html` の CSP が `connect-src 'none'` で fetch / XHR を塞ぎ、
+  `index.html` の CSP が `connect-src 'none'` で fetch / XHR / sendBeacon / WebSocket を
+  まとめて塞ぐ（テストだけでなくブラウザ側でも保証する）。`style-src` の
+  `'unsafe-inline'` は Google Fonts のスタイルシートのために要る。
   `e2e/privacy.spec.ts` が原稿・ルールに仕込んだ目印がリクエストに現れないことを検証する。
   宛先ホストだけを見るのでは足りない（同一オリジンへの送信を見逃す）。
+- **配信物とユーザーのテキストは別のレイヤー**として扱う。アプリの HTML / CSS / JS は
+  不要物を落として軽くしてよい（`index.html` に開発者向けコメントを残さない、
+  sourcemap を配らない、JS/CSS の minify は Vite 既定に任せる）。一方、
+  **原稿・ルール・変換結果・書き出すファイルには minify も正規化もしない。**
+  改行・行頭の空白・連続空白・タブ・コードポイントの差は、すべて意味を持ち得る。
+  `index.html` に手を入れたら `e2e/dist.spec.ts` を確認する。
 - **破壊操作の確認**は `useConfirm` + `ConfirmDialog`（`App.tsx` の `confirmThen`）。
   `window.confirm` は使わない（文言を整えられず、失われる内容の内訳も出せず、
   iOS Safari では抑制され得る）。既定のフォーカスはキャンセル側に置く。

@@ -6,7 +6,10 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: 'dist',
-    sourcemap: true,
+    // 本番には出さない。本体 269KB に対して map は 1.2MB あり、配信物の大半が
+    // 読み手のいないファイルになる。公開リポジトリなのでソース自体は誰でも読めるが、
+    // 配布物に含める理由が無い。
+    sourcemap: false,
   },
   test: {
     environment: 'node',
