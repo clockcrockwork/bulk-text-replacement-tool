@@ -57,3 +57,43 @@ test('スマホ幅でもタップで GitHub から1ファイル取り込める',
   await dialog(page).getByRole('button', { name: '入力に追加' }).tap();
   await expect(page.locator('.input-card__source')).toContainText('chapters/ch1.md');
 });
+
+
+test('スマホ幅でもフォルダをチェックして複数ファイルをまとめて取り込める', async ({ page }) => {
+  const mock = new GitHubMock([novelRepository()]);
+  await mock.install(page);
+  await seedWorkspace(page, {
+    inputs: [],
+    groups: [{ id: 'g1', name: 'A用' }],
+    rules: [],
+  });
+  await openApp(page);
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).tap();
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).tap();
+  await dialog(page).getByRole('button', { name: 'octo/novel' }).tap();
+
+  const chapters = dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' });
+  const tapTarget = chapters.locator('..');
+  const size = await tapTarget.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  });
+  expect(size.width).toBeGreaterThanOrEqual(44);
+  expect(size.height).toBeGreaterThanOrEqual(44);
+
+  await chapters.tap();
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).tap();
+  await expectFitsWidth(page);
+
+  const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+  await expect(batch).toContainText('chapters/ch1.md');
+  await expect(batch).toContainText('chapters/ch2.txt');
+  await batch.getByRole('button', { name: '2ファイルを取り込む' }).tap();
+
+  await expect(page.locator('.input-card')).toHaveCount(2);
+  await expect(page.locator('.input-card__source')).toHaveText([
+    /chapters\/ch1\.md/,
+    /chapters\/ch2\.txt/,
+  ]);
+});
