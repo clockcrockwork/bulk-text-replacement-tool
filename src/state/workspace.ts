@@ -75,6 +75,11 @@ export type WorkspaceAction =
   | { type: 'ruleView/set'; view: RuleView }
   | { type: 'inputs/add'; input: InputText }
   | { type: 'inputs/addMany'; inputs: InputText[] }
+  | {
+      type: 'inputs/applyGitHubBatch';
+      updates: Array<{ id: string; text: string; source: NonNullable<InputText['source']> }>;
+      adds: InputText[];
+    }
   | { type: 'inputs/update'; id: string; patch: Partial<Omit<InputText, 'id'>> }
   | { type: 'inputs/remove'; id: string }
   | { type: 'inputs/clear' }
@@ -206,6 +211,7 @@ function patchById<T extends { id: string }>(
 const TOUCHES_CONTENT = new Set<WorkspaceAction['type']>([
   'inputs/add',
   'inputs/addMany',
+  'inputs/applyGitHubBatch',
   'inputs/update',
   'inputs/remove',
   'inputs/clear',
@@ -245,6 +251,19 @@ function reduce(state: WorkspaceState, action: WorkspaceAction): WorkspaceState 
       const first = state.inputs[0];
       const base = state.inputs.length === 1 && first && !first.text.trim() ? [] : state.inputs;
       return { ...state, inputs: [...base, ...action.inputs], tab: 'input' };
+    }
+
+    case 'inputs/applyGitHubBatch': {
+      if (action.updates.length === 0 && action.adds.length === 0) return state;
+      // batch は候補を全件取得・検証した後の1 actionでだけ反映する。
+      // 初期サンプルなら、この同じ mutation の中で片付ける。
+      const base = state.isSample ? [] : state.inputs;
+      const updates = new Map(action.updates.map((update) => [update.id, update]));
+      const replaced = base.map((input) => {
+        const update = updates.get(input.id);
+        return update ? { ...input, text: update.text, source: update.source } : input;
+      });
+      return { ...state, inputs: [...replaced, ...action.adds], tab: 'input' };
     }
 
     case 'inputs/update':
