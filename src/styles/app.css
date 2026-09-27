@@ -1556,7 +1556,6 @@ button.github__entry:hover {
   }
 }
 
-
 /* GitHub Slice 2 selection */
 .github__picker-tools {
   display: flex;
@@ -1621,7 +1620,6 @@ button.github__entry:hover {
     max-width: none;
   }
 }
-
 
 /* GitHub Slice 2 batch */
 .github__selection-actions {
