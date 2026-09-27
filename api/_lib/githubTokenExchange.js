@@ -118,15 +118,45 @@ const VERIFIER_PATTERN = /^[A-Za-z0-9._~-]{43,128}$/;
 /** GitHub の認可コード。形を決め打ちしすぎないが、制御文字や区切りは通さない。 */
 const CODE_PATTERN = /^[A-Za-z0-9_.-]{1,256}$/;
 
+/** 本文に置いてよいキー。交換に要る3つだけで、それ以外があれば断る。 */
+const ALLOWED_BODY_KEYS = new Set(['code', 'code_verifier', 'redirect_uri']);
+
 /**
+ * 本文を上限まで読む。
+ *
+ * Content-Length があれば読む前に断る。無い（chunked など）ときも、`request.text()` で
+ * 全部を受け取ってから測るのではなく、読みながら数えて上限を超えた時点で打ち切る。
+ * 「大きなものは読まずに断る」をこの関数自身が保証する（配信基盤の上限に頼らない）。
+ *
  * @param {Request} request
  * @returns {Promise<string | null>} 上限を超えていれば null。
  */
 async function readBody(request) {
   const declared = Number(request.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return null;
-  const text = await request.text();
-  return new TextEncoder().encode(text).byteLength > MAX_BODY_BYTES ? null : text;
+  if (!request.body) return '';
+  const reader = request.body.getReader();
+  /** @type {Uint8Array[]} */
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      // 残りは受け取らない。取り消しの失敗は応答に関係しないので無視する。
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 /**
@@ -174,6 +204,11 @@ export async function handleTokenExchange(request, config, fetchImpl) {
     return fail(400, 'invalid_json');
   }
   if (!isRecord(body)) return fail(400, 'invalid_request');
+  // 受け取るのは交換に要る3項目だけ。余計な項目（原稿など）を黙って受け流さず、
+  // 「バックエンドは3項目しか受け取らない」をこちら側でも強制する。
+  if (Object.keys(body).some((key) => !ALLOWED_BODY_KEYS.has(key))) {
+    return fail(400, 'invalid_request');
+  }
 
   const { code, code_verifier: verifier, redirect_uri: redirectUri } = body;
   if (typeof code !== 'string' || !CODE_PATTERN.test(code)) return fail(400, 'invalid_request');

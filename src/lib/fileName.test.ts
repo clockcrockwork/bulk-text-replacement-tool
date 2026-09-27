@@ -208,3 +208,51 @@ describe('resolveFileNames / resolveDirNames（制御文字）', () => {
     expect(resolveDirNames(['A\n\u2066B'])).toEqual(['A__B']);
   });
 });
+
+describe('sanitizeName（幅を持たない書式文字）', () => {
+  it('ZWSP・単語結合子・BOM・ソフトハイフン・行間注記・タグ文字を _ にする', () => {
+    for (const code of [
+      0x00ad, 0x200b, 0x2060, 0x2064, 0x206a, 0x206f, 0xfeff, 0xfff9, 0xfffb, 0xe0000, 0xe0041,
+      0xe007f,
+    ]) {
+      expect(sanitizeName(`x${String.fromCodePoint(code)}y`, true)).toBe('x_y');
+    }
+  });
+
+  it('ZWNJ と ZWJ は残す（合字や文字の形を決める）', () => {
+    expect(sanitizeName('x\u200cy', true)).toBe('x\u200cy');
+    expect(sanitizeName('x\u200dy', true)).toBe('x\u200dy');
+  });
+
+  it('見た目が同じ別名を作らない', () => {
+    expect(resolveFileNames(['a\u200b.md', 'a.md', 'a\ufeff.md'])).toEqual([
+      'a_.md',
+      'a.md',
+      'a_ (2).md',
+    ]);
+  });
+});
+
+describe('dedupeNames（Unicode の正規化形）', () => {
+  it('正規化形だけが違う名前も重複として扱う（macOS へ展開すると衝突する）', () => {
+    // NFD の「か + 濁点」と NFC の「が」。
+    expect(dedupeNames(['\u304b\u3099.md', '\u304c.md'])).toEqual([
+      '\u304b\u3099.md',
+      '\u304c (2).md',
+    ]);
+    // 大文字小文字と正規化形の両方が違う場合も。
+    expect(dedupeNames(['e\u0301.md', '\u00c9.md'])).toEqual(['e\u0301.md', '\u00c9 (2).md']);
+  });
+
+  it('名前そのものは正規化しない', () => {
+    expect(dedupeNames(['\u304b\u3099.md'])).toEqual(['\u304b\u3099.md']);
+  });
+
+  it('連番先の重複判定にも同じキーを使う', () => {
+    expect(dedupeNames(['\u304c.md', '\u304c (2).md', '\u304b\u3099.md'])).toEqual([
+      '\u304c.md',
+      '\u304c (2).md',
+      '\u304b\u3099 (3).md',
+    ]);
+  });
+});

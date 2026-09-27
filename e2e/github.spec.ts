@@ -111,6 +111,34 @@ test('PKCE（S256）と state で認可を始め、戻ったら URL と一時情
   expect(call?.headers['x-github-api-version']).toBeUndefined();
 });
 
+test('認可から戻った直後の読み込みで、code と state を Referer に載せない', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+
+  // 戻り先の HTML は `/?code=…&state=…` のまま開かれ、`history.replaceState` を走らせる JS
+  // そのものを読む要求には、まだその URL が Referer として付き得る。同一オリジンの要求にも
+  // クエリを載せない方針（Referrer-Policy: strict-origin）を、実際の要求で確かめる。
+  // route を張るとブラウザのキャッシュが効かなくなり、戻りの読み込みでも要求が必ず出る。
+  const referers: { url: string; referer: string | null }[] = [];
+  await page.route('http://127.0.0.1:4173/**', async (route) => {
+    const request = route.request();
+    referers.push({ url: request.url(), referer: await request.headerValue('referer') });
+    await route.fallback();
+  });
+
+  await connect(page);
+
+  // 戻りの読み込みで、同一オリジンの JS を取りに行っていること（何も見ずに通らないように）。
+  const afterCallback = referers.slice(
+    referers.findIndex((entry) => entry.url.includes(`code=${E2E_CODE}`)) + 1,
+  );
+  expect(afterCallback.some((entry) => /\/assets\/.+\.js$/.test(entry.url))).toBe(true);
+  for (const { url, referer } of referers) {
+    expect(referer ?? '', url).not.toContain('code=');
+    expect(referer ?? '', url).not.toContain('state=');
+  }
+});
+
 test('アクセストークンはどこにも保存せず、再読み込みすると接続し直しになる', async ({ page }) => {
   const mock = new GitHubMock([REPO]);
   await start(page, mock);
@@ -616,6 +644,46 @@ test('ブラウザへの保存に失敗している間は、画面遷移する�
   await page.getByRole('button', { name: 'GitHubから追加' }).click();
   await expect(dialog(page).getByRole('alert')).toContainText('保存できていない作業が失われます');
   await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeDisabled();
+});
+
+test('保存の直前（デバウンス中）に接続しても、書き出せなければ画面遷移しない', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await mock.install(page);
+  await seed(page);
+  // 最初の保存は通し、編集のあとからだけ容量超過にする（警告がまだ出ていない状態を作る）。
+  await page.addInitScript((key) => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function setItem(name: string, value: string) {
+      if (name === key && (window as { __failSave?: boolean }).__failSave) {
+        throw new Error('QuotaExceededError');
+      }
+      return original.call(this, name, value);
+    };
+  }, STORAGE_KEY);
+  // 時計を止めて、デバウンス（400ms）の保存が走らないうちに接続を押す状況を確実に作る。
+  await page.clock.install();
+  await openApp(page);
+  await page.clock.pauseAt(Date.now() + 60_000);
+
+  await page.evaluate(() => {
+    (window as { __failSave?: boolean }).__failSave = true;
+  });
+  await page.locator('.input-card__title').fill('changed.md');
+  // まだ保存は走っていないので、警告は出ておらず、接続も押せる。
+  await expect(page.locator('.save-error')).toHaveCount(0);
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).click();
+
+  // その場で書き出して失敗に気付き、GitHub へは移らない。
+  await expect(dialog(page).getByRole('alert').first()).toContainText('接続を中止しました');
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeDisabled();
+  await expect(page.locator('.save-error')).toBeVisible();
+  expect(mock.authorizeCalls).toEqual([]);
+  expect(new URL(page.url()).origin).toBe('http://127.0.0.1:4173');
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), PENDING_AUTH_KEY)).toBeNull();
+  // 編集は画面に残っている（書き出して逃がせる）。
+  await page.getByRole('button', { name: '閉じる' }).click();
+  await expect(page.locator('.input-card__title')).toHaveValue('changed.md');
 });
 
 test('キーボードだけでフォルダを辿ってファイルを選べる', async ({ page }) => {

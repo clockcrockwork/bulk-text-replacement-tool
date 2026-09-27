@@ -79,7 +79,7 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
 | 項目 | 値 |
 | --- | --- |
 | Name | `github-token-exchange-rate-limit` |
-| If | **Request Path** — **Equals** — `/api/github/token` |
+| If | **Request Path** — **Starts with** — `/api/` |
 | Then | **Rate Limit** |
 | Algorithm | Fixed Window |
 | Window | 60 秒 |
@@ -87,6 +87,11 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
 | Key | IP Address |
 | Action（超過時） | Too Many Requests（429） |
 
+- **完全一致（Equals `/api/github/token`）にしない。** 同じ Function には
+  `/api/github/token/`（末尾の `/`）や `/api/github/token.js`（拡張子付き）でも届き、
+  完全一致の条件はそれらを数えない（Preview で3つとも Function が応答することを確認した）。
+  `api/` にある Function はトークン交換だけなので、`/api/` の前方一致で巻き込むものは無く、
+  Function を足したときにも既定で制限が効く
 - メソッドでは絞らない（POST 以外も Function を起動する。405 を返すだけでも実行回数に数えられる）
 - 値の根拠: 正規の利用者が交換するのは「GitHubに接続」1回につき1回だけ。
   接続のやり直しを何度か続けても 1 分に 10 回には届かない
@@ -96,6 +101,8 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
 - プランによって使えるルール数・窓の長さ・キーの種類が異なる。上の値が選べないときは、
   「IP ごとに 1 分あたり数回〜十数回」に最も近い設定にする
 - Function のコードは変えない。ルールはリクエストが Function に届く前に効く
+- **これはリポジトリの外の設定で、マージしただけでは有効にならない。** Publish して §5 の 9 を
+  確かめるまで、L5（トークン交換のレート制限）は対応済みとして扱わない
 
 ## 4. 配信時のヘッダ
 
@@ -106,7 +113,7 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
 | `Content-Security-Policy` | `frame-ancestors 'none'` | 他サイトの iframe に埋め込ませない（クリックジャッキング）。meta の CSP では `frame-ancestors` を指定できないためヘッダで送る |
 | `X-Frame-Options` | `DENY` | `frame-ancestors` を解さない古いブラウザ向け |
 | `X-Content-Type-Options` | `nosniff` | 配信物を宣言と違う型として解釈させない |
-| `Referrer-Policy` | `strict-origin-when-cross-origin` | 認可から戻った直後（`/?code=…&state=…`）の URL を、`history.replaceState` で消す前に読み込まれる Google Fonts などへ送らない。ブラウザの既定値と同じだが、既定に頼らず明示する |
+| `Referrer-Policy` | `strict-origin` | Referer をオリジンまでに絞る。認可から戻った直後は `/?code=…&state=…` のまま HTML が開き、`history.replaceState` を走らせる JS 自体と Google Fonts はその前に読まれる。ブラウザ既定の `strict-origin-when-cross-origin` は**同一オリジンの要求には URL 全体を送る**ので、`/assets/*.js` の Referer に code と state が載り、配信側のログに残り得る |
 
 - 本体の CSP（`connect-src` など）は `index.html` の meta にあり、ヘッダの CSP はそれに
   `frame-ancestors` を足すだけ。両方があると、ブラウザは両方を満たすものだけを許す
@@ -114,12 +121,15 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
   照合しているため。Referrer-Policy は Origin ヘッダにも効き、`no-referrer` の下では
   cors 以外のモードの POST が `Origin: null` になる（Fetch 仕様）。いまの交換は
   `fetch`（cors モード）なので送られるが、実装差や呼び出し方の変更で Origin が消えると
-  交換が 403 で止まる。`strict-origin-when-cross-origin` なら同一オリジンへは常に送られる
-  （E2E が交換に Origin が付いていることを確かめている）
+  交換が 403 で止まる。`strict-origin` なら HTTPS のページからの要求には常に Origin が付く
+  （E2E が、交換に Origin が付くことと、戻り直後の要求の Referer に code / state が無いことを
+  確かめている）
 - ヘッダを無視する配信先のために、`index.html` にも `<meta name="referrer">` で同じ方針を書いている
 - `/api/` の応答は Function が自前でヘッダを付ける（`Referrer-Policy: no-referrer` など）ので対象外にしている
-- `vite preview`（E2E の配信元）も `vercel.json` を読んで同じヘッダを返す（`vite.config.ts`）。
-  ヘッダを変えたら `e2e/dist.spec.ts` を合わせる
+- `vite preview`（E2E の配信元）も `vercel.json` から**ヘッダの値**を読んで返す（`vite.config.ts`）。
+  共有しているのは値だけで、`source` のパス条件（`/api/` の除外）は再現していない
+  （preview には `/api/` が無く、E2E のトークン交換は Playwright の route で応答している）。
+  パス条件は Preview / 本番で §5 の 8 で確かめる。ヘッダを変えたら `e2e/dist.spec.ts` を合わせる
 
 ## 5. 確認（実 GitHub での smoke test）
 
@@ -135,7 +145,18 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
 5. App の権限画面に write 権限が無いこと
 6. 再読み込みすると、もう一度接続が必要になること
 7. Vercel の Function ログ（`/api/github/token`）に、本文・コード・トークンが出ていないこと
-8. `curl -sI https://bulk-text-replacement-tool.vercel.app/` で §4 のヘッダが返ること
-9. Firewall のルールが Publish 済みで、`/api/github/token` を短時間に 11 回以上叩くと
-   429 が返ること（例: `for i in $(seq 12); do curl -s -o /dev/null -w '%{http_code}\n' -X POST https://bulk-text-replacement-tool.vercel.app/api/github/token; done`。
-   Origin を付けていないので、制限に掛かるまでは 403 が返る）
+8. `curl -sI https://bulk-text-replacement-tool.vercel.app/` で §4 のヘッダが返ること。
+   `curl -sI https://bulk-text-replacement-tool.vercel.app/api/github/token` には §4 の
+   `frame-ancestors` が付かず、Function 自身の `Referrer-Policy: no-referrer` が返ること
+9. Firewall のルールが Publish 済みで、次の3つがすべて 429 になること。
+   Origin を付けていないので、制限に掛かるまでは 403（`.js` と末尾 `/` も同じ Function）が返る
+
+   ```sh
+   BASE=https://bulk-text-replacement-tool.vercel.app
+   for i in $(seq 11); do curl -s -o /dev/null -w '%{http_code}\n' -X POST "$BASE/api/github/token"; done
+   for p in /api/github/token /api/github/token/ /api/github/token.js; do
+     curl -s -o /dev/null -w "$p %{http_code}\n" -X POST "$BASE$p"
+   done
+   ```
+
+   確かめたあとは窓（60 秒）が明けるまで、同じ IP からは接続できない

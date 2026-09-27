@@ -172,6 +172,69 @@ describe('handleTokenExchange', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('Content-Length の無い本文も、上限を超えた時点で読むのをやめて断る', async () => {
+    const { fetchImpl, calls } = upstream({});
+    // 引かれるたびに 1KB を返し続ける本文。読み切ろうとすれば終わらない。
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(new Uint8Array(1024).fill(0x20));
+      },
+    });
+    const init: RequestInit & { duplex: 'half' } = {
+      method: 'POST',
+      headers: { origin: ORIGIN, 'content-type': 'application/json' },
+      body: stream,
+      duplex: 'half',
+    };
+    const streamed = new Request('https://bulk.example/api/github/token', init);
+    expect(streamed.headers.get('content-length')).toBeNull();
+
+    const response = await handleTokenExchange(streamed, CONFIG, fetchImpl);
+    expect(response.status).toBe(413);
+    expect(calls).toHaveLength(0);
+    // 上限（4KB）を1つ越えたところで止まる。ストリームは先読みの分だけ多く引かれ得る。
+    expect(pulled).toBeLessThanOrEqual(Math.ceil(MAX_BODY_BYTES / 1024) + 3);
+  });
+
+  it('Content-Length の無い本文でも、上限以内なら交換する', async () => {
+    const { fetchImpl, calls } = upstream({ access_token: 'ghu_token', token_type: 'bearer' });
+    const bytes = new TextEncoder().encode(JSON.stringify(VALID));
+    const init: RequestInit & { duplex: 'half' } = {
+      method: 'POST',
+      headers: { origin: ORIGIN, 'content-type': 'application/json' },
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          // 複数の断片に分けて届いても、つないで読む。
+          controller.enqueue(bytes.slice(0, 10));
+          controller.enqueue(bytes.slice(10));
+          controller.close();
+        },
+      }),
+      duplex: 'half',
+    };
+    const response = await handleTokenExchange(
+      new Request('https://bulk.example/api/github/token', init),
+      CONFIG,
+      fetchImpl,
+    );
+    expect(response.status).toBe(200);
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([
+    ['原稿のような余計な項目', { ...VALID, manuscript: '本文' }],
+    ['GitHub へ渡す値に紛れ込ませる項目', { ...VALID, client_id: 'Iv23other' }],
+    ['__proto__', JSON.parse(`{"__proto__":{"x":1},${JSON.stringify(VALID).slice(1)}`)],
+  ])('%s が付いていれば、3項目がそろっていても断る', async (_, payload) => {
+    const { fetchImpl, calls } = upstream({ access_token: 'ghu_token', token_type: 'bearer' });
+    const response = await handleTokenExchange(request(payload), CONFIG, fetchImpl);
+    expect(response.status).toBe(400);
+    expect(await body(response)).toEqual({ error: 'invalid_request' });
+    expect(calls).toHaveLength(0);
+  });
+
   it.each([
     ['JSON として壊れている', '{', 'invalid_json'],
     ['配列', [], 'invalid_request'],

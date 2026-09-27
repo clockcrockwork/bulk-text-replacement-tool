@@ -92,6 +92,16 @@ function readPendingAuth(): string | null {
   }
 }
 
+export interface GitHubImportOptions {
+  /**
+   * 認可のために GitHub の画面へ移る直前に呼ぶ。false を返したら移らない。
+   *
+   * 移ると今のページは破棄され、戻ってきたときは保存済みの内容から始まる。
+   * 保存できていない作業があるまま離れさせないために、App が保存の書き出しを渡す。
+   */
+  beforeNavigate?: () => boolean;
+}
+
 /**
  * 「GitHubから追加」の通信と状態をまとめる。
  *
@@ -101,7 +111,7 @@ function readPendingAuth(): string | null {
  *   戻ってきたら、検証の成否にかかわらず読んだ時点で消す。
  * - 取得した内容はワークスペースへ直接入れない。候補として返し、確定は App が行う。
  */
-export function useGitHubImport(): GitHubImport {
+export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport {
   const [state, dispatch] = useReducer(githubImportReducer, initialGitHubImportState);
   const tokenRef = useRef<GitHubToken | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -362,6 +372,18 @@ export function useGitHubImport(): GitHubImport {
       dispatch({
         type: 'disconnect',
         notice: 'このブラウザの設定では接続の一時情報を保存できないため、接続できません。',
+      });
+      return;
+    }
+    // 保存はデバウンスしているので、押す直前の編集はまだ書かれていないことがある。
+    // 表示中の「保存に失敗している」は最後に実行済みの保存の結果でしかないため、
+    // 離れる直前にその場で書き出し、書けなければ移らない。
+    if (options.beforeNavigate && !options.beforeNavigate()) {
+      removePendingAuth();
+      dispatch({
+        type: 'disconnect',
+        notice:
+          'ブラウザへの保存に失敗したため、接続を中止しました。GitHub の画面へ移ると保存できていない作業が失われます。先に作業データを書き出してください。',
       });
       return;
     }

@@ -14,6 +14,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  *
  * `vite preview`（E2E の配信元）でも同じヘッダを返すために使う。値を2か所に書くと、
  * 本番だけ別のヘッダで動き、E2E では OAuth の戻りや描画を壊すヘッダに気付けない。
+ * 共有するのは値だけで、`source` のパス条件は再現しない（preview は全応答に付ける）。
+ * preview には `/api/` が無いので食い違いは出ないが、除外が効くことは Vercel 上で確かめる。
  * 形が想定と違えば設定の読み込みで落とす（黙ってヘッダ無しで検証しない）。
  */
 function readAppHeaders(): Record<string, string> {
