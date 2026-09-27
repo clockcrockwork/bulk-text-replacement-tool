@@ -29,6 +29,7 @@ import {
 import {
   type GitHubTreeSelection,
   hasAnySelection,
+  includedSelectionRoots,
   isPathSelected,
   selectionMayContainSelected,
 } from '../lib/githubSelection';
@@ -105,9 +106,10 @@ export async function enumerateSelectedEntries(
   api: GitHubClient,
   snapshot: GitHubSnapshot,
   selection: GitHubTreeSelection,
+  knownEntries: Readonly<Record<string, GitHubTreeEntry>>,
   signal: AbortSignal,
 ): Promise<GitHubTreeEntry[]> {
-  const queue: Array<{ path: string; treeSha: string }> = [{ path: '', treeSha: snapshot.treeSha }];
+  let queue: Array<{ path: string; treeSha: string }> = [];
   const files: GitHubTreeEntry[] = [];
   const seen = new Set<string>();
 
@@ -123,6 +125,32 @@ export async function enumerateSelectedEntries(
       }
     }
   };
+
+  let unresolvedRoot = false;
+  for (const path of includedSelectionRoots(selection)) {
+    if (path === '') {
+      queue.push({ path: '', treeSha: snapshot.treeSha });
+      continue;
+    }
+    const entry = knownEntries[path];
+    if (!entry) {
+      unresolvedRoot = true;
+      break;
+    }
+    if (entry.status === 'importable') {
+      collect([entry]);
+    } else if (entry.status === 'dir') {
+      queue.push({ path: entry.path, treeSha: entry.sha });
+    }
+  }
+
+  // Normally every explicit rule came from a visible checkbox and therefore has a known entry.
+  // If that invariant is broken, fall back to the pinned root rather than silently omitting data.
+  if (unresolvedRoot) {
+    files.length = 0;
+    seen.clear();
+    queue = [{ path: '', treeSha: snapshot.treeSha }];
+  }
 
   while (queue.length > 0) {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -339,7 +367,13 @@ export function useGitHubImport(): GitHubImport {
     run(
       '選択したファイルを準備しています',
       async (api, signal) => {
-        const entries = await enumerateSelectedEntries(api, snapshot, selection, signal);
+        const entries = await enumerateSelectedEntries(
+          api,
+          snapshot,
+          selection,
+          state.knownEntries,
+          signal,
+        );
         if (entries.length === 0) {
           throw new GitHubBatchPreparationError('選択範囲に取り込めるファイルがありません。');
         }
