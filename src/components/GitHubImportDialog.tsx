@@ -99,8 +99,10 @@ export function GitHubImportDialog({
   saveFailed,
   sameSource,
   titleCollision,
+  batchMatches,
   onAdd,
   onUpdate,
+  onApplyBatch,
 }: GitHubImportDialogProps): JSX.Element {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -146,8 +148,10 @@ export function GitHubImportDialog({
             headingRef={headingRef}
             sameSource={sameSource}
             titleCollision={titleCollision}
+            batchMatches={batchMatches}
             onAdd={onAdd}
             onUpdate={onUpdate}
+            onApplyBatch={onApplyBatch}
           />
         ) : (
           <ConsentView
