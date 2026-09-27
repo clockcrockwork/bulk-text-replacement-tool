@@ -68,6 +68,26 @@ Explain:
 
 Authentication uses GitHub App web application flow with PKCE and `state`.
 
+### Installation and authorization are separate
+
+GitHub App installation and user authorization are different states. Do not treat a successful OAuth callback as proof that the App is installed on a repository, and do not trust an `installation_id` query parameter by itself.
+
+V2 deliberately **does not enable “Request user authorization (OAuth) during installation”**. The application must launch the authorization URL itself so it can always supply its own `state`, `code_challenge`, `code_challenge_method=S256`, and exact `redirect_uri`.
+
+Connection flow:
+
+1. show the app-level consent screen
+2. launch the explicit PKCE authorization flow
+3. exchange the code and obtain an in-memory user access token
+4. call `GET /user/installations`
+5. if a usable installation exists, enumerate its repositories
+6. if no usable installation exists, show **GitHub Appをインストール / 権限を設定**
+7. after installation or repository-access changes, restart the explicit PKCE authorization flow and verify the installation through the API
+
+A first-time user may therefore make one extra GitHub round trip. Prefer that over weakening PKCE or trusting an unverified installation identifier.
+
+If the install/configuration page is opened separately while the application tab stays alive, the existing in-memory token may be rechecked after the user returns. This is an optimization, not a correctness requirement; the flow must also work by simply reconnecting.
+
 ### Temporary browser state
 
 - generate `state` and PKCE verifier in the browser
@@ -83,7 +103,9 @@ It may receive:
 
 - `code`
 - `code_verifier`
-- the expected fixed `redirect_uri`
+- the selected callback identifier / `redirect_uri`
+
+The Function must validate the request `Origin` against the app's explicit allowed origins and map/validate `redirect_uri` against an environment-specific exact allowlist. A browser-supplied arbitrary redirect URI must never be forwarded to GitHub.
 
 It must not receive repository contents, manuscript text, rules, or converted output.
 
@@ -91,6 +113,7 @@ Requirements:
 
 - GitHub App client secret exists only in Vercel environment variables
 - callback URLs are registered as exact URLs; do not use wildcard callback matching
+- token exchange accepts POST only and rejects origins / redirect URIs outside the configured allowlists
 - use expiring GitHub App user access tokens
 - return only the access token and expiry data needed by the browser
 - if GitHub returns a refresh token, discard it server-side and do not return it
@@ -337,6 +360,8 @@ Privacy tests must continue using sentinels in manuscript/rule data and prove th
 Handle at least:
 
 - authorization cancelled
+- authorization succeeded but no usable App installation exists
+- installation/configuration completed but repository access is still unavailable
 - OAuth state mismatch
 - token exchange failure
 - token expired / 401
@@ -391,7 +416,8 @@ Mock GitHub deterministically for normal automated tests.
 Cover:
 
 - disconnected state
-- consent → authorization start
+- consent → explicit PKCE authorization start
+- authorized but not installed → install/configure → reconnect
 - repo → branch → pinned snapshot → tree → import
 - directory recursive selection
 - same-source update/add/cancel
@@ -429,6 +455,9 @@ On Vercel preview/production with a real GitHub App:
 - [ ] no account, organization, or write permission
 - [ ] webhooks disabled
 - [ ] explicit read-only consent before GitHub authorization
+- [ ] installation and user authorization are handled as separate states
+- [ ] “Request user authorization (OAuth) during installation” is disabled; V2 launches its own PKCE authorize URL
+- [ ] token exchange validates allowed Origin and exact redirect URI instead of forwarding arbitrary browser input
 - [ ] repository and branch picker works
 - [ ] branch selection pins a commit SHA
 - [ ] tree browsing and blob import use the same pinned SHA
