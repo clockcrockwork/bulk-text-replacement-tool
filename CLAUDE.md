@@ -37,7 +37,17 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   payload で受け取る（`createEmptyRule()` などのファクトリは reducer の外）。
 - `src/components/` — 表示に専念。データ取得も永続化もしない。ハンドラは `App.tsx` から渡す。
   `ErrorBoundary` だけは例外で、描画が落ちたときの復旧画面を自前で持つ。
-- `src/hooks/` — 再利用する副作用（スクロールロック、トースト、画面幅、永続化）。
+- `src/hooks/` — 再利用する副作用（スクロールロック、トースト、画面幅、永続化、GitHub 取り込み）。
+- `src/github/` — GitHub REST API への fetch だけを置く（`client.ts`）。応答の解釈は
+  `src/lib/githubApi.ts` の純粋関数に任せる。副作用なのでカバレッジの計測対象外。
+  ページ送りと送るヘッダは `client.test.ts`（fetch を差し替え）、画面の流れは E2E
+  （`e2e/githubMock.ts` で GitHub を置き換える）で見る。
+- `src/state/githubImport.ts` — 「GitHubから追加」ダイアログの純粋 reducer。ワークスペースとは
+  別に持ち、永続化しない。
+- `api/` — Vercel Function。**OAuth のトークン交換だけ**（`api/github/token.js`）。
+  TypeScript 7 は従来の JS API を持たず、Vercel が `.ts` を変換できない恐れがあるので、
+  **JSDoc 付きの JavaScript** で書き `checkJs` で型検査する。本体は `api/_lib/`
+  （`_` 始まりは Function にならない）に置き、Vitest で直接テストする。
 - `e2e/` — Playwright。本番ビルドを `npm run preview` で配信して検証する。
 
 データの流れ: `App.tsx` が state を持ち、`src/lib/` の関数を呼んで結果を reducer に渡し、
@@ -73,7 +83,8 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   **正規表現モードでは、展開後に空文字になる置換先を書けば削除できる**
   （`applyBatch` の `if (replaced)` が偽になり、一致範囲が出力に積まれない）。
   「リテラルでは消せない／正規表現なら消せる」が現在の仕様。
-- **作業データの書き出し／読み込み**（`src/lib/backup.ts`）: 保存先が localStorage だけなので、
+- **作業データの書き出し／読み込み**（`src/lib/backup.ts`）: 書き出しは版 2（入力の出自
+  `source` を含む）。版 1 も読める。保存先が localStorage だけなので、
   ブラウザ側の都合（Safari の ITP、サイトデータ削除、容量超過）で消える。復旧経路を
   画面の中に持つ。取り込みは**検証 → 内容の確認 → 反映**の順を崩さない。選んだ瞬間に
   反映すると、壊れたファイルを選んだだけで今のデータが消え、復旧手段そのものが
@@ -83,7 +94,8 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   なく出したままの警告にする（見落としたときに失う設計にしない）。
 - **永続化**（`src/lib/storage.ts`）: キーは `bt-bulk-replace-v1`。読み込み時に各要素を検証・
   正規化しており、ここを緩めると壊れた保存データで起動時に落ち、リロードしても直らない
-  （復旧不能）状態を作れる。保存する形を後方互換なく変えるならキーの版を上げる。
+  （復旧不能）状態を作れる。入力の出自（`source`）は `normalizeInputSource` で検証し、
+  壊れていれば**入力は残して出自だけ落とす**。保存する形を後方互換なく変えるならキーの版を上げる。
 - **複数行のルール**: 置換元・置換先は実改行を保持できる。ただし**ルール表のセルは
   1行入力のまま**にする（行の高さを可変にすると一覧性が落ちる）。改行を含む値は
   `RuleCell` が要約表示のボタンに切り替え、実体の編集は `CellEditor` で行う。
@@ -115,11 +127,41 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
 - **選択状態**は色だけで表さない。トグルは `ToggleGroup`（`aria-pressed` 込み）を使い、
   独自に組むなら `aria-pressed` / `aria-current` を付ける。
 - **外部通信**を増やさない。README で「入力とルールは外部へ送信しない」と約束しており、
-  `index.html` の CSP が `connect-src 'none'` で fetch / XHR / sendBeacon / WebSocket を
-  まとめて塞ぐ（テストだけでなくブラウザ側でも保証する）。`style-src` の
-  `'unsafe-inline'` は Google Fonts のスタイルシートのために要る。
+  `index.html` の CSP が `connect-src 'self' https://api.github.com` で、それ以外への
+  fetch / XHR / sendBeacon / WebSocket を塞ぐ（テストだけでなくブラウザ側でも保証する）。
+  `'self'` はトークン交換のためだけにある。`style-src` の `'unsafe-inline'` は
+  Google Fonts のスタイルシートのために要る。
   `e2e/privacy.spec.ts` が原稿・ルールに仕込んだ目印がリクエストに現れないことを検証する。
-  宛先ホストだけを見るのでは足りない（同一オリジンへの送信を見逃す）。
+  宛先ホストだけを見るのでは足りない（同一オリジンへの送信を見逃す）。GitHub を使わない
+  流れでは GitHub にも `/api/` にも一切つながないこと、GitHub の流れでもバックエンドへは
+  トークン交換の3項目しか送らないことも見ている。**通信が可能になったからといって
+  このテストを消さない。**
+- **GitHub 取り込み**（仕様は `docs/github-import-v2.md`、設定は `docs/github-app-setup.md`）:
+  - **読み取り専用**。write 系の権限・API を足さない（Git への書き出しは別仕様）。
+  - アクセストークンは `useGitHubImport` の ref（メモリ）にだけ持つ。localStorage /
+    sessionStorage / ワークスペース / 作業データに書かない。sessionStorage に置いてよいのは
+    リダイレクトを跨ぐ state と PKCE verifier だけで、戻った時点で消す。
+  - 認可は毎回アプリが state と PKCE（S256）を付けて始める。GitHub の「インストール時に
+    OAuth を要求」には頼らない。callback はオリジン直下（`base: './'` なので下位パス不可）。
+  - バックエンドは原稿・ルール・リポジトリの内容を受け取らない。本文はブラウザから
+    api.github.com へ直接取りに行く。
+  - api.github.com へのリクエストは **GitHub の CORS 方針**に従う。送る要求ヘッダは
+    `githubRequestHeaders`（`Accept` と `Authorization`）だけで、`X-GitHub-Api-Version` など
+    許可リスト（`GITHUB_CORS_ALLOWED_REQUEST_HEADERS`）に無いものは付けない（preflight で止まる）。
+    読める応答ヘッダも限られる（`retry-after` や `x-github-sso` は読めない）ので、判定は
+    `x-ratelimit-*` と本文の `message` で行う。モックの E2E は CORS を再現しないので、
+    ヘッダや fetch オプションを変えたら `e2e/githubCors.spec.ts`（実ブラウザ × 方針を再現した
+    サーバー）で確かめる。
+  - ブランチを選んだ時点でコミットを固定し、tree も blob もそこから読む。遅れて返った
+    古い応答は reducer が捨てる。新しいコミットへは「最新に更新」でだけ移る。
+  - tree の一覧は項目にパスを焼き込んでいる。中身が同じディレクトリは別の場所でも同じ
+    tree SHA になるので、一覧のキャッシュや照合は **SHA とパスの組**で行う（SHA だけだと
+    別のフォルダのパスで取り込み、出自と同一性が別ファイルに結び付く）。
+  - 一覧のページ送りは上限（`MAX_PAGES`）で止めるが、続きが残っていれば途中までの一覧を
+    返さずに失敗させる（「無い」と「上限で見えていない」を取り違えさせない）。
+  - 取り込み元の同一性は `repositoryId + ref + path`（`sourceIdentity`）。タイトルでは判定しない。
+    同じ取り込み元が複数あるときに更新先を推測しない。
+  - 対応拡張子は `ACCEPTED_EXTENSIONS`、文字コードは `decodeText` をローカルと共有する。
 - **配信物とユーザーのテキストは別のレイヤー**として扱う。アプリの HTML / CSS / JS は
   不要物を落として軽くしてよい（`index.html` に開発者向けコメントを残さない、
   sourcemap を配らない、JS/CSS の minify は Vite 既定に任せる）。一方、

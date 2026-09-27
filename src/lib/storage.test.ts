@@ -146,6 +146,41 @@ describe('loadWorkspace', () => {
   });
 });
 
+describe('loadWorkspace の出自（source）', () => {
+  const source = {
+    kind: 'github',
+    repositoryId: 42,
+    owner: 'octo',
+    repo: 'novel',
+    ref: 'main',
+    commitSha: 'a'.repeat(40),
+    path: 'chapters/ch1.md',
+    blobSha: 'b'.repeat(40),
+  };
+
+  it('GitHub の出自を検証して保持する', () => {
+    stubStorage(
+      saved({ inputs: [{ id: 'i1', title: 'ch1.md', text: 'x', source }], groups: [{ id: 'g1' }] }),
+    );
+    expect(loadWorkspace()?.inputs[0]).toEqual({ id: 'i1', title: 'ch1.md', text: 'x', source });
+  });
+
+  it('出自の無い古い保存データは、出自なしの入力として読む', () => {
+    stubStorage(saved({ inputs: [{ id: 'i1', title: 'a', text: 'x' }], groups: [{ id: 'g1' }] }));
+    expect(loadWorkspace()?.inputs[0]).not.toHaveProperty('source');
+  });
+
+  it('壊れた出自は落とすが、入力（本文）は残す', () => {
+    stubStorage(
+      saved({
+        inputs: [{ id: 'i1', title: 'a', text: '原稿', source: { ...source, commitSha: 'x' } }],
+        groups: [{ id: 'g1' }],
+      }),
+    );
+    expect(loadWorkspace()?.inputs[0]).toEqual({ id: 'i1', title: 'a', text: '原稿' });
+  });
+});
+
 describe('loadWorkspace の ID / 配列の扱い', () => {
   it('配列は要素オブジェクトとして扱わない（空行が生えない）', () => {
     stubStorage({

@@ -7,7 +7,7 @@
  * （Trojan Source / CVE-2021-42574）、および CRLF を検出する。
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 /** 見た目に現れないまま、表示や解釈を変えてしまう文字。 */
 const FORBIDDEN = new Map([
@@ -31,10 +31,18 @@ const FORBIDDEN = new Map([
   [0xfeff, 'ZERO WIDTH NO-BREAK SPACE (BOM)'],
 ]);
 
-// git 管理下だけを見れば、node_modules や dist を自前で除外しなくて済む。
-const files = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' })
-  .split('\0')
-  .filter(Boolean);
+// git の対象（追跡済み ＋ .gitignore されていない未追跡）を見れば、node_modules や dist を
+// 自前で除外しなくて済む。未追跡も含めるのは、新しく作ったファイルがコミットするまで
+// 検査から漏れ、手元では通って CI で初めて落ちる、を避けるため。
+const files = [
+  ...new Set(
+    execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
+      encoding: 'utf8',
+    })
+      .split('\0')
+      .filter(Boolean),
+  ),
+].filter((file) => existsSync(file));
 
 const problems = [];
 

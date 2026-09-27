@@ -119,7 +119,7 @@ Requirements:
 - if GitHub returns a refresh token, discard it server-side and do not return it
 - send `Cache-Control: no-store`
 - never log token, refresh token, code, verifier, or the raw token response
-- pin `X-GitHub-Api-Version: 2026-03-10`
+- do not send `X-GitHub-Api-Version` (see **REST API version and CORS** below); the OAuth token endpoint is not a versioned REST API endpoint
 
 ### Access token lifetime
 
@@ -213,9 +213,32 @@ Directory import may use recursive tree as a fast path only if `truncated === fa
 
 If a recursive response is truncated, fall back to non-recursive subtree traversal. Never treat a truncated tree as a complete successful selection.
 
+Paginated listings (installations, repositories, branches) follow `Link: rel="next"` up to a safety cap. If the cap is reached while a next page still exists, the listing fails explicitly instead of returning a partial list, so "does not exist" is never confused with "not loaded".
+
+Git trees are content-addressed: identical directories at different paths share a tree SHA. Any cache or staleness check for a directory listing must key on **tree SHA + directory path**, because listing entries carry repository paths that become provenance and source identity.
+
 Blob fetch concurrency starts at 4 or fewer concurrent requests.
 
-Respect rate-limit response headers such as `x-ratelimit-remaining`, `x-ratelimit-reset`, and `retry-after`. Do not retry continuously.
+Respect rate-limit signals the browser can actually read: `x-ratelimit-remaining` / `x-ratelimit-reset` (exposed through CORS) and the error `message` in the response body. `retry-after` is **not** in GitHub's `Access-Control-Expose-Headers`, so browser code cannot read it; when a secondary rate limit is detected from the status and message, wait at least one minute as GitHub's rate-limit documentation advises. Do not retry continuously.
+
+### REST API version and CORS
+
+Repository data is fetched browser → `api.github.com` directly, so every request must pass GitHub's CORS policy. GitHub's CORS documentation shows the preflight response:
+
+```text
+Access-Control-Allow-Headers: Authorization, Content-Type, If-Match, If-Modified-Since, If-None-Match, If-Unmodified-Since, X-Requested-With
+Access-Control-Expose-Headers: ETag, Link, x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval
+```
+
+(https://docs.github.com/en/rest/using-the-rest-api/using-cors-and-jsonp-to-make-cross-origin-requests)
+
+`X-GitHub-Api-Version` is not in `Access-Control-Allow-Headers`, so a browser request carrying it would be rejected at preflight. Therefore:
+
+- browser requests send only `Accept` (CORS-safelisted) and `Authorization`
+- the API version is **not pinned** from the browser; GitHub serves unversioned requests with its default version (currently `2022-11-28`, supported until 2028-03-10)
+- the fields this feature reads (repository `id` / `name` / `owner.login` / `default_branch` / `private`, git ref / commit / tree / blob) are not affected by the `2026-03-10` breaking changes, so responses have the same shape under either version
+- when GitHub announces the end of the default version, re-check the breaking changes of the version unversioned requests move to, and re-check whether the CORS policy allows `X-GitHub-Api-Version`
+- the allowed / exposed header lists live in `src/lib/githubApi.ts`, and `e2e/githubCors.spec.ts` runs the app's headers and fetch options against a server that reproduces this policy in real browsers
 
 ## 7. Atomic import
 
@@ -473,9 +496,38 @@ On Vercel preview/production with a real GitHub App:
 - [ ] repository contents never transit the Vercel backend
 - [ ] local/manual flow retains the existing privacy behavior
 - [ ] backup v1 remains importable by V2; V2 writes backup v2
-- [ ] GitHub REST API version is explicitly pinned
+- [ ] browser requests to GitHub use only headers allowed by GitHub's documented CORS policy (no `X-GitHub-Api-Version`; default API version, see §6)
 - [ ] rate limits, pagination, and truncation are handled
 - [ ] `npm run check` passes
 - [ ] GitHub import E2E passes
 - [ ] real GitHub App OAuth smoke test passes on an exact callback URL
 - [ ] `release/lolipop-v1` remains unchanged
+
+## 15. Implementation status
+
+### Slice 1 (single-file import)
+
+Implemented:
+
+- consent screen, explicit PKCE (S256) + `state` authorization, callback handling on app start
+- token exchange Function `api/github/token.js` (Origin / exact redirect URI allowlists, refresh token discarded, `no-store`)
+- in-memory access token; `sessionStorage` holds only `state` / verifier across the redirect
+- installation check via `GET /user/installations`, install/configure link, and recheck
+- repository list, default-branch preselection, branch change, pinned commit snapshot, explicit **最新に更新**
+- minimal single-select file explorer: non-recursive Git Trees per directory, lazy loading, breadcrumb / up navigation, tap-first layout
+- one supported blob fetched from the pinned snapshot, decoded with `decodeText`, Git LFS pointer rejection
+- `InputText.source`, storage normalization, source-identity duplicate handling (update / add another / cancel, explicit target when ambiguous), provenance on input cards
+- backup format version 2 (reads version 1)
+
+Implementation decisions:
+
+- callback URL is the origin root (`https://<origin>/`) because the build uses relative asset paths (`base: './'`)
+- Client ID and App slug are build-time public values (`VITE_GITHUB_APP_CLIENT_ID`, `VITE_GITHUB_APP_SLUG`); without them the button is disabled. No runtime config endpoint. See `docs/github-app-setup.md`
+- directory listings are cached and matched by repository id + tree SHA + path (identical subtrees share a SHA)
+- pagination fails with an explicit error when the page cap is reached with pages remaining
+- the Vercel Function is written in JavaScript with JSDoc types (TypeScript 7 has no JS transpile API for the Vercel builder to use)
+- browser requests do not send `X-GitHub-Api-Version` because GitHub's documented CORS policy does not allow it (§6 **REST API version and CORS**); rate limits are classified from exposed `x-ratelimit-*` headers and the response `message`
+
+### Slice 2 (planned)
+
+Checkbox tree picker (tri-state, unopened-directory inheritance, search that does not mutate selection), multi-file atomic import with bounded blob concurrency, recursive-tree fast path with truncation fallback, candidate summary for multiple files.

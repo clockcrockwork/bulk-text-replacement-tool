@@ -6,6 +6,7 @@ import {
   formatTextMeta,
 } from '../lib/format';
 import { ACCEPT_ATTRIBUTE, ACCEPTED_EXTENSIONS_LABEL } from '../lib/inputFiles';
+import { formatSourceDetail, formatSourceLabel } from '../lib/inputSource';
 import type { InputText } from '../types';
 import { Icon } from './Icon';
 
@@ -15,6 +16,8 @@ export interface InputPanelProps {
   onPickFiles: () => void;
   onFilesSelected: (event: ChangeEvent<HTMLInputElement>) => void;
   onAddInput: () => void;
+  /** GitHub から取り込む。null なら、この配信では GitHub 連携が設定されていない。 */
+  onAddFromGitHub: (() => void) | null;
   /** 中身が初回のサンプルのままか。 */
   isSample: boolean;
   onClearSample: () => void;
@@ -31,6 +34,7 @@ export function InputPanel({
   onPickFiles,
   onFilesSelected,
   onAddInput,
+  onAddFromGitHub,
   isSample,
   onClearSample,
   onClearInputs,
@@ -67,6 +71,16 @@ export function InputPanel({
           <button type="button" className="btn" onClick={onAddInput}>
             <Icon name="plus" />
             <span>テキスト欄を追加</span>
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={onAddFromGitHub ?? undefined}
+            disabled={!onAddFromGitHub}
+            title={onAddFromGitHub ? undefined : 'この配信では GitHub 連携が設定されていません'}
+          >
+            <Icon name="branch" />
+            <span>GitHubから追加</span>
           </button>
         </div>
         <input
@@ -130,6 +144,12 @@ export function InputPanel({
                 <Icon name="close" />
               </button>
             </div>
+            {input.source ? (
+              <div className="input-card__source" title={formatSourceDetail(input.source)}>
+                <span className="tag">GitHub</span>
+                <span className="input-card__source-path">{formatSourceLabel(input.source)}</span>
+              </div>
+            ) : null}
             <textarea
               className="input-card__preview"
               readOnly

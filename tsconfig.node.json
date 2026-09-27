@@ -3,7 +3,10 @@
   "compilerOptions": {
     "types": ["node"],
     // page.evaluate / $$eval のコールバックはブラウザ側で動くので DOM 型が要る。
-    "lib": ["ES2023", "DOM", "DOM.Iterable"]
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    // Vercel Function（api/）は変換の要らない JavaScript で書き、型は JSDoc で検査する。
+    "allowJs": true,
+    "checkJs": true
   },
-  "include": ["e2e", "testing", "vite.config.ts", "playwright.config.ts"]
+  "include": ["e2e", "testing", "api", "vite.config.ts", "playwright.config.ts"]
 }
