@@ -53,6 +53,7 @@ describe('GitHub lazy tree selection', () => {
     selected = setTreeSelection(selected, 'chapters', true);
     expect(selectionMark(selected, 'chapters')).toBe('checked');
     expect(isPathSelected(selected, 'chapters/drafts/old.md')).toBe(true);
+    expect(selected.rules).toEqual({ chapters: true });
   });
 
   it('selecting a child below an unselected parent makes the parent mixed', () => {
