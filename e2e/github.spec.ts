@@ -389,8 +389,9 @@ test('batch で同じsourceが複数あると更新先を推測せず、明示�
   await expect(page.locator('.input-card').nth(1).locator('.input-card__title')).toHaveValue(
     'custom-two.md',
   );
-  await page.locator('.input-card').nth(1).locator('.input-card__preview').click();
-  await expect(page.getByRole('textbox', { name: /本文/ })).toHaveValue('新しい本文\n');
+  await expect(page.locator('.input-card').nth(1).locator('.input-card__preview')).toHaveValue(
+    '新しい本文\n',
+  );
 });
 
 test('同じbasenameの別パスを一括選択すると衝突を知らせ、別の入力として両方取り込む', async ({
