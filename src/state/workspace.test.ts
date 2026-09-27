@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Group, InputText, Rule } from '../types';
+import type { GitHubInputSource, Group, InputText, Rule } from '../types';
 import {
   createEmptyRule,
   createGroup,
@@ -19,6 +19,19 @@ function input(id: string, text = ''): InputText {
 
 function rule(id: string, src = 'a'): Rule {
   return { id, src, regex: false, cs: true, order: 'sim', values: {} };
+}
+
+function source(path: string): GitHubInputSource {
+  return {
+    kind: 'github',
+    repositoryId: 42,
+    owner: 'octo',
+    repo: 'novel',
+    ref: 'main',
+    commitSha: 'a'.repeat(40),
+    path,
+    blobSha: 'b'.repeat(40),
+  };
 }
 
 function state(overrides: Partial<WorkspaceState> = {}): WorkspaceState {
@@ -64,6 +77,51 @@ describe('workspaceReducer', () => {
       inputs: [input('f1', 'x')],
     });
     expect(next.inputs.map((item) => item.id)).toEqual(['i1', 'f1']);
+  });
+
+  it('GitHub batch は更新と追加を1 actionで反映し、更新先のタイトルを残す', () => {
+    const existing: InputText = {
+      ...input('old', 'old text'),
+      title: 'renamed.md',
+      source: source('chapters/ch1.md'),
+    };
+    const added: InputText = {
+      ...input('new', 'new file'),
+      source: source('chapters/ch2.md'),
+    };
+    const next = workspaceReducer(state({ inputs: [existing] }), {
+      type: 'inputs/applyGitHubBatch',
+      updates: [
+        {
+          id: 'old',
+          text: 'updated text',
+          source: { ...source('chapters/ch1.md'), commitSha: 'c'.repeat(40) },
+        },
+      ],
+      adds: [added],
+    });
+
+    expect(next.inputs).toHaveLength(2);
+    expect(next.inputs[0]).toMatchObject({
+      id: 'old',
+      title: 'renamed.md',
+      text: 'updated text',
+      source: { path: 'chapters/ch1.md', commitSha: 'c'.repeat(40) },
+    });
+    expect(next.inputs[1]).toEqual(added);
+  });
+
+  it('GitHub batch は未編集サンプルを同じ mutation 内で置き換える', () => {
+    const added: InputText = {
+      ...input('new', 'real text'),
+      source: source('chapter.md'),
+    };
+    const next = workspaceReducer(
+      state({ isSample: true, inputs: [input('sample', 'sample text')] }),
+      { type: 'inputs/applyGitHubBatch', updates: [], adds: [added] },
+    );
+    expect(next.inputs).toEqual([added]);
+    expect(next.isSample).toBe(false);
   });
 
   it('編集中の入力を消したらエディタも閉じる', () => {
