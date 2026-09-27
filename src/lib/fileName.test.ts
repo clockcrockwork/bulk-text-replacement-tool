@@ -150,3 +150,61 @@ describe('resolveFileNames（Zip Slip）', () => {
     expect(resolveFileNames(['../..'])).toEqual(['text-1.txt']);
   });
 });
+
+describe('sanitizeName（制御文字・双方向制御文字）', () => {
+  it('名前の中の改行・タブ・C0 制御文字を _ にする', () => {
+    expect(sanitizeName('a\nb', true)).toBe('a_b');
+    expect(sanitizeName('a\r\nb', true)).toBe('a__b');
+    expect(sanitizeName('a\tb', true)).toBe('a_b');
+    expect(sanitizeName('a\u0000b\u001fc', true)).toBe('a_b_c');
+  });
+
+  it('DEL と C1 制御文字を _ にする', () => {
+    expect(sanitizeName('a\u007fb', true)).toBe('a_b');
+    expect(sanitizeName('a\u0080b\u0085c\u009fd', true)).toBe('a_b_c_d');
+  });
+
+  it('前後の空白としての改行は従来どおり落とす', () => {
+    expect(sanitizeName('\n a.md \t\n', true)).toBe('a.md');
+  });
+
+  it('上書き・埋め込み・隔離の双方向制御文字を _ にする（拡張子の偽装を防ぐ）', () => {
+    // `a\u202egpj.md` は画面上で `adm.jpg` に見える。
+    expect(sanitizeName('a\u202egpj.md', true)).toBe('a_gpj.md');
+    for (const code of [0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069]) {
+      expect(sanitizeName(`x${String.fromCodePoint(code)}y`, true)).toBe('x_y');
+    }
+  });
+
+  it('LRM / RLM / ALM と行区切り・段落区切りを _ にする', () => {
+    for (const code of [0x200e, 0x200f, 0x061c, 0x2028, 0x2029]) {
+      expect(sanitizeName(`x${String.fromCodePoint(code)}y`, true)).toBe('x_y');
+    }
+  });
+
+  it('レビューで挙がった形がそのまま残らない', () => {
+    expect(sanitizeName('a\nb\u202egpj.md', false)).toBe('a_b_gpj.md');
+  });
+
+  it('制御文字を置き換えても、階層の区切りは / のまま', () => {
+    expect(sanitizeName('dir\n/file.md', true)).toBe('dir_/file.md');
+  });
+
+  it('通常の文字（日本語・絵文字・結合文字・全角空白・ZWJ 絵文字）は変えない', () => {
+    expect(sanitizeName('第一章　序.md', true)).toBe('第一章　序.md');
+    expect(sanitizeName('\u304b\u3099.md', true)).toBe('\u304b\u3099.md');
+    expect(sanitizeName('\u{1F468}\u200d\u{1F469}.md', true)).toBe('\u{1F468}\u200d\u{1F469}.md');
+    expect(sanitizeName('שלום.md', true)).toBe('שלום.md');
+  });
+});
+
+describe('resolveFileNames / resolveDirNames（制御文字）', () => {
+  it('出力ファイル名に改行や双方向制御文字を残さない', () => {
+    expect(resolveFileNames(['a\nb\u202egpj.md'])).toEqual(['a_b_gpj.md']);
+    expect(resolveFileNames(['\u202e'])).toEqual(['_.txt']);
+  });
+
+  it('ZIP のディレクトリ名にも残さない', () => {
+    expect(resolveDirNames(['A\n\u2066B'])).toEqual(['A__B']);
+  });
+});

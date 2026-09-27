@@ -28,3 +28,27 @@ test('本番ビルドに sourcemap を配らない', async ({ page, baseURL }) =
     expect(body).not.toContain('sourceMappingURL');
   }
 });
+
+/**
+ * 配信時のセキュリティヘッダ。値の正本は vercel.json で、`vite preview` も同じものを返す
+ * （vite.config.ts）。E2E 全体がこのヘッダの下で動くので、OAuth の戻りや描画を壊す
+ * ヘッダを足せばほかの spec が落ちる。ここでは中身そのものを確かめる。
+ */
+test('配信する HTML にフレーム埋め込み禁止・nosniff・Referrer-Policy を付ける', async ({
+  request,
+  baseURL,
+}) => {
+  const response = await request.get(baseURL ?? '/');
+  const headers = response.headers();
+  expect(headers['content-security-policy']).toBe("frame-ancestors 'none'");
+  expect(headers['x-frame-options']).toBe('DENY');
+  expect(headers['x-content-type-options']).toBe('nosniff');
+  expect(headers['referrer-policy']).toBe('strict-origin-when-cross-origin');
+
+  // ヘッダを無視する配信先でも Referer を絞れるよう、HTML 側にも同じ方針を書く。
+  // connect-src などの本体の CSP は meta 側にあり、ヘッダの CSP は frame-ancestors だけ
+  // （meta の CSP では frame-ancestors を指定できないため）。
+  const html = await response.text();
+  expect(html).toContain('<meta name="referrer" content="strict-origin-when-cross-origin" />');
+  expect(html).toContain("connect-src 'self' https://api.github.com;");
+});

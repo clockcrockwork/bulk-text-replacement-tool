@@ -96,6 +96,9 @@ test('PKCE（S256）と state で認可を始め、戻ったら URL と一時情
     .update(sent.code_verifier ?? '')
     .digest('base64url');
   expect(challenge).toBe(authorize?.get('code_challenge'));
+  // Function は Origin を許可リストと照合する。Referrer-Policy は Origin にも効き、
+  // `null` になると本番の交換が 403 で止まるので、配信時のヘッダの下で付いていることを見る。
+  expect(mock.tokenOrigins).toEqual(['http://127.0.0.1:4173']);
 
   // アドレスバーから code / state が消え、一時情報も残らない。
   expect(new URL(page.url()).search).toBe('');

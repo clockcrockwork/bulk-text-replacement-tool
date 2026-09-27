@@ -89,6 +89,8 @@ export class GitHubMock {
   readonly authorizeCalls: URLSearchParams[] = [];
   /** トークン交換に送られた本文。 */
   readonly tokenCalls: string[] = [];
+  /** トークン交換に付いていた Origin（Function はこれを許可リストと照合する）。 */
+  readonly tokenOrigins: (string | null)[] = [];
 
   installations: { id: number; repositoryIds: number[] }[];
   /** 次の認可で GitHub がどう応えるか。 */
@@ -237,9 +239,10 @@ export class GitHubMock {
 
     // 本物では Vercel Function が GitHub と交換する。ここではその応答（refresh token は
     // Function が捨てた後の形）を返す。送られてきた本文は記録して検証に使う。
-    await page.route('**/api/github/token', (route) => {
+    await page.route('**/api/github/token', async (route) => {
       const body = route.request().postData() ?? '';
       this.tokenCalls.push(body);
+      this.tokenOrigins.push(await route.request().headerValue('origin'));
       return route.fulfill({
         status: 200,
         headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },

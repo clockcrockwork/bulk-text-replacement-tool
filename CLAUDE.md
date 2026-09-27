@@ -112,8 +112,9 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   値が変わる状態になる）。列数が見出しと食い違う表は `findRaggedRows` で検出し、
   確定する前に見せる。
 - **出力ファイル名**（`src/lib/fileName.ts`）: タイトルは名前であってパスではないので
-  `/` は潰す。保証する拡張子は `ACCEPTED_EXTENSIONS`（取り込みと共有）で、それ以外は
-  消さずに `.txt` を足す（`title.html` → `title.html.txt`）。**変えるのは名前だけで、
+  `/` は潰す。制御文字（C0 / C1）と双方向制御文字も `sanitizeName` が `_` にする
+  （改行が ZIP のエントリ名に入る・`U+202E` で拡張子を偽装できる）。
+  保証する拡張子は `ACCEPTED_EXTENSIONS`（取り込みと共有）で、それ以外は消さずに `.txt` を足す（`title.html` → `title.html.txt`）。**変えるのは名前だけで、
   本文・ルール・変換結果の文字列には触らない。**
 - **グループ名**は出力先の識別子。追加・取り込み・作業データの読み込みでは
   `uniqueName` で一意にし、変換時はタブ名も ZIP のディレクトリ名と同じ値を使う
@@ -162,6 +163,12 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   - 取り込み元の同一性は `repositoryId + ref + path`（`sourceIdentity`）。タイトルでは判定しない。
     同じ取り込み元が複数あるときに更新先を推測しない。
   - 対応拡張子は `ACCEPTED_EXTENSIONS`、文字コードは `decodeText` をローカルと共有する。
+- **配信時のヘッダ**は `vercel.json` の `headers`（`frame-ancestors 'none'`・`X-Frame-Options`・
+  `nosniff`・`Referrer-Policy`）。`vite preview` も同じ値を返すので、E2E はこのヘッダの下で走る。
+  `Referrer-Policy` を `no-referrer` にしない（Origin ヘッダにも効き、`null` になる経路がある。
+  Origin を照合するトークン交換が 403 で止まる）。
+  トークン交換の回数制限は Vercel Firewall で行い、Function にメモリ上のカウンタを置かない
+  （`docs/github-app-setup.md`）。
 - **配信物とユーザーのテキストは別のレイヤー**として扱う。アプリの HTML / CSS / JS は
   不要物を落として軽くしてよい（`index.html` に開発者向けコメントを残さない、
   sourcemap を配らない、JS/CSS の minify は Vite 既定に任せる）。一方、

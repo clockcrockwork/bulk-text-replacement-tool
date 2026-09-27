@@ -12,6 +12,11 @@
  * - 応答は `Cache-Control: no-store`
  * - コード・verifier・トークン・GitHub の生の応答をログに出さない
  *
+ * 回数の制限はここでは持たない。Origin はブラウザ以外からなら偽れるので、大量の送信は
+ * Vercel Firewall のレート制限ルールで Function に届く前に止める
+ * （`docs/github-app-setup.md` §3）。メモリ上のカウンタは、サーバーレスでは
+ * インスタンス間で共有されず起動のたびに消えるので、制限として機能しない。
+ *
  * TypeScript ではなく JSDoc 付きの JavaScript で書いている。このリポジトリの
  * TypeScript は 7（ネイティブ実装）で、従来の JS API（transpileModule など）を持たない。
  * Vercel の Node ランタイムが Function の .ts をプロジェクトの typescript で変換しようと
