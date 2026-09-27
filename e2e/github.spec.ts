@@ -337,6 +337,62 @@ test('複数取得の途中でblobが1件でも失敗したら入力を1件も�
   await expect(page.locator('.input-card')).toHaveCount(3);
 });
 
+test('batch で同じsourceが複数あると更新先を推測せず、明示するまで確定できない', async ({
+  page,
+}) => {
+  const repository = novelRepository({
+    branches: {
+      main: [{ path: 'chapters/ch1.md', content: '新しい本文\n' }],
+    },
+  });
+  const mock = new GitHubMock([repository]);
+  const oldSource = {
+    kind: 'github' as const,
+    repositoryId: repository.id,
+    owner: repository.owner,
+    repo: repository.name,
+    ref: 'main',
+    commitSha: 'a'.repeat(40),
+    path: 'chapters/ch1.md',
+    blobSha: 'b'.repeat(40),
+  };
+  await mock.install(page);
+  await seedWorkspace(page, {
+    inputs: [
+      { id: 'old-1', title: 'custom-one.md', text: '古い1\n', source: oldSource },
+      { id: 'old-2', title: 'custom-two.md', text: '古い2\n', source: oldSource },
+    ],
+    groups: [{ id: 'g1', name: 'A用' }],
+    rules: [],
+  });
+  await openApp(page);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+
+  const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+  const decision = batch.getByRole('combobox', { name: 'chapters/ch1.md の取り込み方法' });
+  await expect(decision).toHaveValue('');
+  const commitButton = batch.getByRole('button', { name: '1ファイルを取り込む' });
+  await expect(commitButton).toBeDisabled();
+
+  await decision.selectOption('old-2');
+  await expect(commitButton).toBeEnabled();
+  await commitButton.click();
+
+  await expect(page.locator('.input-card')).toHaveCount(2);
+  await expect(page.locator('.input-card').nth(0).locator('.input-card__title')).toHaveValue(
+    'custom-one.md',
+  );
+  await expect(page.locator('.input-card').nth(1).locator('.input-card__title')).toHaveValue(
+    'custom-two.md',
+  );
+  await page.locator('.input-card').nth(1).locator('.input-card__preview').click();
+  await expect(page.getByRole('textbox', { name: /本文/ })).toHaveValue('新しい本文\n');
+});
+
 test('同じbasenameの別パスを一括選択すると衝突を知らせ、別の入力として両方取り込む', async ({
   page,
 }) => {
