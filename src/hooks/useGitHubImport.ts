@@ -409,12 +409,12 @@ export function useGitHubImport(): GitHubImport {
             let buffer: ArrayBuffer;
             try {
               buffer = await api.getBlob(snapshot, entry.sha, requestSignal);
-          } catch (error) {
-            if (error instanceof GitHubRequestError) {
-              throw new GitHubBatchRequestError(entry.path, error);
+            } catch (error) {
+              if (error instanceof GitHubRequestError) {
+                throw new GitHubBatchRequestError(entry.path, error);
+              }
+              throw error;
             }
-            throw error;
-          }
             const result = buildCandidate(snapshot, entry, buffer);
             if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
             return result.candidate;
