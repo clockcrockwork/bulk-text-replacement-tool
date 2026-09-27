@@ -251,7 +251,9 @@ test('複数取得の途中でblobが1件でも失敗したら入力を1件も�
   mock.failPaths = ['/git/blobs/'];
 
   await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
-  await expect(dialog(page).getByRole('alert')).toBeVisible();
+  const failure = dialog(page).getByRole('alert');
+  await expect(failure).toBeVisible();
+  await expect(failure).toContainText(/one\.md|two\.md/);
   await expect(page.locator('.input-card')).toHaveCount(1);
 
   mock.failPaths = [];
