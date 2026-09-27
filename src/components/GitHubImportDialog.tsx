@@ -2,6 +2,7 @@ import { type JSX, type RefObject, useEffect, useMemo, useRef, useState } from '
 import { formatTextMeta } from '../lib/format';
 import { describeEntryStatus, formatBytes } from '../lib/githubApi';
 import {
+  hasAnySelection,
   isPathSelected,
   selectionMark,
   summarizeKnownSelection,
@@ -31,6 +32,8 @@ export interface GitHubDialogHandlers {
   selectFile: (entry: GitHubTreeEntry) => void;
   setSelected: (path: string, selected: boolean) => void;
   clearCandidate: () => void;
+  prepareSelection: () => void;
+  clearBatch: () => void;
   close: () => void;
 }
 
@@ -39,6 +42,18 @@ export interface SameSourceInput {
   id: string;
   /** 「03 ch1.md」のように、入力タブで見える番号と名前。 */
   label: string;
+}
+
+export interface GitHubBatchMatch {
+  path: string;
+  sameSource: readonly SameSourceInput[];
+  titleCollision: boolean;
+}
+
+export interface GitHubBatchDecision {
+  path: string;
+  /** null は新しい入力として追加。文字列ならその input id を更新。 */
+  updateInputId: string | null;
 }
 
 interface GitHubImportDialogProps {
@@ -53,13 +68,16 @@ interface GitHubImportDialogProps {
   sameSource: readonly SameSourceInput[];
   /** 候補と同じファイル名の、別の入力があるか。 */
   titleCollision: boolean;
+  batchMatches: readonly GitHubBatchMatch[];
   onAdd: () => void;
   onUpdate: (inputId: string) => void;
+  onApplyBatch: (decisions: readonly GitHubBatchDecision[]) => void;
 }
 
 /** 表示中の画面。フォーカスを移す目印に使う。 */
 function viewKey(state: GitHubImportState): string {
   if (state.connection !== 'connected') return `consent:${state.connection}`;
+  if (state.batchCandidates) return `batch:${state.batchCandidates.length}`;
   if (state.candidate) return `candidate:${state.candidate.source.path}`;
   if (state.choosingBranch) return 'branches';
   if (state.snapshot) return `browse:${state.snapshot.commitSha}:${state.trail.length}`;
@@ -342,7 +360,9 @@ function ConnectedView(props: ConnectedViewProps): JSX.Element | null {
   return (
     <>
       <RepositoryContext state={state} handlers={handlers} />
-      {state.candidate ? (
+      {state.batchCandidates ? (
+        <BatchCandidateView {...props} candidates={state.batchCandidates} />
+      ) : state.candidate ? (
         <CandidateView {...props} candidate={state.candidate} />
       ) : state.choosingBranch || !state.snapshot ? (
         <BranchList state={state} handlers={handlers} headingRef={headingRef} />
@@ -387,7 +407,7 @@ function RepositoryContext({
           </>
         ) : null}
       </dl>
-      {state.candidate ? null : (
+      {state.candidate || state.batchCandidates ? null : (
         <div className="github__context-actions">
           {snapshot && !state.choosingBranch ? (
             <>
@@ -570,6 +590,17 @@ function Explorer({
           </ul>
         )
       ) : null}
+
+      <div className="github__selection-actions">
+        <button
+          type="button"
+          className="btn btn--primary"
+          disabled={state.busy !== null || !hasAnySelection(selection)}
+          onClick={handlers.prepareSelection}
+        >
+          選択したファイルを確認
+        </button>
+      </div>
     </section>
   );
 }
@@ -656,6 +687,122 @@ function TreeEntryRow({
       <span className="github__entry-name">{entry.name}</span>
       <span className="github__entry-meta">{describeEntryStatus(entry.status)}</span>
     </div>
+  );
+}
+
+// ---- 複数取り込みの確認 --------------------------------------------------------
+
+const ADD_NEW = '__add__';
+
+function BatchCandidateView({
+  state,
+  handlers,
+  headingRef,
+  candidates,
+  batchMatches,
+  onApplyBatch,
+}: ConnectedViewProps & {
+  candidates: NonNullable<GitHubImportState['batchCandidates']>;
+}): JSX.Element {
+  const [decisions, setDecisions] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      candidates.map((candidate) => {
+        const match = batchMatches.find((item) => item.path === candidate.source.path);
+        return [candidate.source.path, match && match.sameSource.length > 0 ? '' : ADD_NEW];
+      }),
+    ),
+  );
+  const unresolved = candidates.some((candidate) => !decisions[candidate.source.path]);
+  const bytes = candidates.reduce((sum, candidate) => sum + candidate.size, 0);
+  const shiftJis = candidates.filter((candidate) => candidate.encoding === 'shift_jis').length;
+
+  return (
+    <section className="github__section" aria-label="複数ファイルの取り込み確認">
+      <h3 ref={headingRef} className="github__heading" tabIndex={-1}>
+        {candidates.length}ファイルを取り込む
+      </h3>
+      <p className="dialog__lead">
+        全ファイルの取得と検証が終わりました。ここで確定するまで入力テキストは変更されません。
+      </p>
+      <ul className="dialog__details">
+        <li>合計 {formatBytes(bytes)}</li>
+        {shiftJis > 0 ? (
+          <li>{shiftJis}件は Shift_JIS として読み込みました。文字化けが無いか確認してください。</li>
+        ) : null}
+      </ul>
+
+      <ul className="github__batch-list">
+        {candidates.map((candidate) => {
+          const match = batchMatches.find((item) => item.path === candidate.source.path);
+          const sameSource = match?.sameSource ?? [];
+          return (
+            <li key={candidate.source.path} className="github__batch-item">
+              <div className="github__batch-file">
+                <strong>{candidate.source.path}</strong>
+                <span>
+                  {formatBytes(candidate.size)}
+                  {candidate.encoding === 'shift_jis' ? ' · Shift_JIS' : ''}
+                </span>
+              </div>
+              {match?.titleCollision ? (
+                <span className="github__batch-warning">
+                  同じファイル名の別入力があります（別の取り込み元として扱います）
+                </span>
+              ) : null}
+              {sameSource.length > 0 ? (
+                <label className="github__batch-decision">
+                  <span>同じ取り込み元があります</span>
+                  <select
+                    aria-label={`${candidate.source.path} の取り込み方法`}
+                    value={decisions[candidate.source.path] ?? ''}
+                    onChange={(event) =>
+                      setDecisions((current) => ({
+                        ...current,
+                        [candidate.source.path]: event.currentTarget.value,
+                      }))
+                    }
+                  >
+                    <option value="">取り込み方法を選ぶ</option>
+                    <option value={ADD_NEW}>別の入力として追加</option>
+                    {sameSource.map((target) => (
+                      <option key={target.id} value={target.id}>
+                        {target.label} を更新
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <span className="github__batch-new">新しい入力として追加</span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+
+      <div className="dialog__row">
+        <button type="button" className="btn" onClick={handlers.clearBatch}>
+          選択へ戻る
+        </button>
+        <button
+          type="button"
+          className="btn btn--primary"
+          disabled={state.busy !== null || unresolved}
+          onClick={() =>
+            onApplyBatch(
+              candidates.map((candidate) => ({
+                path: candidate.source.path,
+                updateInputId:
+                  decisions[candidate.source.path] === ADD_NEW
+                    ? null
+                    : decisions[candidate.source.path] || null,
+              })),
+            )
+          }
+        >
+          {candidates.length}ファイルを取り込む
+        </button>
+      </div>
+    </section>
   );
 }
 
