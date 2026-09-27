@@ -130,6 +130,11 @@
   font-size: 13px;
 }
 
+/* ボタンの見た目のリンク（外部の設定画面へ飛ぶもの）。 */
+a.btn {
+  text-decoration: none;
+}
+
 /** 正方形のアイコンのみのボタン。 */
 .icon-btn {
   display: inline-flex;
@@ -469,6 +474,26 @@
 }
 
 /** 読み取り専用のプレビュー。クリックで全画面エディタを開く。 */
+/* GitHub から取り込んだ入力の出自。どのリポジトリのどのパスかを1行で見せる。 */
+.input-card__source {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 6px 12px;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  border-bottom: 1px solid var(--color-divider-soft);
+}
+
+.input-card__source-path {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .input-card__preview {
   width: 100%;
   height: 220px;
@@ -1246,6 +1271,211 @@
   font: 600 14px / 1.3 var(--font-body);
   background: var(--color-text);
   box-shadow: var(--shadow-overlay);
+}
+
+/* ============================================================ GitHub から追加 */
+
+.dialog--github {
+  width: min(720px, calc(100% - 32px));
+  max-width: min(720px, calc(100% - 32px));
+}
+
+.github__section,
+.github__consent {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.github__heading {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.github__heading:focus-visible {
+  outline-offset: 4px;
+}
+
+.github__status {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.github__error {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.github__disconnect {
+  margin-right: auto;
+}
+
+/* リポジトリ・ブランチ・コミット。どの時点の内容を見ているかを常に出す。 */
+.github__context {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--color-surface-strong);
+}
+
+.github__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  margin: 0;
+}
+
+.github__facts dt {
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.github__facts dd {
+  margin: 0;
+  font: 600 13px / 1.4 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.github__context-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.github__crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.github__crumbs li + li::before {
+  padding: 0 4px;
+  color: var(--color-muted);
+  content: "/";
+}
+
+.github__crumb {
+  min-height: var(--control-height);
+  padding: 0 6px;
+  color: var(--color-accent-text);
+  font: 600 14px / 1 var(--font-mono);
+  text-decoration: underline;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.github__crumb:disabled {
+  color: var(--color-text);
+  text-decoration: none;
+  cursor: default;
+}
+
+/* タップで選ぶ一覧。1行ごとにタッチの最小サイズを確保する。 */
+.github__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--color-divider-soft);
+}
+
+.github__entry {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: var(--control-height-touch);
+  padding: 8px 12px;
+  color: var(--color-text);
+  font: 15px / 1.3 var(--font-body);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--color-divider-soft);
+  cursor: pointer;
+}
+
+button.github__entry:hover {
+  background: var(--color-bg);
+}
+
+.github__entry[aria-current="true"] {
+  font-weight: 800;
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.github__entry.is-disabled {
+  color: var(--color-muted);
+  cursor: default;
+}
+
+.github__entry--dir {
+  font-weight: 600;
+}
+
+.github__entry-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.github__entry-meta {
+  flex: none;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.github__preview {
+  min-height: 160px;
+  max-height: 40vh;
+  resize: none;
+}
+
+.github__targets {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-divider);
+}
+
+.github__legend {
+  padding: 0 4px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.github__target {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: var(--control-height-touch);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.github__target input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+
+.github__decision {
+  flex-wrap: wrap;
 }
 
 /* 画面には出さず、スクリーンリーダーとプログラム的なクリックには残す。 */

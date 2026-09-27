@@ -13,8 +13,17 @@ import { normalizeWorkspace } from './storage';
  * そのため、ブラウザ保存を唯一のバックアップとして扱わない。
  */
 
-/** 中身の形を変えたら上げる。読み込み側は未知の版を拒否する。 */
-export const BACKUP_VERSION = 1;
+/**
+ * 書き出す版。中身の形を変えたら上げる。読み込み側は未知の版を拒否する。
+ *
+ * 版 2 で入力に出自（`source`: GitHub から取り込んだ場所）が加わった。版 1 のアプリ
+ * （凍結した V1）は版 2 を拒否する。未知のフィールドを黙って落として読み込むと、
+ * 読み込めたように見えて出自だけが消えるので、拒否される方がまし。
+ */
+export const BACKUP_VERSION = 2;
+
+/** 読み込める版。版 1 には出自が無いだけで、同じ正規化で読める。 */
+const READABLE_VERSIONS: readonly unknown[] = [1, 2];
 
 const BACKUP_APP = 'bulk-text-replacement-tool';
 
@@ -67,10 +76,10 @@ export function parseBackup(text: string): ParsedBackup {
   if (parsed.app !== BACKUP_APP) {
     return { kind: 'error', message: 'このツールの作業データではありません。' };
   }
-  if (parsed.version !== BACKUP_VERSION) {
+  if (!READABLE_VERSIONS.includes(parsed.version)) {
     return {
       kind: 'error',
-      message: `対応していない版です（このアプリが読めるのは版 ${BACKUP_VERSION}）。`,
+      message: `対応していない版です（このアプリが読めるのは版 ${READABLE_VERSIONS.join(' / ')}）。`,
     };
   }
 

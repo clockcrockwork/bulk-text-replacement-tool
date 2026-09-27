@@ -47,5 +47,11 @@ export default defineConfig({
     // webServer が上がらない類の失敗を診断できるようにしておく。
     stdout: 'pipe',
     stderr: 'pipe',
+    // GitHub 連携の公開設定。E2E では GitHub をモックするので、実在しない値でよい。
+    // これが無いビルドでは「GitHubから追加」が無効になり、その流れを検証できない。
+    env: {
+      VITE_GITHUB_APP_CLIENT_ID: 'Iv23-e2e-client',
+      VITE_GITHUB_APP_SLUG: 'bulk-replace-e2e',
+    },
   },
 });

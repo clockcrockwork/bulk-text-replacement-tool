@@ -6,6 +6,35 @@ export interface InputText {
   /** 出力ファイル名として使う。空ならフォールバック名を割り当てる。 */
   title: string;
   text: string;
+  /**
+   * どこから取り込んだか。手入力・ローカルファイルには無い。
+   *
+   * タイトルは利用者が書き換える出力名なので、取り込み元の同定には使えない。
+   * 同じファイルを取り込み直したかどうかは、ここで判断する。
+   */
+  source?: GitHubInputSource;
+}
+
+/**
+ * GitHub から取り込んだ入力の出自。
+ *
+ * 同一性（同じ取り込み元か）は `repositoryId + ref + path` で決める。
+ * `commitSha` / `blobSha` は「どの時点の内容か」の記録で、同一性には含めない
+ * （含めると、ブランチが進んだあとの取り込み直しが別物扱いになる）。
+ */
+export interface GitHubInputSource {
+  kind: 'github';
+  /** リポジトリ名の変更や移管で owner/repo が変わっても同じものと分かるよう、数値 ID を持つ。 */
+  repositoryId: number;
+  owner: string;
+  repo: string;
+  /** ブランチ名（`refs/heads/` は付けない）。 */
+  ref: string;
+  /** 取り込んだ時点で固定していたコミット。 */
+  commitSha: string;
+  /** リポジトリ内のパス（先頭の `/` は付けない）。 */
+  path: string;
+  blobSha: string;
 }
 
 /**
@@ -100,3 +129,51 @@ export type RuleView = 'auto' | 'table' | 'card';
 
 /** 表インポート時に既存ルールをどう扱うか。 */
 export type ImportMode = 'replace' | 'append';
+
+// ---- GitHub 取り込み ---------------------------------------------------------
+
+/** GitHub App がアクセスを許されているリポジトリ。 */
+export interface GitHubRepository {
+  id: number;
+  owner: string;
+  name: string;
+  defaultBranch: string;
+  private: boolean;
+}
+
+/**
+ * ブランチを選んだ時点で固定した内容のスナップショット。
+ *
+ * ブラウズもファイルの取得も、この `commitSha` / `treeSha` から辿る。ブランチが
+ * 途中で進んでも勝手に追従しない（一覧で見たものと取り込むものが食い違わないように）。
+ */
+export interface GitHubSnapshot {
+  repository: GitHubRepository;
+  ref: string;
+  commitSha: string;
+  treeSha: string;
+}
+
+/**
+ * ツリーの1項目がどう扱われるか。
+ * - `dir`: 開ける
+ * - `importable`: 取り込める
+ * - それ以外: 表示はするが選べない（理由を見せる）
+ */
+export type GitHubEntryStatus =
+  | 'dir'
+  | 'importable'
+  | 'unsupported'
+  | 'tooLarge'
+  | 'symlink'
+  | 'submodule';
+
+export interface GitHubTreeEntry {
+  name: string;
+  /** リポジトリのルートからのパス。 */
+  path: string;
+  sha: string;
+  status: GitHubEntryStatus;
+  /** バイト数。ディレクトリなど GitHub が返さないものは null。 */
+  size: number | null;
+}

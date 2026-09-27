@@ -14,6 +14,7 @@ import { CellEditor } from './components/CellEditor';
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog';
 import { DropOverlay } from './components/DropOverlay';
 import { EditorOverlay } from './components/EditorOverlay';
+import { GitHubImportDialog, type SameSourceInput } from './components/GitHubImportDialog';
 import { ImportDialog } from './components/ImportDialog';
 import { InputPanel } from './components/InputPanel';
 import { OutputPanel } from './components/OutputPanel';
@@ -27,14 +28,16 @@ import {
 import { TabBar, type TabDescriptor } from './components/TabBar';
 import { Toast } from './components/Toast';
 import { useConfirm } from './hooks/useConfirm';
+import { useGitHubImport } from './hooks/useGitHubImport';
 import { useNarrowScreen } from './hooks/useNarrowScreen';
 import { usePersistedWorkspace } from './hooks/usePersistedWorkspace';
 import { type ToastAction, useToast } from './hooks/useToast';
 import { buildBackup, parseBackup } from './lib/backup';
 import { copyText, downloadBlob } from './lib/browser';
 import { collectRuleErrors, findUnmatchedRules } from './lib/diagnostics';
-import { timestampForFileName } from './lib/format';
+import { formatFallbackTitle, formatIndex, timestampForFileName } from './lib/format';
 import { readInputFiles } from './lib/inputFiles';
+import { findSameSource, sourceIdentity } from './lib/inputSource';
 import { runConversion } from './lib/replace';
 import {
   buildRulesFromTable,
@@ -76,6 +79,7 @@ export function App(): JSX.Element {
   const [dragging, setDragging] = useState(false);
 
   const saveFailed = usePersistedWorkspace(state);
+  const github = useGitHubImport();
 
   // ---- 作業データ（バックアップ） --------------------------------------------
   const [backupOpen, setBackupOpen] = useState(false);
@@ -249,6 +253,81 @@ export function App(): JSX.Element {
         (undoSample ? ' · サンプルを片付けました' : ''),
       undoSample,
     );
+  };
+
+  // ---- GitHub から追加 -------------------------------------------------------
+
+  const githubCandidate = github.state.candidate;
+
+  /**
+   * 候補と同じ取り込み元（リポジトリ・ブランチ・パス）の既存入力。
+   *
+   * ローカルのファイルと違い、タイトル（ファイル名）では判定しない。別のフォルダの
+   * 同名ファイルを「同じもの」として上書きさせないため。
+   */
+  const githubSameSource: SameSourceInput[] = githubCandidate
+    ? findSameSource(state.inputs, githubCandidate.source).map((input) => {
+        const index = state.inputs.indexOf(input);
+        return {
+          id: input.id,
+          label: `${formatIndex(index)} ${input.title || formatFallbackTitle(index)}`,
+        };
+      })
+    : [];
+
+  const githubTitleCollision = githubCandidate
+    ? state.inputs.some(
+        (input) =>
+          input.title === githubCandidate.title &&
+          !(
+            input.source && sourceIdentity(input.source) === sourceIdentity(githubCandidate.source)
+          ),
+      )
+    : false;
+
+  /** Shift_JIS は推測なので、黙って取り込まず知らせる（ローカルのファイルと同じ扱い）。 */
+  const shiftJisNote = (encoding: 'utf-8' | 'shift_jis'): string =>
+    encoding === 'shift_jis'
+      ? ' · Shift_JIS として読み込みました（文字化けが無いか確認してください）'
+      : '';
+
+  const addFromGitHub = (): void => {
+    const candidate = githubCandidate;
+    if (!candidate) return;
+    guard('GitHub からの取り込み', () => {
+      const undoSample = clearSampleBeforeAdding();
+      dispatch({
+        type: 'inputs/addMany',
+        inputs: [{ ...createInput(candidate.title, candidate.text), source: candidate.source }],
+      });
+      github.finish();
+      flash(
+        `GitHub から ${candidate.title} を追加しました` +
+          shiftJisNote(candidate.encoding) +
+          (undoSample ? ' · サンプルを片付けました' : ''),
+        undoSample,
+      );
+    });
+  };
+
+  const updateFromGitHub = (inputId: string): void => {
+    const candidate = githubCandidate;
+    if (!candidate) return;
+    const target = state.inputs.find((input) => input.id === inputId);
+    if (!target) return;
+    guard('GitHub からの取り込み', () => {
+      // タイトルは利用者が付け直した出力名かもしれないので残し、本文と出自だけ差し替える。
+      dispatch({
+        type: 'inputs/update',
+        id: inputId,
+        patch: { text: candidate.text, source: candidate.source },
+      });
+      github.finish();
+      flash(
+        `${target.title || candidate.title} を GitHub の内容で更新しました` +
+          shiftJisNote(candidate.encoding),
+      );
+    });
   };
 
   const openEditor = (id: string, caret: number, scrollRatio: number): void => {
@@ -573,6 +652,7 @@ export function App(): JSX.Element {
               const undo = clearSampleBeforeAdding();
               flash('サンプルを片付けました', undo);
             }}
+            onAddFromGitHub={github.config ? github.open : null}
             onAddInput={() => {
               const undo = clearSampleBeforeAdding();
               if (undo) flash('サンプルを片付けました', undo);
@@ -668,6 +748,19 @@ export function App(): JSX.Element {
           onFileSelected={(event) => void onTableFileSelected(event)}
           onClose={() => dispatch({ type: 'import/close' })}
           onApply={() => void applyImport()}
+        />
+      ) : null}
+
+      {github.state.open ? (
+        <GitHubImportDialog
+          state={github.state}
+          handlers={github}
+          installUrl={github.installUrl}
+          saveFailed={saveFailed}
+          sameSource={githubSameSource}
+          titleCollision={githubTitleCollision}
+          onAdd={addFromGitHub}
+          onUpdate={updateFromGitHub}
         />
       ) : null}
 

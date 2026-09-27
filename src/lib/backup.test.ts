@@ -40,6 +40,56 @@ describe('buildBackup / parseBackup', () => {
     expect(parseBackup(JSON.stringify({ app: 'other', version: 1 })).kind).toBe('error');
   });
 
+  it('GitHub の出自を保ったまま往復できる（版 2）', () => {
+    const source = {
+      kind: 'github' as const,
+      repositoryId: 42,
+      owner: 'octo',
+      repo: 'novel',
+      ref: 'main',
+      commitSha: 'a'.repeat(40),
+      path: 'chapters/ch1.md',
+      blobSha: 'b'.repeat(40),
+    };
+    const withSource: PersistedWorkspace = {
+      ...WORKSPACE,
+      inputs: [...WORKSPACE.inputs, { id: 'i2', title: 'ch1.md', text: '本文', source }],
+    };
+    const text = buildBackup(withSource, AT);
+    expect(JSON.parse(text)).toMatchObject({ version: 2 });
+    const parsed = parseBackup(text);
+    expect(parsed.kind === 'ok' && parsed.workspace).toEqual(withSource);
+  });
+
+  it('版 1 の作業データも読める（出自の無い入力として）', () => {
+    const text = JSON.stringify({
+      app: 'bulk-text-replacement-tool',
+      version: 1,
+      savedAt: AT.toISOString(),
+      workspace: WORKSPACE,
+    });
+    const parsed = parseBackup(text);
+    expect(parsed.kind).toBe('ok');
+    if (parsed.kind !== 'ok') return;
+    expect(parsed.workspace).toEqual(WORKSPACE);
+    expect(parsed.workspace.inputs[0]).not.toHaveProperty('source');
+  });
+
+  it('壊れた出自は落とし、入力の本文は残す', () => {
+    const text = JSON.stringify({
+      app: 'bulk-text-replacement-tool',
+      version: 2,
+      workspace: {
+        ...WORKSPACE,
+        inputs: [{ id: 'i1', title: 'a.md', text: '残す', source: { kind: 'github' } }],
+      },
+    });
+    const parsed = parseBackup(text);
+    expect(parsed.kind === 'ok' && parsed.workspace.inputs).toEqual([
+      { id: 'i1', title: 'a.md', text: '残す' },
+    ]);
+  });
+
   it('知らない版は受け付けない', () => {
     const text = JSON.stringify({ app: 'bulk-text-replacement-tool', version: 999, workspace: {} });
     const parsed = parseBackup(text);

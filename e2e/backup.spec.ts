@@ -30,7 +30,7 @@ test('書き出すと、読み戻せる JSON が落ちてくる', async ({ page 
   const saved: unknown = JSON.parse(await readFile(await download.path(), 'utf8'));
   expect(saved).toMatchObject({
     app: 'bulk-text-replacement-tool',
-    version: 1,
+    version: 2,
     workspace: {
       inputs: [{ title: 'story.md' }],
       groups: [{ name: 'A用' }, { name: 'B用' }],

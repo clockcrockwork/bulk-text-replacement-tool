@@ -1,5 +1,6 @@
 import type { Group, InputText, PersistedWorkspace, Rule, RuleOrder, Theme } from '../types';
 import { createGroupId, createId } from './id';
+import { normalizeInputSource } from './inputSource';
 
 /** 永続化キー。スキーマを壊す変更をしたら末尾の版を上げること。 */
 export const STORAGE_KEY = 'bt-bulk-replace-v1';
@@ -30,11 +31,16 @@ function normalizeValues(value: unknown): Record<string, string> {
 
 function normalizeInput(value: unknown): InputText | null {
   if (!isRecord(value)) return null;
-  return {
+  const input: InputText = {
     id: asString(value.id) || createId(),
     title: asString(value.title),
     text: asString(value.text),
   };
+  // 出自が壊れていても本文は利用者の原稿なので、入力は残して出自だけ落とす。
+  // 古い保存データには無い（＝手入力・ローカルファイル扱い）。
+  const source = normalizeInputSource(value.source);
+  if (source) input.source = source;
+  return input;
 }
 
 function normalizeGroup(value: unknown): Group | null {
