@@ -282,8 +282,10 @@ interface ConnectedViewProps {
   headingRef: RefObject<HTMLHeadingElement | null>;
   sameSource: readonly SameSourceInput[];
   titleCollision: boolean;
+  batchMatches: readonly GitHubBatchMatch[];
   onAdd: () => void;
   onUpdate: (inputId: string) => void;
+  onApplyBatch: (decisions: readonly GitHubBatchDecision[]) => void;
 }
 
 function ConnectedView(props: ConnectedViewProps): JSX.Element | null {
