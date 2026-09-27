@@ -3,6 +3,7 @@ import type { GitHubTreeEntry } from '../types';
 import {
   emptyTreeSelection,
   hasAnySelection,
+  includedSelectionRoots,
   isPathSelected,
   selectionMark,
   selectionMayContainSelected,
@@ -78,6 +79,15 @@ describe('GitHub lazy tree selection', () => {
     expect(isPathSelected(selected, 'chapters/drafts/keep.md')).toBe(true);
     expect(selectionMark(selected, 'chapters/drafts')).toBe('mixed');
     expect(selectionMark(selected, 'chapters')).toBe('mixed');
+  });
+
+  it('uses only minimal include roots for enumeration', () => {
+    let selected = setTreeSelection(emptyTreeSelection(), 'chapters', true);
+    selected = setTreeSelection(selected, 'chapters/drafts', false);
+    selected = setTreeSelection(selected, 'chapters/drafts/keep.md', true);
+    selected = setTreeSelection(selected, 'appendix', true);
+
+    expect(includedSelectionRoots(selected)).toEqual(['appendix', 'chapters']);
   });
 
   it('prunes unselected branches but follows an explicitly selected descendant', () => {
