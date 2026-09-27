@@ -302,10 +302,7 @@ export function App(): JSX.Element {
       const titleCollision = state.inputs.some(
         (input) =>
           input.title === candidate.title &&
-          !(
-            input.source &&
-            sourceIdentity(input.source) === sourceIdentity(candidate.source)
-          ),
+          !(input.source && sourceIdentity(input.source) === sourceIdentity(candidate.source)),
       );
       return { path: candidate.source.path, sameSource, titleCollision };
     },
@@ -378,10 +375,7 @@ export function App(): JSX.Element {
         continue;
       }
       const target = state.inputs.find((input) => input.id === inputId);
-      if (
-        !target?.source ||
-        sourceIdentity(target.source) !== sourceIdentity(candidate.source)
-      ) {
+      if (!target?.source || sourceIdentity(target.source) !== sourceIdentity(candidate.source)) {
         flash('更新先が変わったため、取り込み方法を選び直してください');
         return;
       }
