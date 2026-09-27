@@ -6,7 +6,7 @@ import type {
   GitHubTreeEntry,
 } from '../types';
 import { isAcceptedFile } from './inputFiles';
-import { baseName, isGitSha } from './inputSource';
+import { baseName, isGitSha, isRepositoryPath } from './inputSource';
 import { type DecodedText, decodeText } from './text';
 
 /**
@@ -372,30 +372,53 @@ export interface NormalizedTree {
   truncated: boolean;
 }
 
+function normalizeTreeResponse(
+  value: unknown,
+  dir: string,
+  recursive: boolean,
+): NormalizedTree | null {
+  if (!isRecord(value) || !Array.isArray(value.tree)) return null;
+  const entries = value.tree.flatMap((item): GitHubTreeEntry[] => {
+    if (!isRecord(item)) return [];
+    const { path: relativePath, mode, type, sha } = item;
+    if (!nonEmptyString(relativePath) || !isGitSha(sha)) return [];
+    if (!recursive && relativePath.includes('/')) return [];
+    if (recursive && !isRepositoryPath(relativePath)) return [];
+    if (typeof mode !== 'string' || typeof type !== 'string') return [];
+    const size =
+      typeof item.size === 'number' && Number.isSafeInteger(item.size) && item.size >= 0
+        ? item.size
+        : null;
+    const name = baseName(relativePath);
+    const status = classifyTreeEntry(mode, type, name, size);
+    if (!status) return [];
+    return [{ name, path: joinPath(dir, relativePath), sha, status, size }];
+  });
+  entries.sort(
+    (a, b) =>
+      STATUS_ORDER[a.status] - STATUS_ORDER[b.status] ||
+      compareCodePoints(a.path, b.path),
+  );
+  return { entries, truncated: value.truncated === true };
+}
+
 /**
  * `GET /repos/{owner}/{repo}/git/trees/{sha}`（非再帰）を1階層分の一覧にする。
  *
  * `dir` はこの tree が置かれているディレクトリのパス（ルートなら空文字）。
  */
 export function normalizeTree(value: unknown, dir: string): NormalizedTree | null {
-  if (!isRecord(value) || !Array.isArray(value.tree)) return null;
-  const entries = value.tree.flatMap((item): GitHubTreeEntry[] => {
-    if (!isRecord(item)) return [];
-    const { path: name, mode, type, sha } = item;
-    if (!nonEmptyString(name) || name.includes('/') || !isGitSha(sha)) return [];
-    if (typeof mode !== 'string' || typeof type !== 'string') return [];
-    const size =
-      typeof item.size === 'number' && Number.isSafeInteger(item.size) && item.size >= 0
-        ? item.size
-        : null;
-    const status = classifyTreeEntry(mode, type, name, size);
-    if (!status) return [];
-    return [{ name, path: joinPath(dir, name), sha, status, size }];
-  });
-  entries.sort(
-    (a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || compareCodePoints(a.name, b.name),
-  );
-  return { entries, truncated: value.truncated === true };
+  return normalizeTreeResponse(value, dir, false);
+}
+
+/**
+ * `GET /repos/{owner}/{repo}/git/trees/{sha}?recursive=1` を、同じ path 形式へ正規化する。
+ *
+ * GitHub の recursive 応答内の path は起点 tree からの相対パスなので、`dir` を前置きする。
+ * `truncated` が true の応答は呼び出し側で部分結果を捨て、非再帰 traversal へ fallback する。
+ */
+export function normalizeRecursiveTree(value: unknown, dir: string): NormalizedTree | null {
+  return normalizeTreeResponse(value, dir, true);
 }
 
 /** 選べない項目の理由。一覧に並べるときに添える。 */
