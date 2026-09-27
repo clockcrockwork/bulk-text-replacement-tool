@@ -72,6 +72,27 @@ release 側ではさらに、ロリポップへ出す build が
 - Vercel の Preview deployment は release の正本ではない。
 - ロリポップ版を Vercel の最新状態へ自動同期しない。
 
+## Branch protection
+
+`release/lolipop-v1` は長期間触らない前提なので、通常開発ブランチよりも
+「誤って壊さない」ことを優先する。
+
+GitHub ruleset では少なくとも以下を要求する。
+
+- branch deletion を禁止
+- non-fast-forward / force push を禁止
+- Pull Request 経由を必須
+- review thread の解決を必須
+- `Lint / Types / Unit tests / Build` を必須
+- `E2E (Playwright)` を必須
+- bypass actor は原則置かない
+
+`main protection` は default branch のみを対象としているため、この release branch は
+別途対象に追加する。release branch を長期間放置することは、保護を弱める理由にはしない。
+
+V1 の immutable anchor としてタグを置く場合は、`v1.0.0` を
+`221c2331a21a6f39e3d0c93642a73fe8b042dfa8` に向け、一度作ったタグを動かさない。
+
 ## Maintenance posture
 
 コンテスト提出後のロリポップ版は **maintenance-only**。
