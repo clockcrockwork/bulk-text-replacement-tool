@@ -1,4 +1,9 @@
 import type { GitHubCandidate } from '../lib/githubApi';
+import {
+  emptyTreeSelection,
+  setTreeSelection,
+  type GitHubTreeSelection,
+} from '../lib/githubSelection';
 import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types';
 
 /**
@@ -60,6 +65,8 @@ export interface GitHubImportState {
   /** 今いるディレクトリの一覧。null は取得中。 */
   listing: DirectoryListing | null;
   candidate: GitHubCandidate | null;
+  /** lazy tree の選択。未展開ディレクトリの選択も規則として保持する。 */
+  selection: GitHubTreeSelection;
   /** 取得中の内容。null なら待っていない。 */
   busy: string | null;
   error: GitHubImportError | null;
@@ -92,7 +99,9 @@ export type GitHubImportAction =
   /** 道筋の index 番目（0 がルート）まで戻る。 */
   | { type: 'dir/goTo'; index: number }
   | { type: 'candidate/set'; candidate: GitHubCandidate }
-  | { type: 'candidate/clear' };
+  | { type: 'candidate/clear' }
+  | { type: 'selection/set'; path: string; selected: boolean }
+  | { type: 'selection/clear' };
 
 export const initialGitHubImportState: GitHubImportState = {
   open: false,
@@ -125,6 +134,7 @@ const CLEARED_SELECTION = {
   trail: [],
   listing: null,
   candidate: null,
+  selection: emptyTreeSelection(),
 } satisfies Partial<GitHubImportState>;
 
 export function githubImportReducer(
@@ -207,6 +217,7 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
         trail: [{ path: '', treeSha: action.snapshot.treeSha }],
         listing: null,
         candidate: null,
+        selection: emptyTreeSelection(),
         busy: null,
         error: null,
       };
@@ -253,5 +264,17 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
 
     case 'candidate/clear':
       return { ...state, candidate: null, error: null };
+
+    case 'selection/set':
+      if (!state.snapshot) return state;
+      return {
+        ...state,
+        selection: setTreeSelection(state.selection, action.path, action.selected),
+        candidate: null,
+        error: null,
+      };
+
+    case 'selection/clear':
+      return { ...state, selection: emptyTreeSelection(), candidate: null, error: null };
   }
 }
