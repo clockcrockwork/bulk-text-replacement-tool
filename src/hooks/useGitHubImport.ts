@@ -28,6 +28,12 @@ import {
 } from '../lib/githubAuth';
 import { shortSha } from '../lib/inputSource';
 import {
+  hasAnySelection,
+  isPathSelected,
+  selectionMayContainSelected,
+  type GitHubTreeSelection,
+} from '../lib/githubSelection';
+import {
   currentStep,
   type GitHubImportState,
   githubImportReducer,
@@ -40,6 +46,74 @@ import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types
 const APP_CONFIG: GitHubAppConfig | null = readGitHubAppConfig(import.meta.env);
 
 const EXPIRED_NOTICE = 'GitHub との接続の有効期限が切れました。もう一度接続してください。';
+
+const BLOB_CONCURRENCY = 4;
+
+class GitHubBatchPreparationError extends Error {}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  signal: AbortSignal,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      const index = cursor;
+      cursor += 1;
+      const item = items[index];
+      if (item === undefined) continue;
+      results[index] = await worker(item);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+async function enumerateSelectedEntries(
+  api: GitHubClient,
+  snapshot: GitHubSnapshot,
+  selection: GitHubTreeSelection,
+  signal: AbortSignal,
+): Promise<GitHubTreeEntry[]> {
+  const queue: Array<{ path: string; treeSha: string }> = [
+    { path: '', treeSha: snapshot.treeSha },
+  ];
+  const files: GitHubTreeEntry[] = [];
+  const seen = new Set<string>();
+
+  while (queue.length > 0) {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    const step = queue.shift();
+    if (!step) break;
+    const tree = await api.getTree(snapshot, step.treeSha, step.path, signal);
+    if (tree.truncated) {
+      throw new GitHubBatchPreparationError(
+        `${step.path || 'ルート'} の一覧が途中で打ち切られたため、安全に一括取り込みできません。`,
+      );
+    }
+    for (const entry of tree.entries) {
+      if (entry.status === 'importable' && isPathSelected(selection, entry.path)) {
+        if (!seen.has(entry.path)) {
+          seen.add(entry.path);
+          files.push(entry);
+        }
+      } else if (
+        entry.status === 'dir' &&
+        selectionMayContainSelected(selection, entry.path)
+      ) {
+        queue.push({ path: entry.path, treeSha: entry.sha });
+      }
+    }
+  }
+
+  files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return files;
+}
+
 
 export interface GitHubImport {
   config: GitHubAppConfig | null;
@@ -66,6 +140,8 @@ export interface GitHubImport {
   selectFile: (entry: GitHubTreeEntry) => void;
   setSelected: (path: string, selected: boolean) => void;
   clearCandidate: () => void;
+  prepareSelection: () => void;
+  clearBatch: () => void;
   /** 取り込みを確定したあとに呼ぶ。ダイアログを閉じる。 */
   finish: () => void;
 }
@@ -163,6 +239,10 @@ export function useGitHubImport(): GitHubImport {
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
+        if (error instanceof GitHubBatchPreparationError) {
+          dispatch({ type: 'fail', error: { message: error.message, recover: 'dismiss' } });
+          return;
+        }
         if (error instanceof GitHubRequestError) {
           if (error.detail.kind === 'unauthorized') {
             dropConnection(describeGitHubError(error.detail));
@@ -187,6 +267,35 @@ export function useGitHubImport(): GitHubImport {
       .finally(() => {
         if (abortRef.current === controller) abortRef.current = null;
       });
+  };
+
+  const prepareSelection = (): void => {
+    const snapshot = state.snapshot;
+    const selection = state.selection;
+    if (!snapshot || !hasAnySelection(selection)) {
+      dispatch({
+        type: 'fail',
+        error: { message: '取り込むファイルまたはフォルダを選んでください。', recover: 'dismiss' },
+      });
+      return;
+    }
+
+    run(
+      '選択したファイルを準備しています',
+      async (api, signal) => {
+        const entries = await enumerateSelectedEntries(api, snapshot, selection, signal);
+        if (entries.length === 0) {
+          throw new GitHubBatchPreparationError('選択範囲に取り込めるファイルがありません。');
+        }
+        return mapWithConcurrency(entries, BLOB_CONCURRENCY, signal, async (entry) => {
+          const buffer = await api.getBlob(snapshot, entry.sha, signal);
+          const result = buildCandidate(snapshot, entry, buffer);
+          if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
+          return result.candidate;
+        });
+      },
+      (candidates) => dispatch({ type: 'batch/set', candidates }),
+    );
   };
 
   const loadRepositories = (): void => {
@@ -466,8 +575,12 @@ export function useGitHubImport(): GitHubImport {
       );
     },
     clearCandidate: () => dispatch({ type: 'candidate/clear' }),
+    prepareSelection,
+    clearBatch: () => dispatch({ type: 'batch/clear' }),
     finish: () => {
       dispatch({ type: 'candidate/clear' });
+      dispatch({ type: 'batch/clear' });
+      dispatch({ type: 'selection/clear' });
       dispatch({ type: 'close' });
     },
   };
