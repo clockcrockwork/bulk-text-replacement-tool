@@ -56,3 +56,15 @@ test('全画面エディタが開いて編集でき、閉じると反映され�
   await expect(page.locator('dialog.editor')).toHaveCount(0);
   await expect(page.locator('.input-card__preview')).toHaveValue('スマホから書き換え');
 });
+
+test('カード表示ではキーボード無しで複数行にできる', async ({ page }) => {
+  await goToTab(page, 'ルール');
+  await page.getByRole('button', { name: '1行目の置換先（A用）を複数行で編集' }).click();
+
+  const editor = page.locator('dialog.dialog--cell[open]');
+  await expect(editor).toBeVisible();
+  await editor.locator('textarea').fill('一行目\n二行目');
+  await editor.getByRole('button', { name: '完了' }).click();
+
+  await expect(page.locator('[data-cell="0:1"]')).toHaveText('一行目… [複数行]');
+});

@@ -9,12 +9,16 @@ export interface ConfirmRequest {
   details?: readonly string[];
   /** 実行ボタンの文言。結果が読める動詞にする（「削除する」など）。 */
   confirmLabel: string;
+  /** 2つめの選択肢。無ければ「キャンセル」と実行の2択。 */
+  altLabel?: string;
 }
+
+/** 利用者が選んだもの。閉じる・Escape・背景クリックは 'cancel'。 */
+export type ConfirmChoice = 'confirm' | 'alt' | 'cancel';
 
 interface ConfirmDialogProps {
   request: ConfirmRequest;
-  onConfirm: () => void;
-  onCancel: () => void;
+  onChoose: (choice: ConfirmChoice) => void;
 }
 
 /**
@@ -27,7 +31,7 @@ interface ConfirmDialogProps {
  *
  * 既定のフォーカスは「キャンセル」に置く。Enter の連打で破壊操作が通る状態を作らない。
  */
-export function ConfirmDialog({ request, onConfirm, onCancel }: ConfirmDialogProps): JSX.Element {
+export function ConfirmDialog({ request, onChoose }: ConfirmDialogProps): JSX.Element {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
 
@@ -46,10 +50,10 @@ export function ConfirmDialog({ request, onConfirm, onCancel }: ConfirmDialogPro
       aria-label={request.title}
       onCancel={(event) => {
         event.preventDefault();
-        onCancel();
+        onChoose('cancel');
       }}
       onClick={(event) => {
-        if (event.target === dialogRef.current) onCancel();
+        if (event.target === dialogRef.current) onChoose('cancel');
       }}
     >
       <div className="dialog__inner">
@@ -63,10 +67,15 @@ export function ConfirmDialog({ request, onConfirm, onCancel }: ConfirmDialogPro
           </ul>
         ) : null}
         <div className="dialog__actions">
-          <button ref={cancelRef} type="button" className="btn" onClick={onCancel}>
+          <button ref={cancelRef} type="button" className="btn" onClick={() => onChoose('cancel')}>
             キャンセル
           </button>
-          <button type="button" className="btn btn--primary" onClick={onConfirm}>
+          {request.altLabel ? (
+            <button type="button" className="btn" onClick={() => onChoose('alt')}>
+              {request.altLabel}
+            </button>
+          ) : null}
+          <button type="button" className="btn btn--primary" onClick={() => onChoose('confirm')}>
             {request.confirmLabel}
           </button>
         </div>

@@ -27,6 +27,7 @@ function state(overrides: Partial<WorkspaceState> = {}): WorkspaceState {
     groups: [GROUP_A, GROUP_B],
     rules: [],
     theme: 'light',
+    isSample: false,
     tab: 'input',
     ruleView: 'auto',
     editingId: null,
@@ -386,6 +387,7 @@ describe('workspace/replace', () => {
           groups: [{ id: 'gz', name: 'Z用' }],
           rules: [rule('rz', 'ぜっと')],
           theme: 'dark',
+          isSample: false,
         },
       },
     );
@@ -409,12 +411,58 @@ describe('workspace/replace', () => {
     });
     const next = workspaceReducer(before, {
       type: 'workspace/replace',
-      workspace: { inputs: [], groups: [GROUP_A], rules: [], theme: 'light' },
+      workspace: { inputs: [], groups: [GROUP_A], rules: [], theme: 'light', isSample: false },
     });
     expect(next.result).toBeNull();
     expect(next.lastSignature).toBeNull();
     expect(next.editingId).toBeNull();
     expect(next.outGroupId).toBeNull();
     expect(next.fileViews).toEqual({});
+  });
+});
+
+describe('サンプル状態', () => {
+  const sample = () => state({ isSample: true, inputs: [input('i1', 'サンプル本文')] });
+
+  it('中身に手を付けたらサンプルではなくなる', () => {
+    const edited = workspaceReducer(sample(), {
+      type: 'inputs/update',
+      id: 'i1',
+      patch: { text: '書き換えた' },
+    });
+    expect(edited.isSample).toBe(false);
+  });
+
+  it('タブやテーマの切り替えではサンプルのまま', () => {
+    expect(workspaceReducer(sample(), { type: 'tab/set', tab: 'rules' }).isSample).toBe(true);
+    expect(workspaceReducer(sample(), { type: 'theme/toggle' }).isSample).toBe(true);
+  });
+
+  it('片付けると空のグループ1つと空行だけが残る', () => {
+    const cleared = workspaceReducer(sample(), { type: 'sample/clear' });
+    expect(cleared.inputs).toEqual([]);
+    expect(cleared.groups).toHaveLength(1);
+    expect(cleared.rules).toHaveLength(1);
+    expect(cleared.rules[0]?.src).toBe('');
+    expect(cleared.isSample).toBe(false);
+    // 古い変換結果は別データのものなので捨てる。
+    expect(cleared.result).toBeNull();
+  });
+
+  it('片付けたあと元に戻せる', () => {
+    const before = sample();
+    const cleared = workspaceReducer(before, { type: 'sample/clear' });
+    const restored = workspaceReducer(cleared, {
+      type: 'sample/restore',
+      workspace: {
+        inputs: before.inputs,
+        groups: before.groups,
+        rules: before.rules,
+        theme: before.theme,
+        isSample: true,
+      },
+    });
+    expect(restored.inputs).toEqual(before.inputs);
+    expect(restored.isSample).toBe(true);
   });
 });

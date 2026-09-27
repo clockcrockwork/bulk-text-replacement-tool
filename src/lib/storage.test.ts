@@ -74,6 +74,8 @@ describe('loadWorkspace', () => {
       groups: [{ id: 'g1', name: 'A用' }],
       rules: [{ id: 'r1', src: 'a', regex: true, cs: false, order: 'seq', values: { g1: 'X' } }],
       theme: 'dark',
+      // 保存データに無ければサンプル扱いしない（古い保存データは実データ）。
+      isSample: false,
     });
   });
 
@@ -191,6 +193,7 @@ describe('saveWorkspace', () => {
       groups: [{ id: 'g1', name: 'A' }],
       rules: [],
       theme: 'light' as const,
+      isSample: false,
     };
     saveWorkspace(workspace);
     expect(JSON.parse(store[STORAGE_KEY] ?? '{}')).toEqual(workspace);
@@ -199,8 +202,26 @@ describe('saveWorkspace', () => {
   it('書き込みに失敗しても例外を投げない（入力を失わせない）', () => {
     stubStorage({}, true);
     expect(() =>
-      saveWorkspace({ inputs: [], groups: [], rules: [], theme: 'light' }),
+      saveWorkspace({ inputs: [], groups: [], rules: [], theme: 'light', isSample: false }),
     ).not.toThrow();
+  });
+});
+
+describe('loadWorkspace の isSample', () => {
+  it('保存されていれば引き継ぐ', () => {
+    stubStorage(
+      saved({ inputs: [], groups: [{ id: 'g1', name: 'A' }], rules: [], isSample: true }),
+    );
+    expect(loadWorkspace()?.isSample).toBe(true);
+  });
+
+  it('true 以外はサンプル扱いしない（古い保存データを実データとして守る）', () => {
+    for (const value of [undefined, 'true', 1, null]) {
+      stubStorage(
+        saved({ inputs: [], groups: [{ id: 'g1', name: 'A' }], rules: [], isSample: value }),
+      );
+      expect(loadWorkspace()?.isSample).toBe(false);
+    }
   });
 });
 

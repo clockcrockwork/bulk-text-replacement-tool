@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { formatCellPreview, isMultiline } from '../lib/format';
+import { Icon } from './Icon';
 import { multilineCellLabel } from './ruleTypes';
 
 interface RuleCellProps {
@@ -11,6 +12,13 @@ interface RuleCellProps {
   placeholder: string;
   onChange: (value: string) => void;
   onEdit: () => void;
+  /**
+   * 1行入力のときも「複数行で編集」ボタンを出すか。
+   *
+   * 表では Shift+Enter で開けるが、カード表示（＝狭い画面・タッチ）には
+   * キーボードが無いことがあるので、押せる入口を置く。
+   */
+  showEditButton?: boolean;
 }
 
 /**
@@ -28,6 +36,7 @@ export function RuleCell({
   placeholder,
   onChange,
   onEdit,
+  showEditButton = false,
 }: RuleCellProps): JSX.Element {
   if (isMultiline(value)) {
     return (
@@ -44,7 +53,7 @@ export function RuleCell({
     );
   }
 
-  return (
+  const input = (
     <input
       className={`cell-input ${className}`}
       data-cell={cell}
@@ -53,5 +62,22 @@ export function RuleCell({
       placeholder={placeholder}
       aria-label={label}
     />
+  );
+
+  if (!showEditButton) return input;
+
+  return (
+    <>
+      {input}
+      <button
+        type="button"
+        className="icon-btn icon-btn--bare icon-btn--compact"
+        onClick={onEdit}
+        title="複数行で編集"
+        aria-label={`${label}を複数行で編集`}
+      >
+        <Icon name="expand" size={15} />
+      </button>
+    </>
   );
 }

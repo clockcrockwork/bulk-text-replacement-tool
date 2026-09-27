@@ -1,18 +1,17 @@
 import { useCallback, useRef, useState } from 'react';
-import type { ConfirmRequest } from '../components/ConfirmDialog';
+import type { ConfirmChoice, ConfirmRequest } from '../components/ConfirmDialog';
 
 interface Pending {
   request: ConfirmRequest;
-  resolve: (ok: boolean) => void;
+  resolve: (choice: ConfirmChoice) => void;
 }
 
 export interface Confirm {
   /** 確認を出して、ユーザーの選択を待つ。 */
-  ask: (request: ConfirmRequest) => Promise<boolean>;
+  ask: (request: ConfirmRequest) => Promise<ConfirmChoice>;
   /** 表示中の確認。無ければ null。 */
   pending: ConfirmRequest | null;
-  accept: () => void;
-  reject: () => void;
+  choose: (choice: ConfirmChoice) => void;
 }
 
 /**
@@ -27,18 +26,18 @@ export function useConfirm(): Confirm {
   // 応答は1回だけ。二重に resolve しても後続を無視する。
   const pendingRef = useRef<Pending | null>(null);
 
-  const settle = useCallback((ok: boolean) => {
+  const settle = useCallback((choice: ConfirmChoice) => {
     const current = pendingRef.current;
     pendingRef.current = null;
     setPending(null);
-    current?.resolve(ok);
+    current?.resolve(choice);
   }, []);
 
   const ask = useCallback(
     (request: ConfirmRequest) =>
-      new Promise<boolean>((resolve) => {
+      new Promise<ConfirmChoice>((resolve) => {
         // 先に出ていた確認は、答えないまま消えるのでキャンセル扱いにする。
-        pendingRef.current?.resolve(false);
+        pendingRef.current?.resolve('cancel');
         const next = { request, resolve };
         pendingRef.current = next;
         setPending(next);
@@ -49,7 +48,6 @@ export function useConfirm(): Confirm {
   return {
     ask,
     pending: pending?.request ?? null,
-    accept: useCallback(() => settle(true), [settle]),
-    reject: useCallback(() => settle(false), [settle]),
+    choose: settle,
   };
 }

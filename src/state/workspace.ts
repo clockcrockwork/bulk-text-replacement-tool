@@ -38,6 +38,8 @@ export interface WorkspaceState {
   groups: Group[];
   rules: Rule[];
   theme: Theme;
+  /** 中身が初回のサンプルのままか。`src/types.ts` の説明を参照。 */
+  isSample: boolean;
 
   // ---- 画面の状態（永続化しない） ----
   tab: Tab;
@@ -96,7 +98,9 @@ export type WorkspaceAction =
   | { type: 'output/selectGroup'; id: string }
   | { type: 'output/setFileView'; key: string; view: FileView }
   | { type: 'cellEdit/open'; target: CellEditTarget }
-  | { type: 'cellEdit/close' };
+  | { type: 'cellEdit/close' }
+  | { type: 'sample/clear' }
+  | { type: 'sample/restore'; workspace: PersistedWorkspace };
 
 /** 置換元が空の新規行。表の末尾に置いて入力待ちにする。 */
 export function createEmptyRule(): Rule {
@@ -114,7 +118,10 @@ export function createInput(title: string, text = ''): InputText {
 /**
  * 初回訪問時に置くサンプル。使い方（グループ列・置換ルール）が一目で分かる状態にしておく。
  */
-function createDefaultState(): Pick<WorkspaceState, 'inputs' | 'groups' | 'rules' | 'theme'> {
+function createDefaultState(): Pick<
+  WorkspaceState,
+  'inputs' | 'groups' | 'rules' | 'theme' | 'isSample'
+> {
   const groupA = createGroup('A用');
   const groupB = createGroup('B用');
   return {
@@ -145,6 +152,8 @@ function createDefaultState(): Pick<WorkspaceState, 'inputs' | 'groups' | 'rules
       createEmptyRule(),
     ],
     theme: preferredTheme(),
+    // まだ誰も触っていないサンプル。実データが入ったら片付ける判断に使う。
+    isSample: true,
   };
 }
 
@@ -188,7 +197,35 @@ function patchById<T extends { id: string }>(
   return items.map((item) => (item.id === id ? ({ ...item, ...patch } as T) : item));
 }
 
+/**
+ * 中身に手を付けたら「サンプルのまま」ではなくなる action。
+ *
+ * 自動で片付けてよいのは**まだ誰も触っていないサンプル**だけ。1文字でも直したら
+ * ユーザーの作業なので、勝手に消さず手動の「サンプルを片付ける」に任せる。
+ */
+const TOUCHES_CONTENT = new Set<WorkspaceAction['type']>([
+  'inputs/add',
+  'inputs/addMany',
+  'inputs/update',
+  'inputs/remove',
+  'inputs/clear',
+  'groups/add',
+  'groups/rename',
+  'groups/remove',
+  'rules/add',
+  'rules/update',
+  'rules/setValue',
+  'rules/move',
+  'rules/remove',
+  'import/apply',
+]);
+
 export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction): WorkspaceState {
+  const next = reduce(state, action);
+  return TOUCHES_CONTENT.has(action.type) && next.isSample ? { ...next, isSample: false } : next;
+}
+
+function reduce(state: WorkspaceState, action: WorkspaceAction): WorkspaceState {
   switch (action.type) {
     case 'theme/toggle':
       return { ...state, theme: state.theme === 'dark' ? 'light' : 'dark' };
@@ -344,6 +381,26 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
 
     case 'output/setFileView':
       return { ...state, fileViews: { ...state.fileViews, [action.key]: action.view } };
+
+    case 'sample/clear':
+      // サンプルを片付ける。グループは空にできない（置換先を書く場所が無くなる）ので
+      // 1つだけ残し、名前も既定に戻す。
+      return {
+        ...state,
+        inputs: [],
+        groups: [createGroup('グループ1')],
+        rules: [createEmptyRule()],
+        isSample: false,
+        editingId: null,
+        result: null,
+        lastSignature: null,
+        outGroupId: null,
+        fileViews: {},
+        cellEdit: null,
+      };
+
+    case 'sample/restore':
+      return { ...state, ...action.workspace, result: null, lastSignature: null };
 
     case 'cellEdit/open':
       return { ...state, cellEdit: action.target };

@@ -58,6 +58,7 @@ export function RuleCards({
                 placeholder="置換元"
                 onChange={(value) => ruleHandlers.onChangeSrc(rule.id, value)}
                 onEdit={() => ruleHandlers.onEditCell(rule.id, null)}
+                showEditButton
               />
             </div>
             {error ? <div className="rule-card__error">{error}</div> : null}
@@ -77,6 +78,7 @@ export function RuleCards({
                     placeholder="（置換しない）"
                     onChange={(value) => ruleHandlers.onChangeValue(rule.id, group.id, value)}
                     onEdit={() => ruleHandlers.onEditCell(rule.id, group.id)}
+                    showEditButton
                   />
                   <span
                     className={`rule-card__hits hits${hit !== undefined && hit > 0 ? ' is-positive' : ''}`}

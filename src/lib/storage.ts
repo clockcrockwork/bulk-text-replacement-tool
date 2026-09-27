@@ -129,6 +129,8 @@ export function normalizeWorkspace(value: unknown): PersistedWorkspace | null {
     groups,
     rules: normalizeList(value.rules, normalizeRule, createId),
     theme: value.theme === 'dark' ? 'dark' : 'light',
+    // 古い保存データには無いので、既定は「サンプルではない」。
+    isSample: value.isSample === true,
   };
 }
 

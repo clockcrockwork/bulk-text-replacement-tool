@@ -216,3 +216,48 @@ test('Shift_JIS のファイルは読めるが、推測であることを知ら�
   await expect(page.locator('.toast')).toContainText('Shift_JIS として読み込みました');
   await expect(page.locator('.input-card__preview').nth(1)).toHaveValue('名前,太郎');
 });
+
+test.describe('同じ名前のファイルを入れ直したとき', () => {
+  const same = {
+    name: 'story.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from('直した本文'),
+  };
+
+  test('置き換えを選ぶと増えずに中身が新しくなる', async ({ page }) => {
+    await page.locator('input[type="file"]').first().setInputFiles([same]);
+
+    const dialog = page.locator('dialog.dialog--confirm[open]');
+    await expect(dialog.getByRole('heading')).toHaveText('同じ名前の入力があります');
+    await expect(dialog.locator('.dialog__details')).toContainText('story.md');
+    await dialog.getByRole('button', { name: '置き換える' }).click();
+
+    await expect(page.locator('.input-card')).toHaveCount(1);
+    await expect(page.locator('.input-card__preview')).toHaveValue('直した本文');
+  });
+
+  test('別の入力として追加も選べる', async ({ page }) => {
+    await page.locator('input[type="file"]').first().setInputFiles([same]);
+    await page
+      .locator('dialog.dialog--confirm')
+      .getByRole('button', { name: '別の入力として追加' })
+      .click();
+
+    await expect(page.locator('.input-card')).toHaveCount(2);
+    await expect(page.locator('.input-card__preview').first()).toHaveValue(
+      'アリスとビルが並ぶ。アリスは笑った。\n',
+    );
+  });
+
+  test('キャンセルすれば何も起きない', async ({ page }) => {
+    await page.locator('input[type="file"]').first().setInputFiles([same]);
+    await page
+      .locator('dialog.dialog--confirm')
+      .getByRole('button', { name: 'キャンセル' })
+      .click();
+    await expect(page.locator('.input-card')).toHaveCount(1);
+    await expect(page.locator('.input-card__preview')).toHaveValue(
+      'アリスとビルが並ぶ。アリスは笑った。\n',
+    );
+  });
+});

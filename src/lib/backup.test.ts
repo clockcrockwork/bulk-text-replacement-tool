@@ -10,6 +10,7 @@ const WORKSPACE: PersistedWorkspace = {
     { id: 'r2', src: '', regex: false, cs: true, order: 'sim', values: {} },
   ],
   theme: 'dark',
+  isSample: false,
 };
 
 const AT = new Date('2026-09-26T12:00:00.000Z');

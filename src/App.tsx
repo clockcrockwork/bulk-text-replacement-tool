@@ -29,7 +29,7 @@ import { Toast } from './components/Toast';
 import { useConfirm } from './hooks/useConfirm';
 import { useNarrowScreen } from './hooks/useNarrowScreen';
 import { usePersistedWorkspace } from './hooks/usePersistedWorkspace';
-import { useToast } from './hooks/useToast';
+import { type ToastAction, useToast } from './hooks/useToast';
 import { buildBackup, parseBackup } from './lib/backup';
 import { copyText, downloadBlob } from './lib/browser';
 import { collectRuleErrors, findUnmatchedRules } from './lib/diagnostics';
@@ -65,7 +65,7 @@ function hasFiles(event: DragEvent): boolean {
 
 export function App(): JSX.Element {
   const [state, dispatch] = useReducer(workspaceReducer, undefined, initWorkspace);
-  const { message: toast, flash } = useToast();
+  const { toast, flash, dismiss: dismissToast } = useToast();
   const confirm = useConfirm();
   const narrow = useNarrowScreen();
 
@@ -105,9 +105,9 @@ export function App(): JSX.Element {
   const exportBackup = (): void => {
     guard('作業データの書き出し', () => {
       const at = new Date();
-      const { inputs, groups, rules, theme } = state;
+      const { inputs, groups, rules, theme, isSample } = state;
       downloadBlob(
-        new Blob([buildBackup({ inputs, groups, rules, theme }, at)], {
+        new Blob([buildBackup({ inputs, groups, rules, theme, isSample }, at)], {
           type: 'application/json',
         }),
         `bulk-replace-workspace-${timestampForFileName(at)}.json`,
@@ -168,9 +168,75 @@ export function App(): JSX.Element {
 
   // ---- 入力 ----------------------------------------------------------------
 
+  /**
+   * まだ手を付けていないサンプルなら片付ける。
+   *
+   * サンプルを残したまま実原稿を足すと、結果にサンプルが並び、サンプルのルールが
+   * 実原稿に当たる。最初にファイルを入れて使い始めるという一番自然な流れで踏むので、
+   * 予防としてここで外す。編集済みのサンプルは手動の「サンプルを片付ける」に任せる。
+   */
+  const clearSampleBeforeAdding = (): ToastAction | undefined => {
+    if (!state.isSample) return undefined;
+    const snapshot: PersistedWorkspace = {
+      inputs: state.inputs,
+      groups: state.groups,
+      rules: state.rules,
+      theme: state.theme,
+      isSample: true,
+    };
+    dispatch({ type: 'sample/clear' });
+    // 呼び出し側が自分のトーストを出すので、ここでは出さずに取り消し手段だけ返す。
+    // 別々に出すと、あとから出た方が前のトーストを消してしまう。
+    return {
+      label: '元に戻す',
+      onClick: () => dispatch({ type: 'sample/restore', workspace: snapshot }),
+    };
+  };
+
   const addFiles = async (list: FileList | null): Promise<void> => {
     if (!list || list.length === 0) return;
     const { inputs, skipped, guessedShiftJis } = await readInputFiles(list);
+    if (inputs.length === 0) {
+      flash(`${skipped}件は非対応形式のためスキップしました`);
+      return;
+    }
+
+    // 同じ名前の入力が既にあると、更新したつもりが2件に増える。
+    // 外部エディタで直して同じファイルを入れ直す、という流れは自然なので確認する。
+    const existingTitles = new Set(state.inputs.map((input) => input.title));
+    const duplicated = inputs.filter((input) => existingTitles.has(input.title));
+    let replaceExisting = false;
+    if (duplicated.length > 0) {
+      const choice = await confirm.ask({
+        title: '同じ名前の入力があります',
+        message: '中身を新しいものに置き換えますか。別の入力として増やすこともできます。',
+        details: duplicated.map((input) => input.title),
+        confirmLabel: '置き換える',
+        altLabel: '別の入力として追加',
+      });
+      if (choice === 'cancel') return;
+      replaceExisting = choice === 'confirm';
+    }
+
+    const undoSample = clearSampleBeforeAdding();
+
+    if (replaceExisting) {
+      for (const input of inputs) {
+        const existing = state.inputs.find((candidate) => candidate.title === input.title);
+        if (existing) {
+          dispatch({ type: 'inputs/update', id: existing.id, patch: { text: input.text } });
+        }
+      }
+      const added = inputs.filter((input) => !existingTitles.has(input.title));
+      if (added.length > 0) dispatch({ type: 'inputs/addMany', inputs: added });
+      flash(
+        `${duplicated.length}件を置き換えました` +
+          (added.length > 0 ? ` · ${added.length}件を追加しました` : ''),
+        undoSample,
+      );
+      return;
+    }
+
     dispatch({ type: 'inputs/addMany', inputs });
     flash(
       `${inputs.length}件のファイルを追加しました` +
@@ -179,7 +245,9 @@ export function App(): JSX.Element {
         // 黙って取り込まず、目で確かめてもらう。
         (guessedShiftJis.length > 0
           ? ` · ${guessedShiftJis.length}件は Shift_JIS として読み込みました（文字化けが無いか確認してください）`
-          : ''),
+          : '') +
+        (undoSample ? ' · サンプルを片付けました' : ''),
+      undoSample,
     );
   };
 
@@ -228,7 +296,7 @@ export function App(): JSX.Element {
    * （React のエラー境界も、非同期の続きでは拾えない）。
    */
   const confirmThen = async (request: ConfirmRequest, action: () => void): Promise<void> => {
-    if (await confirm.ask(request)) guard('操作', action);
+    if ((await confirm.ask(request)) === 'confirm') guard('操作', action);
   };
 
   const run = (): void => {
@@ -334,7 +402,7 @@ export function App(): JSX.Element {
           ? [`失われるルール ${losing}行`, `失われるグループ ${state.groups.length}件`]
           : []),
       ];
-      const ok = await confirm.ask({
+      const choice = await confirm.ask({
         title: replacing ? '現在のルール表を置き換える' : '列数が合わない行があります',
         message: replacing
           ? '取り消せません。書き出していないルールは失われます。'
@@ -342,7 +410,7 @@ export function App(): JSX.Element {
         details,
         confirmLabel: replacing ? '置き換える' : 'このまま読み込む',
       });
-      if (!ok) return;
+      if (choice !== 'confirm') return;
     }
 
     guard('表の読み込み', () => {
@@ -500,7 +568,14 @@ export function App(): JSX.Element {
             fileInputRef={fileInputRef}
             onPickFiles={() => fileInputRef.current?.click()}
             onFilesSelected={onFilesSelected}
+            isSample={state.isSample}
+            onClearSample={() => {
+              const undo = clearSampleBeforeAdding();
+              flash('サンプルを片付けました', undo);
+            }}
             onAddInput={() => {
+              const undo = clearSampleBeforeAdding();
+              if (undo) flash('サンプルを片付けました', undo);
               const input = createInput(`text-${state.inputs.length + 1}.txt`);
               dispatch({ type: 'inputs/add', input });
               openEditor(input.id, 0, 0);
@@ -630,14 +705,10 @@ export function App(): JSX.Element {
       ) : null}
 
       {confirm.pending ? (
-        <ConfirmDialog
-          request={confirm.pending}
-          onConfirm={confirm.accept}
-          onCancel={confirm.reject}
-        />
+        <ConfirmDialog request={confirm.pending} onChoose={confirm.choose} />
       ) : null}
 
-      {toast ? <Toast message={toast} /> : null}
+      {toast ? <Toast toast={toast} onAction={dismissToast} /> : null}
     </div>
   );
 }

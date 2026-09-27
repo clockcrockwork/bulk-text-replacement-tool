@@ -15,6 +15,9 @@ export interface InputPanelProps {
   onPickFiles: () => void;
   onFilesSelected: (event: ChangeEvent<HTMLInputElement>) => void;
   onAddInput: () => void;
+  /** 中身が初回のサンプルのままか。 */
+  isSample: boolean;
+  onClearSample: () => void;
   onClearInputs: () => void;
   onRenameInput: (id: string, title: string) => void;
   onRemoveInput: (id: string) => void;
@@ -28,6 +31,8 @@ export function InputPanel({
   onPickFiles,
   onFilesSelected,
   onAddInput,
+  isSample,
+  onClearSample,
   onClearInputs,
   onRenameInput,
   onRemoveInput,
@@ -73,6 +78,18 @@ export function InputPanel({
           onChange={onFilesSelected}
         />
       </div>
+
+      {isSample ? (
+        <div className="sample-notice" role="status">
+          <span>
+            いまはサンプルのデータです。原稿を取り込むと自動で片付きます。
+            試したあと自分で消したいときはこちら。
+          </span>
+          <button type="button" className="btn btn--small" onClick={onClearSample}>
+            サンプルを片付ける
+          </button>
+        </div>
+      ) : null}
 
       <div className="section-head">
         <div className="section-head__title">入力テキスト</div>

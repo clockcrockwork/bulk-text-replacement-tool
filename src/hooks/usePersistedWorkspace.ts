@@ -12,7 +12,7 @@ const SAVE_DEBOUNCE_MS = 400;
  * あるので `pagehide` と `visibilitychange` を見る。
  */
 export function usePersistedWorkspace(workspace: PersistedWorkspace): boolean {
-  const { inputs, groups, rules, theme } = workspace;
+  const { inputs, groups, rules, theme, isSample } = workspace;
   /**
    * 直近の値。イベント時に依存配列を気にせず取り出せるようにしておく。
    * レンダー中に書くと、破棄されたレンダー（Strict Mode の二重呼び出しや中断された
@@ -29,17 +29,16 @@ export function usePersistedWorkspace(workspace: PersistedWorkspace): boolean {
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    latest.current = { inputs, groups, rules, theme };
+    latest.current = { inputs, groups, rules, theme, isSample };
     const timer = setTimeout(() => {
-      setFailed(!saveWorkspace({ inputs, groups, rules, theme }));
+      setFailed(!saveWorkspace({ inputs, groups, rules, theme, isSample }));
     }, SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [inputs, groups, rules, theme]);
+  }, [inputs, groups, rules, theme, isSample]);
 
   useEffect(() => {
     const flush = (): void => {
-      const { inputs: i, groups: g, rules: r, theme: t } = latest.current;
-      setFailed(!saveWorkspace({ inputs: i, groups: g, rules: r, theme: t }));
+      setFailed(!saveWorkspace(latest.current));
     };
     const onVisibilityChange = (): void => {
       if (document.visibilityState === 'hidden') flush();
