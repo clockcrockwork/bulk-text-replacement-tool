@@ -509,8 +509,8 @@ function Explorer({
   }, [listing, filter]);
 
   const known = useMemo(
-    () => summarizeKnownSelection(selection, listing?.entries ?? []),
-    [selection, listing],
+    () => summarizeKnownSelection(selection, Object.values(state.knownEntries)),
+    [selection, state.knownEntries],
   );
 
   return (
@@ -566,7 +566,7 @@ function Explorer({
       </div>
 
       <p className="github__selection-summary" role="status">
-        読み込み済みのこの階層で選択中: {known.files}ファイル
+        読み込み済み範囲で選択中: {known.files}ファイル
         {known.bytes > 0 ? ` · ${formatBytes(known.bytes)}` : ''}
         {filter ? '（絞り込みで隠れた選択は解除されません）' : ''}
       </p>
