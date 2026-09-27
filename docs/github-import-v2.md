@@ -212,6 +212,8 @@ A directory does not need to be expanded to be selected.
 
 Use a native checkbox where possible. Directory navigation and directory selection are separate controls: the checkbox changes selection; the directory name/button opens it. Do not make mobile users depend on a small disclosure arrow or hover target.
 
+The explorer header also exposes a checkbox for **the current directory itself**. This is how the repository root can be selected without inventing a fake parent row. Its checked/mixed state follows the same selection rules as every other directory.
+
 ### Search / filter
 
 Slice 2 search is a **filter of the currently loaded directory**, not a repository-wide code search and not a reason to recursively enumerate the repository.
@@ -232,6 +234,8 @@ Before enumeration, show:
 - explicitly/known selected file count
 - selected directory count that still requires enumeration
 - known selected bytes from loaded file entries
+
+All summary counts are based on deduplicated repository paths; nested visible selections must not double-count a file already selected through an ancestor directory.
 
 After enumeration and before blob download, replace that with the exact supported-file count and exact total bytes from tree entries.
 
@@ -279,8 +283,6 @@ Never merge a truncated recursive result with fallback results and call it compl
 The fallback traversal may use bounded concurrency, but it shares the same global GitHub-request concurrency budget as blob fetching. Start at **4 or fewer concurrent requests**.
 
 If a selected directory contains a more-specific exclusion, the exclusion is applied after enumeration. A more-specific include below an excluded ancestor is also honored by the longest-path-rule semantics.
-
-If a recursive response is truncated, fall back to non-recursive subtree traversal. Never treat a truncated tree as a complete successful selection.
 
 Paginated listings (installations, repositories, branches) follow `Link: rel="next"` up to a safety cap. If the cap is reached while a next page still exists, the listing fails explicitly instead of returning a partial list, so "does not exist" is never confused with "not loaded".
 
