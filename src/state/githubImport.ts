@@ -1,8 +1,8 @@
 import type { GitHubCandidate } from '../lib/githubApi';
 import {
   emptyTreeSelection,
-  setTreeSelection,
   type GitHubTreeSelection,
+  setTreeSelection,
 } from '../lib/githubSelection';
 import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types';
 
@@ -275,7 +275,13 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
       // 取得中にスナップショットを変えていたら、古いコミットの内容なので使わない。
       if (state.snapshot?.commitSha !== action.candidate.source.commitSha) return state;
       if (state.snapshot.repository.id !== action.candidate.source.repositoryId) return state;
-      return { ...state, candidate: action.candidate, batchCandidates: null, busy: null, error: null };
+      return {
+        ...state,
+        candidate: action.candidate,
+        batchCandidates: null,
+        busy: null,
+        error: null,
+      };
 
     case 'candidate/clear':
       return { ...state, candidate: null, error: null };
@@ -291,7 +297,13 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
       ) {
         return state;
       }
-      return { ...state, candidate: null, batchCandidates: action.candidates, busy: null, error: null };
+      return {
+        ...state,
+        candidate: null,
+        batchCandidates: action.candidates,
+        busy: null,
+        error: null,
+      };
 
     case 'batch/clear':
       return { ...state, batchCandidates: null, error: null };
