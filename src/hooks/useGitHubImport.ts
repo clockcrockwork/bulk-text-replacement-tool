@@ -12,10 +12,12 @@ import {
   callbackUrl,
   codeChallengeS256,
   describeCallbackFailure,
+  describeTokenExchangeFailure,
   type GitHubAppConfig,
   type GitHubToken,
   installationUrl,
   isTokenUsable,
+  nonCanonicalTarget,
   PENDING_AUTH_KEY,
   parsePendingAuth,
   parseTokenResponse,
@@ -45,6 +47,11 @@ export interface GitHubImport {
   config: GitHubAppConfig | null;
   /** App のインストール・権限設定の画面。 */
   installUrl: string | null;
+  /**
+   * 正規でないオリジンで開かれているとき、正規のオリジンの URL。接続は始めさせない。
+   * 正規のオリジン（または固定していない配信）なら null。
+   */
+  canonicalUrl: string | null;
   state: GitHubImportState;
   open: () => void;
   close: () => void;
@@ -123,6 +130,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
   /** 直前に失敗した操作。「再試行」で同じことをやり直す。 */
   const lastTask = useRef<(() => void) | null>(null);
   const handledCallback = useRef(false);
+  const canonicalUrl = APP_CONFIG ? nonCanonicalTarget(APP_CONFIG, window.location.origin) : null;
 
   /** 進行中の取得を止めて、新しい取得の中断口を作る。 */
   const begin = (): AbortController => {
@@ -290,9 +298,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       });
       const token = response.ok ? parseTokenResponse(await response.json(), Date.now()) : null;
       if (!token) {
-        dropConnection(
-          `GitHub との接続に失敗しました（トークンの交換に失敗: ${response.status}）。もう一度接続してください。`,
-        );
+        dropConnection(describeTokenExchangeFailure(response.status));
         return;
       }
       tokenRef.current = token;
@@ -353,7 +359,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const connect = async (): Promise<void> => {
-    if (!APP_CONFIG || state.connection !== 'disconnected') return;
+    if (!APP_CONFIG || canonicalUrl || state.connection !== 'disconnected') return;
     // 押した時点で「接続中」にしてボタンを止める。二重に押すと認可が2本走り、
     // 保存した state と戻ってきた state が食い違う。
     dispatch({ type: 'connect/start' });
@@ -400,6 +406,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
   return {
     config: APP_CONFIG,
     installUrl: APP_CONFIG ? installationUrl(APP_CONFIG) : null,
+    canonicalUrl,
     state,
     open: () => {
       dispatch({ type: 'open' });

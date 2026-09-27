@@ -53,12 +53,26 @@ Environment は **Production** にだけ設定する（Preview の URL は callb
 | --- | --- | --- |
 | `VITE_GITHUB_APP_CLIENT_ID` | App の Client ID | ブラウザ（ビルド時に埋め込み）と Function |
 | `VITE_GITHUB_APP_SLUG` | App の slug | ブラウザ（インストール画面への案内） |
+| `VITE_GITHUB_APP_ORIGIN` | `https://bulk-text-replacement-tool.vercel.app` | ブラウザ（正規のオリジンの判定） |
 | `GITHUB_APP_CLIENT_SECRET` | App の client secret（**Sensitive** にする） | Function だけ |
 | `GITHUB_OAUTH_ALLOWED_ORIGINS` | `https://bulk-text-replacement-tool.vercel.app` | Function だけ |
 | `GITHUB_OAUTH_REDIRECT_URIS` | `https://bulk-text-replacement-tool.vercel.app/` | Function だけ |
 
-- `VITE_` で始まる2つは公開値で、ビルドに埋め込まれる。**設定したら再デプロイが必要**。
-  未設定のビルドでは「GitHubから追加」ボタンが無効になる
+- `VITE_` で始まる3つは公開値で、ビルドに埋め込まれる。**設定したら再デプロイが必要**。
+  Client ID と slug が未設定のビルドでは「GitHubから追加」ボタンが無効になる
+- `VITE_GITHUB_APP_ORIGIN` は、GitHub App の Callback URL と `GITHUB_OAUTH_ALLOWED_ORIGINS` に
+  登録した**正規のオリジン**（パスを付けない。末尾の `/` は付けても付けなくてもよい）。
+  - Production のビルドは、別名（`bulk-text-replacement-tool-<team>.vercel.app` などの
+    エイリアスや、追加した独自ドメイン）でも開ける。そこから接続を始めると
+    `redirect_uri` が Callback URL と一致せず、GitHub の画面かトークン交換で必ず失敗する
+  - 設定したビルドは、正規でないオリジンでは「GitHubに接続」を押せなくし、正規の URL への
+    リンクを出す（新しいタブで開く）。自動では移動させない。PKCE の verifier（sessionStorage）と
+    作業データ（localStorage）はオリジンごとに分かれていて、移った先には引き継がれないため
+  - 未設定なら固定しない（開いているオリジンをそのまま使う。ローカル開発向け）。
+    書いてあるのにオリジンとして読めない値（パス付き・`http://` の公開ホストなど）なら、
+    GitHub 連携ごと無効になる。平文の `http://` は `localhost` / `127.0.0.1` だけ受け付ける
+  - 独自ドメインへ正規のオリジンを移すときは、この値・2つの許可リスト・Callback URL を
+    同時に変える
 - 許可リストはカンマ区切りで複数書ける。独自ドメインを足すときは両方に足し、
   GitHub App の Callback URL にも同じ URL を追加する
 - client secret は `VITE_` を付けない（付けるとブラウザに配られる）
@@ -95,8 +109,8 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
 - メソッドでは絞らない（POST 以外も Function を起動する。405 を返すだけでも実行回数に数えられる）
 - 値の根拠: 正規の利用者が交換するのは「GitHubに接続」1回につき1回だけ。
   接続のやり直しを何度か続けても 1 分に 10 回には届かない
-- 超過した利用者の画面には「トークンの交換に失敗: 429」と出るだけで、作業データは失われない
-  （もう一度接続すれば済む）
+- 超過した利用者の画面には「一時的に制限されています。1分ほど待ってから、もう一度接続して
+  ください」と出る（`describeTokenExchangeFailure`）。作業データは失われない
 - 作成後に **Review Changes → Publish** で反映する（保存しただけでは効かない）
 - プランによって使えるルール数・窓の長さ・キーの種類が異なる。上の値が選べないときは、
   「IP ごとに 1 分あたり数回〜十数回」に最も近い設定にする
@@ -113,6 +127,8 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
 | `Content-Security-Policy` | `frame-ancestors 'none'` | 他サイトの iframe に埋め込ませない（クリックジャッキング）。meta の CSP では `frame-ancestors` を指定できないためヘッダで送る |
 | `X-Frame-Options` | `DENY` | `frame-ancestors` を解さない古いブラウザ向け |
 | `X-Content-Type-Options` | `nosniff` | 配信物を宣言と違う型として解釈させない |
+| `Cross-Origin-Opener-Policy` | `same-origin` | 他サイトが `window.open` でこのページを開いても、ウィンドウ参照（`opener`）を持たせない |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=(), usb=(), display-capture=()` | 使っていない強い機能を閉じる（多層防御）。クリップボードはコピーで使うので閉じない |
 | `Referrer-Policy` | `strict-origin` | Referer をオリジンまでに絞る。認可から戻った直後は `/?code=…&state=…` のまま HTML が開き、`history.replaceState` を走らせる JS 自体と Google Fonts はその前に読まれる。ブラウザ既定の `strict-origin-when-cross-origin` は**同一オリジンの要求には URL 全体を送る**ので、`/assets/*.js` の Referer に code と state が載り、配信側のログに残り得る |
 
 - 本体の CSP（`connect-src` など）は `index.html` の meta にあり、ヘッダの CSP はそれに
@@ -124,6 +140,12 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
   交換が 403 で止まる。`strict-origin` なら HTTPS のページからの要求には常に Origin が付く
   （E2E が、交換に Origin が付くことと、戻り直後の要求の Referer に code / state が無いことを
   確かめている）
+- COOP を `same-origin` にすると、github.com へ移って戻る OAuth の往復で
+  ブラウジングコンテキストグループが切り替わる。state と PKCE の verifier は sessionStorage に
+  あるので、切り替えのあとも残っている必要がある。E2E（`e2e/github.spec.ts`）はこのヘッダの下で
+  Chromium と WebKit の往復を通しているが、Playwright の WebKit は Safari そのものではないので、
+  **実機の Safari（macOS と iOS）では §5 の 10 で確かめる**。インストール画面は
+  `rel="noreferrer"`（`noopener` を含む）の新しいタブで開くので、COOP で壊れる参照は無い
 - ヘッダを無視する配信先のために、`index.html` にも `<meta name="referrer">` で同じ方針を書いている
 - `/api/` の応答は Function が自前でヘッダを付ける（`Referrer-Policy: no-referrer` など）ので対象外にしている
 - `vite preview`（E2E の配信元）も `vercel.json` から**ヘッダの値**を読んで返す（`vite.config.ts`）。
@@ -159,4 +181,10 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
    done
    ```
 
-   確かめたあとは窓（60 秒）が明けるまで、同じ IP からは接続できない
+   確かめたあとは窓（60 秒）が明けるまで、同じ IP からは接続できない。この間に接続すると、
+   画面に「1分ほど待ってから」の案内が出ること
+10. **実機の Safari（macOS と iOS）**で 1〜4 を通すこと。COOP（§4）によるブラウジング
+    コンテキストグループの切り替えのあとも、戻った画面で「接続の確認に失敗しました」
+    「この画面で始めた接続ではない」が出ずにリポジトリの一覧まで進めば、sessionStorage は残っている
+11. 正規でないオリジン（例: Vercel の Deployment 画面にある Production の別名）で開くと、
+    「GitHubに接続」が押せず、正規の URL へのリンクが出ること

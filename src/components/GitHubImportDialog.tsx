@@ -2,6 +2,7 @@ import { type JSX, type RefObject, useEffect, useRef, useState } from 'react';
 import { formatTextMeta } from '../lib/format';
 import { describeEntryStatus, formatBytes } from '../lib/githubApi';
 import { formatSourceDetail, shortSha } from '../lib/inputSource';
+import { revealUnsafeChars as reveal } from '../lib/revealText';
 import type { GitHubImportState } from '../state/githubImport';
 import type { GitHubRepository, GitHubTreeEntry } from '../types';
 import { Icon } from './Icon';
@@ -37,6 +38,8 @@ interface GitHubImportDialogProps {
   state: GitHubImportState;
   handlers: GitHubDialogHandlers;
   installUrl: string | null;
+  /** 正規でないオリジンで開かれているとき、正規のオリジンの URL（`useGitHubImport`）。 */
+  canonicalUrl: string | null;
   /**
    * ブラウザへの保存に失敗しているか。
    * 認可は画面遷移を伴うので、保存できていない作業はそこで失われる。
@@ -65,11 +68,16 @@ function viewKey(state: GitHubImportState): string {
  * 同意 → 接続 → リポジトリ → ブランチ（ここでコミットを固定）→ フォルダを辿って
  * 1ファイルを選ぶ → 内容を確かめて入力に追加、の順。タップだけで進められるよう、
  * 選択肢はすべてボタンの一覧にしている。
+ *
+ * GitHub から来た名前（リポジトリ・ブランチ・パス・ファイル名）は `reveal` を通して描画する。
+ * 双方向制御文字をそのまま出すと、一覧の見た目と違うファイルを選ばせる偽装ができる。
+ * 変えるのは表示だけで、選んだ項目・出自・タイトルは元の文字列のまま扱う。
  */
 export function GitHubImportDialog({
   state,
   handlers,
   installUrl,
+  canonicalUrl,
   saveFailed,
   sameSource,
   titleCollision,
@@ -126,6 +134,7 @@ export function GitHubImportDialog({
         ) : (
           <ConsentView
             state={state}
+            canonicalUrl={canonicalUrl}
             saveFailed={saveFailed}
             headingRef={headingRef}
             onConnect={handlers.connect}
@@ -188,6 +197,7 @@ export function GitHubImportDialog({
 
 interface ConsentViewProps {
   state: GitHubImportState;
+  canonicalUrl: string | null;
   saveFailed: boolean;
   headingRef: RefObject<HTMLHeadingElement | null>;
   onConnect: () => void;
@@ -197,7 +207,13 @@ interface ConsentViewProps {
  * GitHub へ遷移する前の説明。何を許可し、何が起きないかを先に見せる。
  * GitHub の権限はリポジトリ単位なので、「選んだファイルだけ」の保証はこのアプリ側の約束になる。
  */
-function ConsentView({ state, saveFailed, headingRef, onConnect }: ConsentViewProps): JSX.Element {
+function ConsentView({
+  state,
+  canonicalUrl,
+  saveFailed,
+  headingRef,
+  onConnect,
+}: ConsentViewProps): JSX.Element {
   const connecting = state.connection === 'connecting';
   return (
     <section className="github__consent" aria-label="GitHub との接続">
@@ -216,7 +232,9 @@ function ConsentView({ state, saveFailed, headingRef, onConnect }: ConsentViewPr
           どのリポジトリを許可するかは GitHub の画面で選びます。
         </li>
         <li>
-          このアプリが取得するのは、この画面で選んだ対応ファイル（.md / .txt / .tex）だけです。
+          一覧を出すために、許可したリポジトリ・ブランチ・フォルダの情報（名前・コミット・一覧）を取得します。
+          <strong>本文を取得するのは、この画面で選んだファイルだけ</strong>
+          です（対応形式は .md / .txt / .tex）。
         </li>
         <li>
           接続の資格情報は保存しません。再読み込みやタブを閉じたあとは、もう一度接続が必要です。
@@ -225,7 +243,28 @@ function ConsentView({ state, saveFailed, headingRef, onConnect }: ConsentViewPr
           取り込んだ本文は、手で追加した原稿と同じくこのブラウザの中に保存されます。
           リポジトリの内容がこのサイトのサーバーを経由することはありません。
         </li>
+        <li>
+          取り込んだ入力には、取り込み元（owner/repo・ブランチ・パス・コミットの SHA）も記録します。
+          これはこのブラウザ（localStorage）に保存され、作業データの書き出しにも含まれます。
+        </li>
       </ul>
+      {canonicalUrl ? (
+        <div className="dialog__error github__origin" role="alert">
+          <p>
+            このアドレスでは GitHub に接続できません。GitHub App に登録してある
+            正規のアドレスで開き直してください。
+          </p>
+          <p>
+            <a href={canonicalUrl} target="_blank" rel="noreferrer">
+              {canonicalUrl} を開く
+            </a>
+          </p>
+          <p>
+            作業データはアドレスごとにブラウザへ保存されるため、移った先には引き継がれません。
+            必要なら先に作業データを書き出してください。
+          </p>
+        </div>
+      ) : null}
       {saveFailed ? (
         <p className="dialog__error" role="alert">
           いまブラウザへの保存に失敗しています。接続では GitHub の画面へ移動するため、
@@ -237,7 +276,7 @@ function ConsentView({ state, saveFailed, headingRef, onConnect }: ConsentViewPr
           type="button"
           className="btn btn--primary"
           onClick={onConnect}
-          disabled={connecting || saveFailed}
+          disabled={connecting || saveFailed || canonicalUrl !== null}
         >
           <Icon name="branch" size={15} />
           <span>GitHubに接続</span>
@@ -308,7 +347,7 @@ function ConnectedView(props: ConnectedViewProps): JSX.Element | null {
                 onClick={() => handlers.selectRepository(candidate)}
               >
                 <span className="github__entry-name">
-                  {candidate.owner}/{candidate.name}
+                  {reveal(`${candidate.owner}/${candidate.name}`)}
                 </span>
                 {candidate.private ? <span className="tag">private</span> : null}
               </button>
@@ -360,15 +399,13 @@ function RepositoryContext({
       <dl className="github__facts">
         <div>
           <dt>リポジトリ</dt>
-          <dd>
-            {repository.owner}/{repository.name}
-          </dd>
+          <dd>{reveal(`${repository.owner}/${repository.name}`)}</dd>
         </div>
         {snapshot ? (
           <>
             <div>
               <dt>ブランチ</dt>
-              <dd>{snapshot.ref}</dd>
+              <dd>{reveal(snapshot.ref)}</dd>
             </div>
             <div>
               <dt>固定したコミット</dt>
@@ -433,7 +470,7 @@ function BranchList({
                   onClick={() => handlers.selectBranch(name)}
                 >
                   <Icon name="branch" size={15} />
-                  <span className="github__entry-name">{name}</span>
+                  <span className="github__entry-name">{reveal(name)}</span>
                   {name === defaultBranch ? <span className="tag">既定</span> : null}
                   {name === current ? <span className="tag">表示中</span> : null}
                 </button>
@@ -473,7 +510,9 @@ function Explorer({
       <nav className="github__crumbs" aria-label="現在の場所">
         <ol>
           {trail.map((step, index) => {
-            const label = index === 0 ? rootLabel : step.path.slice(step.path.lastIndexOf('/') + 1);
+            const label = reveal(
+              index === 0 ? rootLabel : step.path.slice(step.path.lastIndexOf('/') + 1),
+            );
             const last = index === trail.length - 1;
             return (
               <li key={step.path || '/'}>
@@ -515,7 +554,7 @@ function Explorer({
         listing.entries.length === 0 ? (
           <p className="dialog__lead">このフォルダには何もありません。</p>
         ) : (
-          <ul className="github__list" aria-label={here.path || rootLabel}>
+          <ul className="github__list" aria-label={reveal(here.path || rootLabel)}>
             {listing.entries.map((entry) => (
               <li key={entry.sha + entry.name}>
                 <TreeEntryRow entry={entry} handlers={handlers} />
@@ -543,7 +582,7 @@ function TreeEntryRow({
         onClick={() => handlers.enterDirectory(entry)}
       >
         <Icon name="folder" size={16} />
-        <span className="github__entry-name">{entry.name}/</span>
+        <span className="github__entry-name">{reveal(entry.name)}/</span>
       </button>
     );
   }
@@ -551,7 +590,7 @@ function TreeEntryRow({
     return (
       <button type="button" className="github__entry" onClick={() => handlers.selectFile(entry)}>
         <Icon name="file" size={16} />
-        <span className="github__entry-name">{entry.name}</span>
+        <span className="github__entry-name">{reveal(entry.name)}</span>
         {entry.size === null ? null : (
           <span className="github__entry-meta">{formatBytes(entry.size)}</span>
         )}
@@ -562,7 +601,7 @@ function TreeEntryRow({
   return (
     <div className="github__entry is-disabled">
       <Icon name="file" size={16} />
-      <span className="github__entry-name">{entry.name}</span>
+      <span className="github__entry-name">{reveal(entry.name)}</span>
       <span className="github__entry-meta">{describeEntryStatus(entry.status)}</span>
     </div>
   );
@@ -591,7 +630,7 @@ function CandidateView({
   return (
     <section className="github__section" aria-label="取り込む内容の確認">
       <h3 ref={headingRef} className="github__heading" tabIndex={-1}>
-        {candidate.title} を取り込む
+        {reveal(candidate.title)} を取り込む
       </h3>
       <ul className="dialog__details">
         <li>{formatSourceDetail(candidate.source)}</li>
@@ -636,7 +675,7 @@ function CandidateView({
                 checked={target === input.id}
                 onChange={() => setTarget(input.id)}
               />
-              <span>{input.label}</span>
+              <span>{reveal(input.label)}</span>
             </label>
           ))}
         </fieldset>

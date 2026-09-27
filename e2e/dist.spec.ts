@@ -36,7 +36,7 @@ test('本番ビルドに sourcemap を配らない', async ({ page, baseURL }) =
  * `source` のパス条件（`/api/` の除外）は preview では再現しないので、Preview / 本番で確かめる
  * （docs/github-app-setup.md §5）。
  */
-test('配信する HTML にフレーム埋め込み禁止・nosniff・Referrer-Policy を付ける', async ({
+test('配信する HTML にフレーム埋め込み禁止・nosniff・Referrer-Policy・COOP を付ける', async ({
   request,
   baseURL,
 }) => {
@@ -46,6 +46,16 @@ test('配信する HTML にフレーム埋め込み禁止・nosniff・Referrer-P
   expect(headers['x-frame-options']).toBe('DENY');
   expect(headers['x-content-type-options']).toBe('nosniff');
   expect(headers['referrer-policy']).toBe('strict-origin');
+  // 他サイトが window.open で開いたときに、このページへのウィンドウ参照を持たせない。
+  // OAuth の往復（github.com へ移って戻る）でブラウジングコンテキストグループが切り替わっても
+  // sessionStorage の state と verifier が残ることは、github.spec.ts がこのヘッダの下で確かめる。
+  expect(headers['cross-origin-opener-policy']).toBe('same-origin');
+  // 使っていない強い機能は閉じておく（多層防御）。クリップボードはコピーで使うので閉じない。
+  const permissions = headers['permissions-policy'] ?? '';
+  for (const feature of ['camera', 'microphone', 'geolocation', 'payment', 'usb']) {
+    expect(permissions).toContain(`${feature}=()`);
+  }
+  expect(permissions).not.toContain('clipboard');
 
   // ヘッダを無視する配信先でも Referer を絞れるよう、HTML 側にも同じ方針を書く。
   // connect-src などの本体の CSP は meta 側にあり、ヘッダの CSP は frame-ancestors だけ

@@ -66,6 +66,12 @@ test('接続前に同意画面を出し、読み取り専用であることと�
   await expect(consent).toContainText('読み取り専用');
   await expect(consent).toContainText('リポジトリ単位');
   await expect(consent).toContainText('再読み込みやタブを閉じたあとは、もう一度接続が必要');
+  // 取得するもの（一覧のためのメタデータと、選んだファイルの本文だけ）と、残るもの（出自）。
+  await expect(consent).toContainText('リポジトリ・ブランチ・フォルダの情報');
+  await expect(consent).toContainText('本文を取得するのは、この画面で選んだファイルだけ');
+  await expect(consent).toContainText('owner/repo・ブランチ・パス・コミットの SHA');
+  await expect(consent).toContainText('localStorage');
+  await expect(consent).toContainText('作業データの書き出しにも含まれます');
   // 同意するまでは GitHub にもバックエンドにも何も送らない。
   expect(mock.requests.filter((request) => /github\.com|\/api\//.test(request.url))).toEqual([]);
 
@@ -707,4 +713,117 @@ test('キーボードだけでフォルダを辿ってファイルを選べる',
   await expect(dialog(page)).toHaveCount(0);
   await goToTab(page, '入力');
   await expect(page.locator('.input-card')).toHaveCount(1);
+});
+
+test('トークン交換が 429（Firewall のレート制限）なら、待ってから接続し直すよう伝える', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  mock.tokenStatus = 429;
+  await start(page, mock);
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).click();
+
+  const alert = dialog(page).getByRole('alert');
+  await expect(alert).toContainText('一時的に制限されています');
+  await expect(alert).toContainText('1分ほど待ってから、もう一度接続してください');
+  expect(mock.tokenCalls).toHaveLength(1);
+  // 制限が解けたら、同じ画面から接続し直せる。
+  mock.tokenStatus = 200;
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).click();
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toBeVisible();
+});
+
+test('正規でないオリジンで開いたら、接続を始めさせず正規の URL へのリンクを出す', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await mock.install(page);
+  await seed(page);
+  // 同じビルドを別名のオリジンで配る（Vercel の Production の別名と同じ状況）。
+  // 名前解決に頼らず、別名への要求を配信元へ中継する。
+  const alias = 'http://bulk-alias.test';
+  await page.route(`${alias}/**`, async (route) => {
+    const url = new URL(route.request().url());
+    const response = await route.fetch({
+      url: `http://127.0.0.1:4173${url.pathname}${url.search}`,
+    });
+    await route.fulfill({ response });
+  });
+  await page.goto(`${alias}/`);
+  await page.waitForSelector('.brand__name');
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeDisabled();
+  const notice = dialog(page).locator('.github__origin');
+  await expect(notice).toContainText('このアドレスでは GitHub に接続できません');
+  await expect(notice).toContainText('移った先には引き継がれません');
+  // 自動では移らない（verifier も作業データもオリジンごとの保存先にある）。新しいタブで開く。
+  const link = notice.getByRole('link', { name: 'http://127.0.0.1:4173/ を開く' });
+  await expect(link).toHaveAttribute('href', 'http://127.0.0.1:4173/');
+  await expect(link).toHaveAttribute('target', '_blank');
+  expect(new URL(page.url()).origin).toBe(alias);
+
+  // 認可にもトークン交換にも進んでいない。
+  expect(mock.authorizeCalls).toEqual([]);
+  expect(mock.tokenCalls).toEqual([]);
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), PENDING_AUTH_KEY)).toBeNull();
+});
+
+test('ファイル名の双方向制御文字は見える形で出し、取り込んだタイトルと出自は変えない', async ({
+  page,
+}) => {
+  // 一覧では `invoicedm.txt` に見える名前（RLO で拡張子を偽装）。
+  const spoofed = 'invoice\u202etxt.md';
+  const mock = new GitHubMock([
+    novelRepository({
+      branches: {
+        main: [
+          { path: `bills/${spoofed}`, content: '請求書の原稿\n' },
+          { path: 'bills/plain.md', content: 'ふつうの原稿\n' },
+        ],
+      },
+    }),
+  ]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+  await entry(page, 'bills/').click();
+
+  const list = dialog(page).locator('.github__list');
+  await expect(list).toContainText('invoice⟨U+202E⟩txt.md');
+  const names = await list.locator('.github__entry-name').allTextContents();
+  expect(names.join('\n')).not.toContain('\u202e');
+
+  await dialog(page)
+    .getByRole('button', { name: /invoice⟨U\+202E⟩txt\.md/ })
+    .click();
+  const confirm = dialog(page).getByRole('region', { name: '取り込む内容の確認' });
+  await expect(confirm.getByRole('heading')).toHaveText('invoice⟨U+202E⟩txt.md を取り込む');
+  await expect(confirm).toContainText('bills/invoice⟨U+202E⟩txt.md');
+  await confirm.getByRole('button', { name: '入力に追加' }).click();
+  await expect(page.locator('.toast')).toContainText(
+    'GitHub から invoice⟨U+202E⟩txt.md を追加しました',
+  );
+
+  // 編集欄の値（データ）は元の名前のまま。見える形の名前を別に添える。
+  const card = page.locator('.input-card').nth(1);
+  await expect(card.locator('.input-card__title')).toHaveValue(spoofed);
+  await expect(card.locator('.input-card__reveal')).toContainText('invoice⟨U+202E⟩txt.md');
+  await expect(card.locator('.input-card__source')).toContainText('bills/invoice⟨U+202E⟩txt.md');
+  // ふつうの名前の入力には何も添えない。
+  await expect(page.locator('.input-card').nth(0).locator('.input-card__reveal')).toHaveCount(0);
+
+  // 保存データのタイトルと出自のパスも元のまま（表示だけを変えている）。
+  await dialog(page).waitFor({ state: 'detached' });
+  await expect
+    .poll(async () => {
+      const raw = await page.evaluate((key) => localStorage.getItem(key), STORAGE_KEY);
+      const saved = JSON.parse(raw ?? '{}') as {
+        inputs?: { title: string; source?: { path: string } }[];
+      };
+      const input = saved.inputs?.[1];
+      return [input?.title, input?.source?.path];
+    })
+    .toEqual([spoofed, `bills/${spoofed}`]);
 });

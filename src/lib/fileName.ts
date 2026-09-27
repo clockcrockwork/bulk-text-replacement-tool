@@ -1,4 +1,5 @@
 import { ACCEPTED_EXTENSIONS } from './inputFiles';
+import { UNSAFE_DISPLAY_CHARS } from './revealText';
 
 /**
  * 既に使われている名前なら ` (2)` `(3)` … を足して一意にする。
@@ -44,11 +45,10 @@ function sanitizeSegment(segment: string): string {
  *
  * 取り込んだ GitHub のパスは NUL と `/` 以外を何でも含み得るので、名前になる時点で潰す。
  * 見えない文字を黙って消すと別の名前に化けたことに気付けないため、`_` に置き換える。
- * ソースに実物を書かない（見えないまま壊れる）ので、すべてエスケープで書く。
+ * 文字の集合は画面での可視化（`revealText.ts`）と共有する。見えていたのに出力では
+ * `_` になった、またはその逆を作らないため。
  */
-const INVISIBLE_OR_CONTROL =
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: 制御文字を検出して置き換えるための正規表現
-  /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb\u{e0000}-\u{e007f}]/gu;
+const INVISIBLE_OR_CONTROL = UNSAFE_DISPLAY_CHARS;
 
 /**
  * ファイル名・ディレクトリ名から、OS やアーカイバが嫌う文字と形を落とす。

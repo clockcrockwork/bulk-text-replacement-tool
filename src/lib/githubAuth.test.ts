@@ -5,8 +5,11 @@ import {
   callbackUrl,
   codeChallengeS256,
   describeCallbackFailure,
+  describeTokenExchangeFailure,
   installationUrl,
   isTokenUsable,
+  nonCanonicalTarget,
+  normalizeCanonicalOrigin,
   PENDING_AUTH_TTL_MS,
   type PendingAuth,
   parsePendingAuth,
@@ -29,7 +32,37 @@ describe('readGitHubAppConfig', () => {
         VITE_GITHUB_APP_CLIENT_ID: ' Iv23abc ',
         VITE_GITHUB_APP_SLUG: 'bulk-replace',
       }),
-    ).toEqual({ clientId: 'Iv23abc', slug: 'bulk-replace' });
+    ).toEqual({ clientId: 'Iv23abc', slug: 'bulk-replace', canonicalOrigin: null });
+  });
+
+  it('正規のオリジンがあれば、オリジンの形に揃えて持つ', () => {
+    expect(
+      readGitHubAppConfig({
+        VITE_GITHUB_APP_CLIENT_ID: 'x',
+        VITE_GITHUB_APP_SLUG: 'a',
+        VITE_GITHUB_APP_ORIGIN: ' https://Bulk.Example.com/ ',
+      }),
+    ).toEqual({ clientId: 'x', slug: 'a', canonicalOrigin: 'https://bulk.example.com' });
+    // 空は「固定しない」（未設定と同じ）。
+    expect(
+      readGitHubAppConfig({
+        VITE_GITHUB_APP_CLIENT_ID: 'x',
+        VITE_GITHUB_APP_SLUG: 'a',
+        VITE_GITHUB_APP_ORIGIN: '  ',
+      })?.canonicalOrigin,
+    ).toBeNull();
+  });
+
+  it('正規のオリジンが読めない値なら、連携ごと無効にする', () => {
+    for (const origin of ['bulk.example.com', 'https://bulk.example.com/app', 'ftp://x']) {
+      expect(
+        readGitHubAppConfig({
+          VITE_GITHUB_APP_CLIENT_ID: 'x',
+          VITE_GITHUB_APP_SLUG: 'a',
+          VITE_GITHUB_APP_ORIGIN: origin,
+        }),
+      ).toBeNull();
+    }
   });
 
   it('どちらかが無い・空なら連携を無効にする', () => {
@@ -49,9 +82,43 @@ describe('readGitHubAppConfig', () => {
 
 describe('URL', () => {
   it('インストール画面は App の slug から作る', () => {
-    expect(installationUrl({ clientId: 'x', slug: 'bulk-replace' })).toBe(
+    expect(installationUrl({ clientId: 'x', slug: 'bulk-replace', canonicalOrigin: null })).toBe(
       'https://github.com/apps/bulk-replace/installations/new',
     );
+  });
+
+  it('正規のオリジンはオリジンそのものだけを受け付ける', () => {
+    expect(normalizeCanonicalOrigin('https://bulk.example.com')).toBe('https://bulk.example.com');
+    expect(normalizeCanonicalOrigin('https://bulk.example.com/')).toBe('https://bulk.example.com');
+    expect(normalizeCanonicalOrigin('https://bulk.example.com:8443')).toBe(
+      'https://bulk.example.com:8443',
+    );
+    // ローカルで確かめるための loopback だけ http を許す。
+    expect(normalizeCanonicalOrigin('http://127.0.0.1:4173')).toBe('http://127.0.0.1:4173');
+    expect(normalizeCanonicalOrigin('http://localhost:5173/')).toBe('http://localhost:5173');
+    for (const value of [
+      'http://bulk.example.com',
+      'https://bulk.example.com/sub/',
+      'https://bulk.example.com/?x=1',
+      'https://bulk.example.com/?',
+      'https://bulk.example.com/#top',
+      'https://user:pass@bulk.example.com',
+      'bulk.example.com',
+      'javascript:alert(1)',
+      '',
+    ]) {
+      expect(normalizeCanonicalOrigin(value), value).toBeNull();
+    }
+  });
+
+  it('正規でないオリジンでは、正規のオリジンの URL を返す', () => {
+    const config = { clientId: 'x', slug: 'a', canonicalOrigin: 'https://bulk.example.com' };
+    expect(nonCanonicalTarget(config, 'https://bulk.example.com')).toBeNull();
+    expect(nonCanonicalTarget(config, 'https://bulk-git-main-team.vercel.app')).toBe(
+      'https://bulk.example.com/',
+    );
+    // 固定していなければ、どのオリジンでも始められる。
+    expect(nonCanonicalTarget({ ...config, canonicalOrigin: null }, 'http://x.test')).toBeNull();
   });
 
   it('コールバックはオリジン直下', () => {
@@ -239,6 +306,21 @@ describe('トークン', () => {
     expect(isTokenUsable(token, 100_000 - TOKEN_EXPIRY_MARGIN_MS)).toBe(false);
     expect(isTokenUsable({ accessToken: 'x', expiresAt: null }, Number.MAX_SAFE_INTEGER)).toBe(
       true,
+    );
+  });
+});
+
+describe('describeTokenExchangeFailure', () => {
+  it('429（Firewall のレート制限）は、待ってから接続し直せばよいと伝える', () => {
+    const message = describeTokenExchangeFailure(429);
+    expect(message).toContain('1分ほど待ってから');
+    expect(message).toContain('もう一度接続');
+    expect(message).not.toContain('429');
+  });
+
+  it('それ以外は状態コードを添えて失敗を伝える', () => {
+    expect(describeTokenExchangeFailure(403)).toBe(
+      'GitHub との接続に失敗しました（トークンの交換に失敗: 403）。もう一度接続してください。',
     );
   });
 });

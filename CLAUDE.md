@@ -147,6 +147,9 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
     リダイレクトを跨ぐ state と PKCE verifier だけで、戻った時点で消す。
   - 認可は毎回アプリが state と PKCE（S256）を付けて始める。GitHub の「インストール時に
     OAuth を要求」には頼らない。callback はオリジン直下（`base: './'` なので下位パス不可）。
+  - 正規のオリジンは `VITE_GITHUB_APP_ORIGIN`（`readGitHubAppConfig`）。それ以外のオリジン
+    （Production の別名など）では接続を始めさせず、正規の URL へのリンクを出すだけにする。
+    **自動で移動させない**（verifier も作業データもオリジンごとの保存先にあり、移ると失われる）。
   - 認可で GitHub の画面へ移る直前に、保留中の編集も含めて保存を書き出す
     （`usePersistedWorkspace` の `flush` を `beforeNavigate` として渡す）。書けなければ移らない。
     表示中の `saveFailed` は最後に実行済みの保存の結果でしかなく、デバウンス中の編集は含まない。
@@ -170,8 +173,17 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   - 取り込み元の同一性は `repositoryId + ref + path`（`sourceIdentity`）。タイトルでは判定しない。
     同じ取り込み元が複数あるときに更新先を推測しない。
   - 対応拡張子は `ACCEPTED_EXTENSIONS`、文字コードは `decodeText` をローカルと共有する。
+  - GitHub から来た名前（ファイル名・パス・ブランチ名）と入力のタイトルは、画面に出すときに
+    `revealUnsafeChars`（`src/lib/revealText.ts`）を通す。双方向制御文字などを `⟨U+202E⟩` の
+    形で見せ、一覧の偽装を防ぐ（`<bdi>` では中の RLO が効いたまま）。**変えるのは表示だけ**で、
+    保存・比較・出力名には元の文字列を使う。文字の集合は `sanitizeName` と共有している。
+    編集欄（`<input>`）は値を変えられないので、入力カードに見える形の名前を別に添える。
+  - トークン交換の 429 は Vercel Firewall のレート制限。`describeTokenExchangeFailure` で
+    「待ってから接続し直す」と伝える。
 - **配信時のヘッダ**は `vercel.json` の `headers`（`frame-ancestors 'none'`・`X-Frame-Options`・
-  `nosniff`・`Referrer-Policy: strict-origin`）。`vite preview` も同じ値を返すので、E2E は
+  `nosniff`・`Referrer-Policy: strict-origin`・`Cross-Origin-Opener-Policy: same-origin`・
+  `Permissions-Policy`）。COOP の下でも OAuth の往復で sessionStorage が残ることは E2E が
+  見るが、実機の Safari は手で確かめる（docs §5）。`vite preview` も同じ値を返すので、E2E は
   このヘッダの下で走る（共有するのは値だけで、`/api/` を除くパス条件は Preview で確かめる）。
   `Referrer-Policy` は `strict-origin` から動かさない。既定の `strict-origin-when-cross-origin`
   は同一オリジンの要求に URL 全体を送るので、認可から戻った直後の `/assets/*.js` の Referer に
