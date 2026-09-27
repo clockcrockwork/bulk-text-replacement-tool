@@ -65,21 +65,45 @@ export async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
   signal: AbortSignal,
-  worker: (item: T) => Promise<R>,
+  worker: (item: T, signal: AbortSignal) => Promise<R>,
 ): Promise<R[]> {
   const results = new Array<R>(items.length);
+  const controller = new AbortController();
+  const abortFromParent = (): void => controller.abort();
+  if (signal.aborted) controller.abort();
+  else signal.addEventListener('abort', abortFromParent, { once: true });
+
   let cursor = 0;
+  let firstError: unknown = null;
   const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (cursor < items.length) {
-      if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    while (cursor < items.length && firstError === null) {
+      if (controller.signal.aborted) {
+        firstError ??= new DOMException('Aborted', 'AbortError');
+        return;
+      }
       const index = cursor;
       cursor += 1;
       const item = items[index];
       if (item === undefined) continue;
-      results[index] = await worker(item);
+      try {
+        results[index] = await worker(item, controller.signal);
+      } catch (error) {
+        if (firstError === null) {
+          firstError = error;
+          // 1件でも失敗したら、他 runner の in-flight fetch も止め、新しい fetch を始めない。
+          controller.abort();
+        }
+        return;
+      }
     }
   });
-  await Promise.all(runners);
+
+  try {
+    await Promise.all(runners);
+  } finally {
+    signal.removeEventListener('abort', abortFromParent);
+  }
+  if (firstError !== null) throw firstError;
   return results;
 }
 
@@ -377,20 +401,25 @@ export function useGitHubImport(): GitHubImport {
         if (entries.length === 0) {
           throw new GitHubBatchPreparationError('選択範囲に取り込めるファイルがありません。');
         }
-        return mapWithConcurrency(entries, BLOB_CONCURRENCY, signal, async (entry) => {
-          let buffer: ArrayBuffer;
-          try {
-            buffer = await api.getBlob(snapshot, entry.sha, signal);
+        return mapWithConcurrency(
+          entries,
+          BLOB_CONCURRENCY,
+          signal,
+          async (entry, requestSignal) => {
+            let buffer: ArrayBuffer;
+            try {
+              buffer = await api.getBlob(snapshot, entry.sha, requestSignal);
           } catch (error) {
             if (error instanceof GitHubRequestError) {
               throw new GitHubBatchRequestError(entry.path, error);
             }
             throw error;
           }
-          const result = buildCandidate(snapshot, entry, buffer);
-          if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
-          return result.candidate;
-        });
+            const result = buildCandidate(snapshot, entry, buffer);
+            if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
+            return result.candidate;
+          },
+        );
       },
       (candidates) => dispatch({ type: 'batch/set', candidates }),
     );
