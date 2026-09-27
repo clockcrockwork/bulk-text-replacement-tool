@@ -395,9 +395,7 @@ function normalizeTreeResponse(
     return [{ name, path: joinPath(dir, relativePath), sha, status, size }];
   });
   entries.sort(
-    (a, b) =>
-      STATUS_ORDER[a.status] - STATUS_ORDER[b.status] ||
-      compareCodePoints(a.path, b.path),
+    (a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || compareCodePoints(a.path, b.path),
   );
   return { entries, truncated: value.truncated === true };
 }
