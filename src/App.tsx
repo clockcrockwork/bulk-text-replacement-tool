@@ -299,11 +299,16 @@ export function App(): JSX.Element {
           label: `${formatIndex(index)} ${input.title || formatFallbackTitle(index)}`,
         };
       });
-      const titleCollision = state.inputs.some(
-        (input) =>
-          input.title === candidate.title &&
-          !(input.source && sourceIdentity(input.source) === sourceIdentity(candidate.source)),
-      );
+      const titleCollision =
+        state.inputs.some(
+          (input) =>
+            input.title === candidate.title &&
+            !(input.source && sourceIdentity(input.source) === sourceIdentity(candidate.source)),
+        ) ||
+        (github.state.batchCandidates ?? []).some(
+          (other) =>
+            other.source.path !== candidate.source.path && other.title === candidate.title,
+        );
       return { path: candidate.source.path, sameSource, titleCollision };
     },
   );
