@@ -119,6 +119,8 @@ export const initialGitHubImportState: GitHubImportState = {
   trail: [],
   listing: null,
   candidate: null,
+  batchCandidates: null,
+  selection: emptyTreeSelection(),
   busy: null,
   error: null,
   info: null,
@@ -161,7 +163,14 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
     case 'close':
       // 接続と選んでいた場所は残す。続けてもう1件取り込むときに辿り直さなくて済む。
       // 取得待ちは呼び出し側が中断するので、待ち表示とエラーは片付ける。
-      return { ...state, open: false, busy: null, error: null, candidate: null };
+      return {
+        ...state,
+        open: false,
+        busy: null,
+        error: null,
+        candidate: null,
+        batchCandidates: null,
+      };
 
     case 'connect/start':
       return { ...state, connection: 'connecting', notice: null, error: null };
