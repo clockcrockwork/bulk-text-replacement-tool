@@ -61,7 +61,7 @@ import {
   workspaceReducer,
   workspaceSignature,
 } from './state/workspace';
-import type { PersistedWorkspace, ResultFile, RuleOrder } from './types';
+import type { InputText, PersistedWorkspace, ResultFile, RuleOrder } from './types';
 
 /** エディタを閉じたとき、元のカードがヘッダーに隠れないよう空ける余白。 */
 const SCROLL_BACK_OFFSET = 130;
@@ -362,7 +362,7 @@ export function App(): JSX.Element {
       text: string;
       source: NonNullable<(typeof state.inputs)[number]['source']>;
     }> = [];
-    const adds = [];
+    const adds: InputText[] = [];
 
     for (const candidate of candidates) {
       if (!byPath.has(candidate.source.path)) {
