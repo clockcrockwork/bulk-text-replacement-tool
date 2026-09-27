@@ -230,6 +230,32 @@ test('フォルダ選択を未展開の子へ継承し、子を外すと親が m
   expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(1);
 });
 
+test('checkbox はキーボードで操作でき、mixed state を aria-checked で伝える', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  const chapters = dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' });
+  await chapters.focus();
+  await page.keyboard.press('Space');
+  await expect(chapters).toBeChecked();
+
+  await entry(page, 'chapters/').click();
+  const ch2 = dialog(page).getByRole('checkbox', { name: 'ch2.txt を選択' });
+  await ch2.focus();
+  await page.keyboard.press('Space');
+  await expect(ch2).not.toBeChecked();
+
+  await dialog(page)
+    .getByRole('navigation', { name: '現在の場所' })
+    .getByRole('button', { name: 'novel' })
+    .click();
+  await expect(chapters).toHaveAttribute('aria-checked', 'mixed');
+});
+
 test('複数選択の列挙は recursive tree を fast path として使う', async ({ page }) => {
   const mock = new GitHubMock([REPO]);
   await start(page, mock);
