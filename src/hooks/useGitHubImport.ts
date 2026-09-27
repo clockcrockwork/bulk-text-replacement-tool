@@ -82,6 +82,25 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
+async function loadBatchTree(
+  api: GitHubClient,
+  snapshot: GitHubSnapshot,
+  step: { path: string; treeSha: string },
+  signal: AbortSignal,
+  recursive: boolean,
+): Promise<NormalizedTree> {
+  try {
+    return recursive
+      ? await api.getTreeRecursive(snapshot, step.treeSha, step.path, signal)
+      : await api.getTree(snapshot, step.treeSha, step.path, signal);
+  } catch (error) {
+    if (error instanceof GitHubRequestError) {
+      throw new GitHubBatchRequestError(step.path || 'ルート', error);
+    }
+    throw error;
+  }
+}
+
 async function enumerateSelectedEntries(
   api: GitHubClient,
   snapshot: GitHubSnapshot,
@@ -92,31 +111,42 @@ async function enumerateSelectedEntries(
   const files: GitHubTreeEntry[] = [];
   const seen = new Set<string>();
 
+  const collect = (entries: readonly GitHubTreeEntry[]): void => {
+    for (const entry of entries) {
+      if (
+        entry.status === 'importable' &&
+        isPathSelected(selection, entry.path) &&
+        !seen.has(entry.path)
+      ) {
+        seen.add(entry.path);
+        files.push(entry);
+      }
+    }
+  };
+
   while (queue.length > 0) {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     const step = queue.shift();
     if (!step) break;
-    let tree: NormalizedTree;
-    try {
-      tree = await api.getTree(snapshot, step.treeSha, step.path, signal);
-    } catch (error) {
-      if (error instanceof GitHubRequestError) {
-        throw new GitHubBatchRequestError(step.path || 'ルート', error);
-      }
-      throw error;
+
+    // まず recursive API で subtree を1回で列挙する。partial response は絶対に使わない。
+    const recursiveTree = await loadBatchTree(api, snapshot, step, signal, true);
+    if (!recursiveTree.truncated) {
+      collect(recursiveTree.entries);
+      continue;
     }
-    if (tree.truncated) {
+
+    // GitHub が recursive 応答を打ち切ったら、その partial list は捨てる。
+    // 非再帰で1階層を取り直し、必要な子 tree だけを queue に積んで完全列挙する。
+    const directTree = await loadBatchTree(api, snapshot, step, signal, false);
+    if (directTree.truncated) {
       throw new GitHubBatchPreparationError(
         `${step.path || 'ルート'} の一覧が途中で打ち切られたため、安全に一括取り込みできません。`,
       );
     }
-    for (const entry of tree.entries) {
-      if (entry.status === 'importable' && isPathSelected(selection, entry.path)) {
-        if (!seen.has(entry.path)) {
-          seen.add(entry.path);
-          files.push(entry);
-        }
-      } else if (entry.status === 'dir' && selectionMayContainSelected(selection, entry.path)) {
+    collect(directTree.entries);
+    for (const entry of directTree.entries) {
+      if (entry.status === 'dir' && selectionMayContainSelected(selection, entry.path)) {
         queue.push({ path: entry.path, treeSha: entry.sha });
       }
     }
