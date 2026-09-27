@@ -152,6 +152,8 @@ If the branch changes while the picker is open, do not silently move to the new 
 
 Provide a **最新に更新** action that explicitly resolves and pins a new snapshot.
 
+Selection belongs to the pinned snapshot. When a new snapshot is pinned (最新に更新 finds a new commit, or a branch is chosen), the selection is cleared and the status message says so. If 最新に更新 finds the same commit, nothing changes and the selection is kept.
+
 ## 5. Tree picker
 
 Use Git Trees API as the tree source.
@@ -166,6 +168,9 @@ Normal browsing:
 - when that directory is later expanded, children inherit the ancestor selection
 - deselecting a descendant makes the parent indeterminate
 - search/filter changes visibility only and must not change selection
+- filter matching compares Unicode NFC forms (file names committed on macOS may be NFD); displayed names and paths are never rewritten
+- selection rules are keyed by repository path in a `Map`, never as plain-object keys, so names such as `__proto__` behave like any other path
+- while an enumeration or fetch is running, checkboxes are disabled; a result is accepted only if the selection is still the one it was computed from
 
 Show:
 
@@ -177,7 +182,8 @@ Show:
 Accessibility requirements:
 
 - keyboard operable
-- screen-reader state for checkbox / mixed state
+- screen-reader state for checkbox / mixed state (native `indeterminate`, not `aria-checked` on a native checkbox)
+- visible checkbox text is inside its `<label>`, so tapping the text toggles it and the accessible name matches the visible text
 - usable on mobile and Safari
 
 ### Supported entries
@@ -247,13 +253,16 @@ GitHub import is a transaction from the workspace's point of view.
 Before changing workspace state:
 
 1. enumerate every selected supported path from the pinned snapshot
-2. fetch all required blobs
-3. decode all blobs with the existing `decodeText`
-4. validate all candidates
-5. detect duplicate/source conflicts
-6. show candidate summary
-7. require final confirmation when a decision is needed
-8. dispatch the workspace mutation only after all required candidates are ready
+2. show the plan: the exact file list, file count, and byte total from tree entry sizes, plus any large-selection warnings (§10); no blob has been fetched yet
+3. fetch all required blobs only after the user confirms the plan
+4. decode all blobs with the existing `decodeText`
+5. validate all candidates
+6. detect duplicate/source conflicts
+7. show candidate summary
+8. require final confirmation when a decision is needed
+9. dispatch the workspace mutation only after all required candidates are ready
+
+The plan step is always shown, even for a small selection. An unopened directory's contents are unknown until enumeration, so this is the first point where the real count and size can be shown, and fetching costs rate limit.
 
 Any fetch/decode/validation failure leaves the workspace unchanged.
 
@@ -348,6 +357,8 @@ V2 behavior:
 - show selected file count and known bytes before fetch
 - reject blobs over 100 MB before fetch
 - warn for unusually large selections that browser persistence may fail
+  - the plan step (§7) warns when the selection has more than 200 files (each blob is one request against the usual 5,000 requests/hour) or more than 2 MB in total (localStorage stops at a few MB)
+  - these are warnings only; there is no hard cap, so a legitimate large import is still possible after the user has seen the numbers
 - keep the existing persistent save-failure warning and backup path
 - do not make an IndexedDB migration a prerequisite for GitHub import
 
@@ -547,7 +558,9 @@ Implemented:
 - tri-state directories, unopened-directory inheritance, descendant exclusion, and explicit re-inclusion
 - current-directory filter that changes visibility only and preserves selection
 - known selected file/directory count and byte summary before enumeration
-- exact file count and byte total after candidate preparation
+- a plan step after enumeration and before any blob fetch: exact file list, count, and byte total from tree sizes, with warnings above 200 files or 2 MB
+- selection is locked while enumerating/fetching, and results computed from a different selection are discarded
+- pinning a new snapshot clears the selection and says so
 - recursive Git Trees fast path from the minimal selected roots
 - truncated recursive responses are discarded and retraversed with complete non-recursive subtree reads
 - final selected files are filtered by the selection rules and deduplicated by repository path
@@ -558,5 +571,6 @@ Implemented:
 - same-basename/different-source collisions are warnings only
 - final batch application is one workspace reducer action, including untouched-sample cleanup (no undo; see §7 **Untouched sample workspace**)
 - keyboard/mobile checkbox operation and screen-reader mixed state
+- filter matching is Unicode-normalization aware (NFC)
 
 The existing one-file preview/import path remains available alongside the checkbox flow. It continues to use the same pinned commit and provenance rules.
