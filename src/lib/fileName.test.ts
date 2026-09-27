@@ -219,6 +219,17 @@ describe('sanitizeName（幅を持たない書式文字）', () => {
     }
   });
 
+  it('BOM は前後にあっても黙って消さず _ にする（trim が空白として扱うため先に置き換える）', () => {
+    expect(sanitizeName('\ufeffa.md', false)).toBe('_a.md');
+    expect(sanitizeName('a.md\ufeff', false)).toBe('a.md_');
+    expect(sanitizeName('a\ufeff.md', false)).toBe('a_.md');
+  });
+
+  it('前後の改行類（改行・行区切り・段落区切り）は従来どおり空白として落とす', () => {
+    expect(sanitizeName('\u2028a.md\u2029', false)).toBe('a.md');
+    expect(sanitizeName('\na.md\t', false)).toBe('a.md');
+  });
+
   it('ZWNJ と ZWJ は残す（合字や文字の形を決める）', () => {
     expect(sanitizeName('x\u200cy', true)).toBe('x\u200cy');
     expect(sanitizeName('x\u200dy', true)).toBe('x\u200dy');
