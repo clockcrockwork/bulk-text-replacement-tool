@@ -21,6 +21,7 @@ import {
   normalizeInstallations,
   normalizeRefCommitSha,
   normalizeRepositories,
+  normalizeRecursiveTree,
   normalizeTree,
   orderBranches,
   parseNextLink,
@@ -317,6 +318,32 @@ describe('tree の分類', () => {
 
   it('打ち切られた一覧はそうと分かるように返す', () => {
     expect(normalizeTree({ tree: [], truncated: true }, '')?.truncated).toBe(true);
+  });
+
+  it('recursive tree はネストした path を起点ディレクトリからの完全パスにする', () => {
+    const tree = normalizeRecursiveTree(
+      {
+        tree: [
+          { path: 'a', mode: '040000', type: 'tree', sha: SHA_A },
+          { path: 'a/ch1.md', mode: '100644', type: 'blob', sha: SHA_B, size: 12 },
+          { path: 'a/deep/ch2.txt', mode: '100644', type: 'blob', sha: SHA_C, size: 4 },
+          { path: '../escape.md', mode: '100644', type: 'blob', sha: SHA_A, size: 1 },
+        ],
+        truncated: false,
+      },
+      'chapters',
+    );
+
+    expect(tree?.entries.map((entry) => [entry.path, entry.status])).toEqual([
+      ['chapters/a', 'dir'],
+      ['chapters/a/ch1.md', 'importable'],
+      ['chapters/a/deep/ch2.txt', 'importable'],
+    ]);
+    expect(tree?.truncated).toBe(false);
+  });
+
+  it('recursive tree の truncated を保持する', () => {
+    expect(normalizeRecursiveTree({ tree: [], truncated: true }, '')?.truncated).toBe(true);
   });
 
   it('形の違う項目は落とす', () => {
