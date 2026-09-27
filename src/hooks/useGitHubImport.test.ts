@@ -72,10 +72,11 @@ describe('enumerateSelectedEntries', () => {
       api,
       SNAPSHOT,
       selection,
+      { chapters: entry('chapters', 'dir', SHA_C) },
       new AbortController().signal,
     );
 
-    expect(calls).toEqual(['']);
+    expect(calls).toEqual(['chapters']);
     expect(files.map((item) => item.path)).toEqual(['chapters/ch1.md', 'chapters/ch2.txt']);
   });
 
@@ -85,18 +86,12 @@ describe('enumerateSelectedEntries', () => {
     const api = client({
       getTreeRecursive: async (_snapshot, _sha, dir) => {
         recursiveCalls.push(dir);
-        if (dir === '') {
-          return { entries: [entry('chapters/ch1.md')], truncated: true };
-        }
-        return {
-          entries: [entry('chapters/ch1.md'), entry('chapters/ch2.txt')],
-          truncated: false,
-        };
+        return { entries: [entry('chapters/ch1.md')], truncated: true };
       },
       getTree: async (_snapshot, _sha, dir) => {
         directCalls.push(dir);
         return {
-          entries: [entry('chapters', 'dir', SHA_C), entry('other.md')],
+          entries: [entry('chapters/ch1.md'), entry('chapters/ch2.txt')],
           truncated: false,
         };
       },
@@ -107,11 +102,12 @@ describe('enumerateSelectedEntries', () => {
       api,
       SNAPSHOT,
       selection,
+      { chapters: entry('chapters', 'dir', SHA_C) },
       new AbortController().signal,
     );
 
-    expect(recursiveCalls).toEqual(['', 'chapters']);
-    expect(directCalls).toEqual(['']);
+    expect(recursiveCalls).toEqual(['chapters']);
+    expect(directCalls).toEqual(['chapters']);
     expect(files.map((item) => item.path)).toEqual(['chapters/ch1.md', 'chapters/ch2.txt']);
   });
 });
