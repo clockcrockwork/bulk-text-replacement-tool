@@ -229,7 +229,18 @@ Blob fetch concurrency starts at 4 or fewer concurrent requests.
 
 Respect rate-limit signals the browser can actually read: `x-ratelimit-remaining` / `x-ratelimit-reset` (exposed through CORS) and the error `message` in the response body. `retry-after` is **not** in GitHub's `Access-Control-Expose-Headers`, so browser code cannot read it; when a secondary rate limit is detected from the status and message, wait at least one minute as GitHub's rate-limit documentation advises. Do not retry continuously.
 
-The error message shows when a rate limit is expected to lift (`x-ratelimit-reset`, or at least one minute for a secondary limit). Until that time the **再試行** button is disabled, and the retry handler refuses to run even if called. A multi-file retry re-issues many requests, so the wait is enforced by the UI, not only described.
+The error message shows when a rate limit is expected to lift (`x-ratelimit-reset`, or at least one minute for a secondary limit). Until that time **no request is sent to GitHub from any path**:
+
+- The deadline is kept in the picker state, separate from the error message. Dismissing the error, changing the selection, closing and reopening, or reconnecting does not clear it.
+- Every GitHub request goes through one entry point in the hook. Before the deadline, that entry point does not send the request; it shows the rate-limit message again instead.
+- The buttons that would send requests are disabled until the deadline: **再試行**, **選択したファイルを確認**, and the plan step's fetch button. When the error message is gone, a status line still says why they are disabled.
+
+A multi-file retry re-issues many requests, so the wait is enforced by behaviour, not only described.
+
+`x-ratelimit-reset` is a time on GitHub's clock. It is turned into a wait on this device's clock and kept between one minute and one hour (the primary rate-limit window):
+
+- If the device clock is behind, the reset looks far in the future. Without the upper bound the wait would grow, and beyond about 24.8 days the timer that re-enables the buttons would stop working.
+- If the device clock is ahead, the reset may look already past. The lower bound keeps the minimum wait.
 
 ### REST API version and CORS
 
@@ -590,7 +601,7 @@ Implemented:
 - 選択へ戻る during a fetch aborts the remaining blob requests and clears the busy state
 - bulk same-source decisions (update single-target candidates / add all undecided) that never guess
 - a single-file import keeps the checkbox selection; a multi-file import clears it
-- rate-limited errors disable 再試行 until the reset time
+- during a rate limit no request is sent to GitHub from any path (the deadline lives in state, is checked at the single request entry point, and disables 再試行 / 確認 / 取得); the reset time is kept between 1 minute and 1 hour on the device clock
 - selection is locked while enumerating/fetching, and results computed from a different selection are discarded
 - pinning a new snapshot clears the selection and says so
 - recursive Git Trees fast path from the minimal selected roots

@@ -41,7 +41,7 @@ import {
   type GitHubImportState,
   githubImportReducer,
   initialGitHubImportState,
-  retryWaitMs,
+  rateLimitWaitMs,
   type TrailStep,
 } from '../state/githubImport';
 import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types';
@@ -281,6 +281,19 @@ export function useGitHubImport(): GitHubImport {
     if (!api) return;
     const again = (): void => run(label, task, onDone);
     lastTask.current = again;
+    // rate limit が解けるまでは、どの操作から来ても GitHub へ要求しない。止めるのが
+    // 「再試行」ボタンだけだと、計画画面の「取得」や開き直しから解除前に要求できてしまう。
+    const until = state.rateLimitedUntil;
+    if (until !== null && rateLimitWaitMs(until, Date.now()) > 0) {
+      dispatch({
+        type: 'fail',
+        error: {
+          message: describeGitHubError({ kind: 'rateLimited', status: null, resetAt: until }),
+          recover: 'retry',
+        },
+      });
+      return;
+    }
     const controller = begin();
     dispatch({ type: 'busy', label });
     task(api, controller.signal)
@@ -312,11 +325,11 @@ export function useGitHubImport(): GitHubImport {
               message,
               // 一覧が長すぎるのは、やり直しても同じ結果で rate limit を食うだけなので再試行させない。
               recover: detail.kind === 'listTooLong' ? 'dismiss' : 'retry',
-              // rate limit は解除時刻まで再試行させない（表示している時刻と操作を一致させる）。
-              ...(detail.kind === 'rateLimited' && detail.resetAt !== null
-                ? { retryAt: detail.resetAt }
-                : {}),
             },
+            // rate limit は解除時刻まで GitHub への要求そのものを止める（表示している時刻と一致させる）。
+            ...(detail.kind === 'rateLimited' && detail.resetAt !== null
+              ? { rateLimitedUntil: detail.resetAt }
+              : {}),
           });
           return;
         }
@@ -620,7 +633,7 @@ export function useGitHubImport(): GitHubImport {
     disconnect: () => dropConnection(null),
     retry: () => {
       // ボタンは解除時刻まで押せないが、手続きの側でも解除前の再試行を通さない。
-      if (retryWaitMs(state.error, Date.now()) > 0) return;
+      if (rateLimitWaitMs(state.rateLimitedUntil, Date.now()) > 0) return;
       lastTask.current?.();
     },
     dismissError: () => dispatch({ type: 'error/dismiss' }),

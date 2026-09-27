@@ -144,6 +144,20 @@ describe('classifyErrorResponse', () => {
     ).toBe(now + 60_000);
   });
 
+  it('端末の時計がずれていても、待たせるのは1分から1時間の範囲に収める', () => {
+    const at = (resetSeconds: number) =>
+      classifyErrorResponse(
+        403,
+        headers({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(resetSeconds) }),
+        '',
+        now,
+      ).resetAt;
+    // 端末が遅れていて、解除が30日先に見える。
+    expect(at(now / 1000 + 30 * 24 * 60 * 60)).toBe(now + 60 * 60 * 1000);
+    // 端末が進んでいて、解除がもう過ぎたように見える。
+    expect(at(now / 1000 - 600)).toBe(now + 60_000);
+  });
+
   it('secondary rate limit は本文で見分け、最低1分待つよう案内する（retry-after は読めない）', () => {
     expect(
       classifyErrorResponse(403, headers({ 'x-ratelimit-remaining': '4999' }), SECONDARY, now),

@@ -7,8 +7,9 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useBeforeDeadline } from '../hooks/useBeforeDeadline';
 import { formatTextMeta } from '../lib/format';
-import { describeEntryStatus, formatBytes } from '../lib/githubApi';
+import { describeEntryStatus, describeGitHubError, formatBytes } from '../lib/githubApi';
 import {
   BATCH_LIST_LIMIT,
   type BatchChoices,
@@ -35,7 +36,7 @@ import {
   summarizeKnownSelection,
 } from '../lib/githubSelection';
 import { formatSourceDetail, shortSha } from '../lib/inputSource';
-import { type GitHubImportError, type GitHubImportState, retryWaitMs } from '../state/githubImport';
+import type { GitHubImportError, GitHubImportState } from '../state/githubImport';
 import type { GitHubRepository, GitHubTreeEntry } from '../types';
 import { Icon } from './Icon';
 
@@ -99,27 +100,18 @@ interface GitHubImportDialogProps {
 /**
  * 失敗の知らせと、次に取れる手。
  *
- * rate limit のときは、表示している解除時刻までは「再試行」を押せなくする。GitHub は
- * 解除前の再試行を続けないよう求めていて、一括取り込みでは1回の再試行が多数の要求を
- * やり直す。解除時刻になったら押せるように、その時刻に描画し直す。
+ * rate limit のあいだは「再試行」を押せなくする（解除時刻になったら押せるように戻る）。
+ * GitHub への要求そのものは hook の側でも止めているので、これは押せない理由を見せるため。
  */
 function ErrorNotice({
   error,
+  rateLimited,
   handlers,
 }: {
   error: GitHubImportError;
+  rateLimited: boolean;
   handlers: GitHubDialogHandlers;
 }): JSX.Element {
-  // 残り時間は描画のたびに今の時刻から求める（別の失敗に差し替わっても古い時刻で数えない）。
-  // 解除時刻に描画し直すためだけに、再描画のきっかけを持つ。
-  const [, rerender] = useState(0);
-  const wait = retryWaitMs(error, Date.now());
-  useEffect(() => {
-    if (wait <= 0) return;
-    const timer = window.setTimeout(() => rerender((count) => count + 1), wait);
-    return () => window.clearTimeout(timer);
-  }, [wait]);
-
   return (
     <div className="dialog__error github__error" role="alert">
       <span>{error.message}</span>
@@ -127,7 +119,7 @@ function ErrorNotice({
         <button
           type="button"
           className="btn btn--small"
-          disabled={wait > 0}
+          disabled={rateLimited}
           onClick={handlers.retry}
         >
           再試行
@@ -181,6 +173,7 @@ export function GitHubImportDialog({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const key = viewKey(state);
+  const rateLimited = useBeforeDeadline(state.rateLimitedUntil);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -248,7 +241,18 @@ export function GitHubImportDialog({
           </p>
         ) : null}
 
-        {state.error ? <ErrorNotice error={state.error} handlers={handlers} /> : null}
+        {state.error ? (
+          <ErrorNotice error={state.error} rateLimited={rateLimited} handlers={handlers} />
+        ) : rateLimited && state.rateLimitedUntil !== null ? (
+          // 失敗の知らせは選択を変えるなどで消えるが、待ちは続く。押せないボタンの理由を残す。
+          <p className="github__status" role="status">
+            {describeGitHubError({
+              kind: 'rateLimited',
+              status: null,
+              resetAt: state.rateLimitedUntil,
+            })}
+          </p>
+        ) : null}
 
         <div className="dialog__actions">
           {connected ? (
@@ -558,6 +562,8 @@ function Explorer({
   handlers: GitHubDialogHandlers;
   headingRef: RefObject<HTMLHeadingElement | null>;
 }): JSX.Element {
+  // rate limit のあいだは、GitHub へ要求するボタンを押せなくする（要求は hook の側でも止めている）。
+  const rateLimited = useBeforeDeadline(state.rateLimitedUntil);
   const { trail, listing, snapshot, selection } = state;
   const here = trail[trail.length - 1];
   const rootLabel = snapshot?.repository.name ?? 'ルート';
@@ -684,7 +690,7 @@ function Explorer({
         <button
           type="button"
           className="btn btn--primary"
-          disabled={state.busy !== null || !hasAnySelection(selection)}
+          disabled={state.busy !== null || rateLimited || !hasAnySelection(selection)}
           onClick={handlers.prepareSelection}
         >
           選択したファイルを確認
@@ -833,6 +839,7 @@ function BatchPlanView({
   headingRef: RefObject<HTMLHeadingElement | null>;
   entries: readonly GitHubTreeEntry[];
 }): JSX.Element {
+  const rateLimited = useBeforeDeadline(state.rateLimitedUntil);
   const plan = useMemo(() => planBatch(entries), [entries]);
   return (
     <section className="github__section" aria-label="取り込むファイルの確認">
@@ -873,7 +880,7 @@ function BatchPlanView({
         <button
           type="button"
           className="btn btn--primary"
-          disabled={state.busy !== null}
+          disabled={state.busy !== null || rateLimited}
           onClick={handlers.fetchBatch}
         >
           {plan.files}ファイルを取得

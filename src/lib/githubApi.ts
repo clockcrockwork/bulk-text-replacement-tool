@@ -161,6 +161,22 @@ interface HeaderReader {
 /** secondary rate limit を待つ目安。解除時刻が分からないときは最低1分待つよう案内されている。 */
 const SECONDARY_RATE_LIMIT_WAIT_MS = 60 * 1000;
 
+/** primary rate limit の窓。解除は長くてもこの長さの先に来る。 */
+const PRIMARY_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * `x-ratelimit-reset`（サーバーの時計での時刻）を、この端末の時計での待ち時間に直す。
+ *
+ * 端末の時計がずれていると、そのまま使った解除時刻もずれる。遅れていれば待ちが不当に
+ * 伸び（数十日ずれると、待ちを測るタイマーそのものが働かなくなる）、進んでいれば
+ * 解除前に再試行させてしまう。GitHub の窓の長さを超えて待たせず、解除時刻が過去に
+ * 見えても最低限（secondary と同じ1分）は待たせる。
+ */
+function rateLimitResetAt(resetSeconds: number, now: number): number {
+  const wait = resetSeconds * 1000 - now;
+  return now + Math.min(Math.max(wait, SECONDARY_RATE_LIMIT_WAIT_MS), PRIMARY_RATE_LIMIT_WINDOW_MS);
+}
+
 /** 失敗した応答の本文から `message` を取り出す。読めなければ空文字。 */
 export function readErrorMessage(body: string): string {
   try {
@@ -195,7 +211,7 @@ export function classifyErrorResponse(
       const reset = Number(headers.get('x-ratelimit-reset'));
       const resetAt =
         headers.get('x-ratelimit-reset') !== null && Number.isFinite(reset) && reset > 0
-          ? reset * 1000
+          ? rateLimitResetAt(reset, now)
           : now + SECONDARY_RATE_LIMIT_WAIT_MS;
       return { kind: 'rateLimited', status, resetAt };
     }

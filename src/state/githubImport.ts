@@ -48,18 +48,11 @@ export interface GitHubBatchPlan {
 export interface GitHubImportError {
   message: string;
   recover: 'retry' | 'reconnect' | 'dismiss';
-  /**
-   * この時刻（ミリ秒）までは再試行させない。rate limit の解除時刻。
-   * GitHub は解除前の再試行を続けないよう求めていて、一括取り込みでは1回の再試行が
-   * 多数の要求をやり直すので、表示だけでなく操作でも止める。
-   */
-  retryAt?: number;
 }
 
-/** 再試行できるようになるまでの残り時間（ミリ秒）。0 なら今すぐ再試行できる。 */
-export function retryWaitMs(error: GitHubImportError | null, now: number): number {
-  if (error?.recover !== 'retry' || error.retryAt === undefined) return 0;
-  return Math.max(0, error.retryAt - now);
+/** rate limit が解けるまでの残り時間（ミリ秒）。0 なら GitHub へ要求してよい。 */
+export function rateLimitWaitMs(until: number | null, now: number): number {
+  return until === null ? 0 : Math.max(0, until - now);
 }
 
 export type ConnectionState =
@@ -105,6 +98,14 @@ export interface GitHubImportState {
   error: GitHubImportError | null;
   /** 失敗ではない知らせ（「最新です」など）。次の操作で消える。 */
   info: string | null;
+  /**
+   * GitHub の rate limit が解ける時刻（ミリ秒）。それまでは GitHub へ一切要求しない。
+   *
+   * 失敗の知らせ（`error`）とは別に持つ。知らせは選択を変える・閉じるなどで消えるが、
+   * それで待ちまで消えると、別のボタンや開き直しから解除前の要求を出せてしまう。
+   * GitHub は解除前に要求を続けないよう求めていて、一括取り込みでは1回で多数の要求を出す。
+   */
+  rateLimitedUntil: number | null;
 }
 
 export type GitHubImportAction =
@@ -117,7 +118,8 @@ export type GitHubImportAction =
   /** 切断する。トークンの失効やユーザーの操作で呼ぶ。 */
   | { type: 'disconnect'; notice: string | null }
   | { type: 'busy'; label: string }
-  | { type: 'fail'; error: GitHubImportError }
+  /** `rateLimitedUntil` を渡すと、その時刻まで GitHub への要求を止める。 */
+  | { type: 'fail'; error: GitHubImportError; rateLimitedUntil?: number }
   | { type: 'error/dismiss' }
   | { type: 'info'; message: string }
   | { type: 'repositories/loaded'; repositories: GitHubRepository[] }
@@ -165,6 +167,7 @@ export const initialGitHubImportState: GitHubImportState = {
   busy: null,
   error: null,
   info: null,
+  rateLimitedUntil: null,
 };
 
 /** 今いるディレクトリ。 */
@@ -230,13 +233,20 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
         ...initialGitHubImportState,
         open: state.open,
         notice: action.notice,
+        // rate limit は GitHub の利用者ごとに掛かるので、接続し直しても解けていない。
+        rateLimitedUntil: state.rateLimitedUntil,
       };
 
     case 'busy':
       return { ...state, busy: action.label, error: null };
 
     case 'fail':
-      return { ...state, busy: null, error: action.error };
+      return {
+        ...state,
+        busy: null,
+        error: action.error,
+        rateLimitedUntil: action.rateLimitedUntil ?? state.rateLimitedUntil,
+      };
 
     case 'error/dismiss':
       return { ...state, error: null };

@@ -8,7 +8,7 @@ import {
   type GitHubImportState,
   githubImportReducer,
   initialGitHubImportState,
-  retryWaitMs,
+  rateLimitWaitMs,
 } from './githubImport';
 
 const SHA_A = 'a'.repeat(40);
@@ -478,27 +478,59 @@ describe('知らせ', () => {
   });
 });
 
-describe('再試行の待ち時間', () => {
-  const failure = (retryAt?: number) => ({
+describe('rate limit の待ち', () => {
+  const limited = {
     message: 'GitHub API の利用上限に達しました。',
     recover: 'retry' as const,
-    ...(retryAt === undefined ? {} : { retryAt }),
-  });
+  };
 
   it('解除時刻までは残り時間を返し、過ぎたら 0 にする', () => {
-    expect(retryWaitMs(failure(10_000), 4_000)).toBe(6_000);
-    expect(retryWaitMs(failure(10_000), 10_000)).toBe(0);
-    expect(retryWaitMs(failure(10_000), 12_000)).toBe(0);
+    expect(rateLimitWaitMs(10_000, 4_000)).toBe(6_000);
+    expect(rateLimitWaitMs(10_000, 10_000)).toBe(0);
+    expect(rateLimitWaitMs(10_000, 12_000)).toBe(0);
+    expect(rateLimitWaitMs(null, 0)).toBe(0);
   });
 
-  it('解除時刻の無い失敗や、再試行ではない失敗は待たせない', () => {
-    expect(retryWaitMs(null, 0)).toBe(0);
-    expect(retryWaitMs(failure(), 0)).toBe(0);
-    expect(retryWaitMs({ ...failure(10_000), recover: 'dismiss' }, 0)).toBe(0);
+  it('失敗の知らせとは別に持ち、知らせが消えても待ちは残る', () => {
+    const failed = githubImportReducer(PINNED, {
+      type: 'fail',
+      error: limited,
+      rateLimitedUntil: 10_000,
+    });
+    expect(failed.rateLimitedUntil).toBe(10_000);
+
+    const dismissed = githubImportReducer(failed, { type: 'error/dismiss' });
+    const reselected = githubImportReducer(dismissed, {
+      type: 'selection/set',
+      path: 'chapters',
+      selected: true,
+    });
+    const closed = githubImportReducer(reselected, { type: 'close' });
+    expect(closed.error).toBeNull();
+    expect(closed.rateLimitedUntil).toBe(10_000);
   });
 
-  it('失敗の知らせは、解除時刻ごと画面へ渡る', () => {
-    const failed = githubImportReducer(PINNED, { type: 'fail', error: failure(10_000) });
-    expect(retryWaitMs(failed.error, 9_000)).toBe(1_000);
+  it('rate limit でない失敗は、待ちを変えない', () => {
+    const failed = githubImportReducer(PINNED, {
+      type: 'fail',
+      error: limited,
+      rateLimitedUntil: 10_000,
+    });
+    const other = githubImportReducer(failed, {
+      type: 'fail',
+      error: { message: '見つかりませんでした。', recover: 'retry' },
+    });
+    expect(other.rateLimitedUntil).toBe(10_000);
+  });
+
+  it('rate limit は利用者ごとなので、接続し直しても待ちは残る', () => {
+    const failed = githubImportReducer(PINNED, {
+      type: 'fail',
+      error: limited,
+      rateLimitedUntil: 10_000,
+    });
+    expect(githubImportReducer(failed, { type: 'disconnect', notice: null }).rateLimitedUntil).toBe(
+      10_000,
+    );
   });
 });

@@ -1128,6 +1128,54 @@ test('rate limit はネットワーク障害と区別して知らせる', async 
   await expect(dialog(page).getByRole('heading', { name: 'ファイルを選ぶ' })).toBeVisible();
 });
 
+test('rate limit のあいだは、どのボタンや操作からも GitHub へ要求しない', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  // 解除時刻まで待たずに確かめるため、ページの時計を進められるようにしておく。
+  await page.clock.install();
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
+  const fetch = plan.getByRole('button', { name: '2ファイルを取得' });
+
+  // 本文の取得中に rate limit になる。
+  mock.rateLimitedResponses = 1;
+  await fetch.click();
+  await expect(dialog(page).getByRole('alert')).toContainText('GitHub API の利用上限に達しました');
+  const githubCalls = (): number => mock.apiCalls(/./).length;
+  const requestsAfterLimit = githubCalls();
+
+  // 「再試行」だけでなく、計画画面の「取得」も押せない。
+  await expect(dialog(page).getByRole('button', { name: '再試行' })).toBeDisabled();
+  await expect(fetch).toBeDisabled();
+
+  // 選択へ戻って失敗の知らせが消えても、待ちは続く。理由も見えている。
+  await plan.getByRole('button', { name: '選択へ戻る' }).click();
+  await expect(dialog(page).getByRole('alert')).toHaveCount(0);
+  await expect(dialog(page).getByRole('status')).toContainText('GitHub API の利用上限に達しました');
+  await expect(dialog(page).getByRole('button', { name: '選択したファイルを確認' })).toBeDisabled();
+
+  // まだ開いていないフォルダを開く操作も、要求を出さずに知らせるだけ。
+  await entry(page, 'chapters/').click();
+  await expect(dialog(page).getByRole('alert')).toContainText('GitHub API の利用上限に達しました');
+  expect(githubCalls()).toBe(requestsAfterLimit);
+
+  // 解除時刻（10分後）を過ぎれば、続きから取り込める。
+  await page.clock.fastForward('10:30');
+  await dialog(page).getByRole('button', { name: '再試行' }).click();
+  await expect(entry(page, 'ch1.md')).toBeVisible();
+  await dialog(page)
+    .getByRole('navigation', { name: '現在の場所' })
+    .getByRole('button', { name: 'novel' })
+    .click();
+  const batch = await fetchSelection(page, 2);
+  await batch.getByRole('button', { name: '2ファイルを取り込む' }).click();
+  await expect(page.locator('.input-card')).toHaveCount(3);
+});
+
 test('secondary rate limit も本文から見分けて知らせる（retry-after は読めない）', async ({
   page,
 }) => {
