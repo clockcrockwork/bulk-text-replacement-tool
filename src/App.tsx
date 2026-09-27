@@ -386,7 +386,7 @@ export function App(): JSX.Element {
         adds,
         sampleReset: createSampleReset(),
       });
-      github.finish();
+      github.finishBatch();
       const shiftJis = candidates.filter((candidate) => candidate.encoding === 'shift_jis').length;
       flash(
         `GitHub から ${candidates.length}ファイルを取り込みました` +

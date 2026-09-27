@@ -41,6 +41,7 @@ import {
   type GitHubImportState,
   githubImportReducer,
   initialGitHubImportState,
+  retryWaitMs,
   type TrailStep,
 } from '../state/githubImport';
 import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types';
@@ -189,8 +190,10 @@ export interface GitHubImport {
   /** 確かめた計画の全件を取得・検証する。 */
   fetchBatch: () => void;
   clearBatch: () => void;
-  /** 取り込みを確定したあとに呼ぶ。ダイアログを閉じる。 */
+  /** 1件の取り込みを確定したあとに呼ぶ。ダイアログを閉じ、複数選択は残す。 */
   finish: () => void;
+  /** 一括取り込みを確定したあとに呼ぶ。選択を片付けてダイアログを閉じる。 */
+  finishBatch: () => void;
 }
 
 /** 暗号学的な乱数を base64url にする。32 バイトで verifier は 43 文字になる。 */
@@ -290,32 +293,29 @@ export function useGitHubImport(): GitHubImport {
           dispatch({ type: 'fail', error: { message: error.message, recover: 'dismiss' } });
           return;
         }
-        if (error instanceof GitHubBatchRequestError) {
-          const detail = error.requestError.detail;
+        const requestFailure =
+          error instanceof GitHubBatchRequestError
+            ? { detail: error.requestError.detail, prefix: `${error.path}: ` }
+            : error instanceof GitHubRequestError
+              ? { detail: error.detail, prefix: '' }
+              : null;
+        if (requestFailure) {
+          const { detail, prefix } = requestFailure;
+          const message = `${prefix}${describeGitHubError(detail)}`;
           if (detail.kind === 'unauthorized') {
-            dropConnection(`${error.path}: ${describeGitHubError(detail)}`);
+            dropConnection(message);
             return;
           }
           dispatch({
             type: 'fail',
             error: {
-              message: `${error.path}: ${describeGitHubError(detail)}`,
-              recover: detail.kind === 'listTooLong' ? 'dismiss' : 'retry',
-            },
-          });
-          return;
-        }
-        if (error instanceof GitHubRequestError) {
-          if (error.detail.kind === 'unauthorized') {
-            dropConnection(describeGitHubError(error.detail));
-            return;
-          }
-          dispatch({
-            type: 'fail',
-            error: {
-              message: describeGitHubError(error.detail),
+              message,
               // 一覧が長すぎるのは、やり直しても同じ結果で rate limit を食うだけなので再試行させない。
-              recover: error.detail.kind === 'listTooLong' ? 'dismiss' : 'retry',
+              recover: detail.kind === 'listTooLong' ? 'dismiss' : 'retry',
+              // rate limit は解除時刻まで再試行させない（表示している時刻と操作を一致させる）。
+              ...(detail.kind === 'rateLimited' && detail.resetAt !== null
+                ? { retryAt: detail.resetAt }
+                : {}),
             },
           });
           return;
@@ -344,7 +344,7 @@ export function useGitHubImport(): GitHubImport {
     const knownEntries = state.knownEntries;
 
     run(
-      '選択したファイルを数えています',
+      '選択範囲を確認しています（ファイルの本文はまだ取得していません）',
       async (api, signal) => {
         const entries = await enumerateSelectedEntries(
           api,
@@ -618,7 +618,11 @@ export function useGitHubImport(): GitHubImport {
     },
     connect,
     disconnect: () => dropConnection(null),
-    retry: () => lastTask.current?.(),
+    retry: () => {
+      // ボタンは解除時刻まで押せないが、手続きの側でも解除前の再試行を通さない。
+      if (retryWaitMs(state.error, Date.now()) > 0) return;
+      lastTask.current?.();
+    },
     dismissError: () => dispatch({ type: 'error/dismiss' }),
     reloadRepositories: loadRepositories,
     selectRepository: (repository) => {
@@ -689,9 +693,20 @@ export function useGitHubImport(): GitHubImport {
     clearCandidate: () => dispatch({ type: 'candidate/clear' }),
     prepareSelection,
     fetchBatch,
-    clearBatch: () => dispatch({ type: 'batch/clear' }),
+    clearBatch: () => {
+      // 取得の途中で戻ったら、残りの取得も止める（GitHub の利用上限を使い続けない）。
+      abortRef.current?.abort();
+      abortRef.current = null;
+      dispatch({ type: 'batch/clear' });
+    },
     finish: () => {
+      // 1件だけ確かめて取り込む操作は、複数選択を組んでいる途中でも自然に行う。
+      // 組んだ選択は黙って捨てず、開き直せば続けられるように残す。
       dispatch({ type: 'candidate/clear' });
+      dispatch({ type: 'close' });
+    },
+    finishBatch: () => {
+      // 一括で取り込んだ選択は役目を終えたので片付ける。
       dispatch({ type: 'batch/clear' });
       dispatch({ type: 'selection/clear' });
       dispatch({ type: 'close' });

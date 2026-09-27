@@ -70,7 +70,7 @@ export function findSameSource(
 export interface BatchSourceMatch {
   path: string;
   /** 同じ取り込み元を持つ既存の入力。2件以上なら更新先を推測しない。 */
-  sameSource: Array<{ id: string; label: string }>;
+  sameSource: ReadonlyArray<{ id: string; label: string }>;
   /** 同じファイル名の、別の取り込み元の入力（既存または同じ一括の中）があるか。 */
   titleCollision: boolean;
 }

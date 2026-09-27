@@ -48,6 +48,18 @@ export interface GitHubBatchPlan {
 export interface GitHubImportError {
   message: string;
   recover: 'retry' | 'reconnect' | 'dismiss';
+  /**
+   * この時刻（ミリ秒）までは再試行させない。rate limit の解除時刻。
+   * GitHub は解除前の再試行を続けないよう求めていて、一括取り込みでは1回の再試行が
+   * 多数の要求をやり直すので、表示だけでなく操作でも止める。
+   */
+  retryAt?: number;
+}
+
+/** 再試行できるようになるまでの残り時間（ミリ秒）。0 なら今すぐ再試行できる。 */
+export function retryWaitMs(error: GitHubImportError | null, now: number): number {
+  if (error?.recover !== 'retry' || error.retryAt === undefined) return 0;
+  return Math.max(0, error.retryAt - now);
 }
 
 export type ConnectionState =
@@ -330,7 +342,8 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
       return acceptBatchCandidates(state, action);
 
     case 'batch/clear':
-      return { ...state, batchPlan: null, batchCandidates: null, error: null };
+      // 取得の途中で戻ったときも、呼び出し側が取得を中断するので待ち表示を片付ける。
+      return { ...state, batchPlan: null, batchCandidates: null, busy: null, error: null };
 
     case 'selection/set':
       if (!state.snapshot) return state;

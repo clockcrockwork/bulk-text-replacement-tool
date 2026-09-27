@@ -150,11 +150,20 @@ describe('遅延読み込みする tree の選択', () => {
 
 describe('取得前の計画', () => {
   it('件数と、大きさの分かる分の合計を出す', () => {
-    expect(planBatch([file('a.md', 10), file('b.md', 20), file('c.md', null)])).toEqual({
-      files: 3,
+    expect(planBatch([file('a.md', 10), file('b.md', 20)])).toEqual({
+      files: 2,
       bytes: 30,
-      unknownSizes: 1,
+      unknownSizes: 0,
       warnings: [],
+    });
+  });
+
+  it('大きさ不明の項目があれば、既知の合計が小さくても警告する', () => {
+    expect(planBatch([file('a.md', 10), file('b.md', null), file('c.md', null)])).toEqual({
+      files: 3,
+      bytes: 10,
+      unknownSizes: 2,
+      warnings: [{ kind: 'unknownSize', files: 2 }],
     });
   });
 

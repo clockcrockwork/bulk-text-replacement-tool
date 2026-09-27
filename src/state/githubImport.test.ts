@@ -8,6 +8,7 @@ import {
   type GitHubImportState,
   githubImportReducer,
   initialGitHubImportState,
+  retryWaitMs,
 } from './githubImport';
 
 const SHA_A = 'a'.repeat(40);
@@ -444,6 +445,18 @@ describe('一括取り込みの段階', () => {
     ).toBe(PLANNED);
   });
 
+  it('取得の途中で選択へ戻ると、待ち表示も片付ける（呼び出し側が取得を中断する）', () => {
+    const fetching = githubImportReducer(PLANNED, {
+      type: 'busy',
+      label: '選択したファイルを取得しています',
+    });
+    const back = githubImportReducer(fetching, { type: 'batch/clear' });
+    expect(back.batchPlan).toBeNull();
+    expect(back.busy).toBeNull();
+    // 選択は残す（選び直してから、もう一度確かめられる）。
+    expect(back.selection).toBe(SELECTED.selection);
+  });
+
   it('選択を変えたり1ファイルの確認へ進んだりすると、計画は捨てる', () => {
     expect(
       githubImportReducer(PLANNED, { type: 'selection/set', path: 'x', selected: true }).batchPlan,
@@ -462,5 +475,30 @@ describe('知らせ', () => {
     expect(githubImportReducer(informed, { type: 'busy', label: 'x' }).info).toBeNull();
     // 何も変わらない action では消さない。
     expect(githubImportReducer(informed, { type: 'dir/goTo', index: 0 }).info).toBe('最新です');
+  });
+});
+
+describe('再試行の待ち時間', () => {
+  const failure = (retryAt?: number) => ({
+    message: 'GitHub API の利用上限に達しました。',
+    recover: 'retry' as const,
+    ...(retryAt === undefined ? {} : { retryAt }),
+  });
+
+  it('解除時刻までは残り時間を返し、過ぎたら 0 にする', () => {
+    expect(retryWaitMs(failure(10_000), 4_000)).toBe(6_000);
+    expect(retryWaitMs(failure(10_000), 10_000)).toBe(0);
+    expect(retryWaitMs(failure(10_000), 12_000)).toBe(0);
+  });
+
+  it('解除時刻の無い失敗や、再試行ではない失敗は待たせない', () => {
+    expect(retryWaitMs(null, 0)).toBe(0);
+    expect(retryWaitMs(failure(), 0)).toBe(0);
+    expect(retryWaitMs({ ...failure(10_000), recover: 'dismiss' }, 0)).toBe(0);
+  });
+
+  it('失敗の知らせは、解除時刻ごと画面へ渡る', () => {
+    const failed = githubImportReducer(PINNED, { type: 'fail', error: failure(10_000) });
+    expect(retryWaitMs(failed.error, 9_000)).toBe(1_000);
   });
 });

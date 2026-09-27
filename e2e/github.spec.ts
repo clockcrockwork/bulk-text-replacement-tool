@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { expect, type Page, test } from '@playwright/test';
+import { expect, type Page, type Route, test } from '@playwright/test';
 import { PENDING_AUTH_KEY } from '../src/lib/githubAuth';
 import { STORAGE_KEY } from '../src/lib/storage';
 import { goToTab, makeRule, openApp, seedWorkspace } from './fixtures';
@@ -61,6 +61,44 @@ async function fetchSelection(page: Page, files: number) {
   ).toBeVisible();
   await plan.getByRole('button', { name: `${files}ファイルを取得` }).click();
   return dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+}
+
+/**
+ * 条件に合う GitHub API の要求を、`release` まで応答させずに止めておく。
+ * 止めている間に中断された要求は `failed` に入る（`requestfailed` で数える）。
+ * 待ち時間で近似せず、中断が実際に起きたかを確かめるために使う。
+ */
+async function hold(page: Page, pattern: RegExp) {
+  const held: string[] = [];
+  const failed: string[] = [];
+  let open = (): void => {};
+  const released = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  const handler = async (route: Route): Promise<void> => {
+    held.push(route.request().url());
+    await released;
+    // 中断済みの要求は応答できない（それで正しい）。
+    await route.fallback().catch(() => {});
+  };
+  page.on('requestfailed', (request) => {
+    if (pattern.test(request.url())) failed.push(request.url());
+  });
+  await page.route(
+    (url) => url.origin === 'https://api.github.com' && pattern.test(url.href),
+    handler,
+  );
+  return {
+    held,
+    failed,
+    release: async (): Promise<void> => {
+      open();
+      await page.unroute(
+        (url) => url.origin === 'https://api.github.com' && pattern.test(url.href),
+        handler,
+      );
+    },
+  };
 }
 
 async function start(page: Page, mock: GitHubMock): Promise<void> {
@@ -389,7 +427,7 @@ test('batch で同じsourceが複数あると更新先を推測せず、明示�
   const commitButton = batch.getByRole('button', { name: '1ファイルを取り込む' });
   await expect(commitButton).toBeDisabled();
 
-  await decision.selectOption('old-2');
+  await decision.selectOption('update:old-2');
   await expect(commitButton).toBeEnabled();
   await commitButton.click();
 
@@ -490,7 +528,9 @@ test('大きな選択は、取得の前にブラウザへ保存できない可�
   expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(0);
 });
 
-test('数えている間はチェックを変えられず、取得の途中で閉じれば何も反映しない', async ({ page }) => {
+test('数えている間はチェックを変えられず、取得の途中で閉じれば残りの取得を中断する', async ({
+  page,
+}) => {
   const mock = new GitHubMock([REPO]);
   await start(page, mock);
   await connect(page);
@@ -499,34 +539,173 @@ test('数えている間はチェックを変えられず、取得の途中で�
   const chapters = dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' });
   await chapters.check();
 
-  await page.route('https://api.github.com/**/git/trees/**', async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    await route.fallback();
-  });
+  const trees = await hold(page, /\/git\/trees\//);
   await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  await expect.poll(() => trees.held.length).toBeGreaterThan(0);
   // 数えている一覧と画面の選択が食い違わないよう、終わるまで選択は固定する。
   await expect(chapters).toBeDisabled();
+  await trees.release();
   const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
   await expect(plan.getByRole('heading', { name: '2ファイルが見つかりました' })).toBeVisible();
-  await page.unrouteAll({ behavior: 'ignoreErrors' });
-  await mock.install(page);
 
-  await page.route('https://api.github.com/**/git/blobs/**', async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    await route.fallback();
-  });
+  const blobs = await hold(page, /\/git\/blobs\//);
   await plan.getByRole('button', { name: '2ファイルを取得' }).click();
-  await expect(dialog(page).getByRole('status')).toContainText('取得しています');
+  await expect.poll(() => blobs.held.length).toBe(2);
   await dialog(page).getByRole('button', { name: '閉じる' }).click();
-  await page.unrouteAll({ behavior: 'ignoreErrors' });
-  await mock.install(page);
 
-  // 中断したので、遅れて返っても入力は増えない。開き直すと選択の画面から続けられる。
-  await page.waitForTimeout(700);
+  // 閉じた時点で、走っていた取得はすべて中断される（遅れて届くのを待つだけではない）。
+  await expect.poll(() => blobs.failed.length).toBe(2);
+  await blobs.release();
   await expect(page.locator('.input-card')).toHaveCount(1);
   await page.getByRole('button', { name: 'GitHubから追加' }).click();
   await expect(dialog(page).getByRole('heading', { name: 'ファイルを選ぶ' })).toBeVisible();
   await expect(chapters).toBeChecked();
+});
+
+test('取得の途中で「選択へ戻る」を押すと、取得を中断して選択の画面に戻る', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  const chapters = dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' });
+  await chapters.check();
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
+
+  const blobs = await hold(page, /\/git\/blobs\//);
+  await plan.getByRole('button', { name: '2ファイルを取得' }).click();
+  await expect.poll(() => blobs.held.length).toBe(2);
+  await plan.getByRole('button', { name: '選択へ戻る' }).click();
+
+  // 取得は止まり、待ち表示も選択の固定も残らない。
+  await expect.poll(() => blobs.failed.length).toBe(2);
+  await expect(dialog(page).getByRole('status')).toHaveCount(0);
+  await expect(chapters).toBeEnabled();
+  await expect(chapters).toBeChecked();
+  await blobs.release();
+
+  // 固まっていないので、もう一度確かめて取り込める。
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  await plan.getByRole('button', { name: '2ファイルを取得' }).click();
+  await dialog(page)
+    .getByRole('region', { name: '複数ファイルの取り込み確認' })
+    .getByRole('button', { name: '2ファイルを取り込む' })
+    .click();
+  await expect(page.locator('.input-card')).toHaveCount(3);
+});
+
+test('1件だけ確かめて取り込んでも、組んでいた複数選択は残る', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  const chapters = dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' });
+  await chapters.check();
+  await entry(page, 'README.md').click();
+  await dialog(page).getByRole('button', { name: '入力に追加' }).click();
+  await expect(page.locator('.input-card')).toHaveCount(2);
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await expect(chapters).toBeChecked();
+
+  // 一括で取り込んだら、その選択は役目を終えたので片付く。
+  const batch = await fetchSelection(page, 2);
+  await batch.getByRole('button', { name: '2ファイルを取り込む' }).click();
+  await expect(page.locator('.input-card')).toHaveCount(4);
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await expect(chapters).not.toBeChecked();
+});
+
+test('大量の選択でも、計画画面と確認画面は先頭だけを並べて残りを件数で示す', async ({ page }) => {
+  const files = Array.from({ length: 120 }, (_, index) => ({
+    path: `many/f${String(index).padStart(3, '0')}.md`,
+    content: `${index}\n`,
+  }));
+  const mock = new GitHubMock([novelRepository({ branches: { main: files } })]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'many フォルダを選択' }).check();
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
+  await expect(plan.getByRole('heading', { name: '120ファイルが見つかりました' })).toBeVisible();
+  await expect(
+    plan.getByRole('list', { name: '取り込むファイル' }).getByRole('listitem'),
+  ).toHaveCount(100);
+  await expect(plan).toContainText('ほか 20件');
+
+  await plan.getByRole('button', { name: '120ファイルを取得' }).click();
+  const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+  await expect(
+    batch.getByRole('list', { name: '取り込むファイル' }).getByRole('listitem'),
+  ).toHaveCount(100);
+  await expect(batch).toContainText('ほか 20件');
+  await batch.getByRole('button', { name: '120ファイルを取り込む' }).click();
+  await expect(page.locator('.input-card')).toHaveCount(121);
+});
+
+test('同じ取り込み元の候補は、更新先が1件のものをまとめて更新に決められる', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  const head = mock.headOf(REPO.id, 'main');
+  const sourceOf = (path: string) => ({
+    kind: 'github' as const,
+    repositoryId: REPO.id,
+    owner: REPO.owner,
+    repo: REPO.name,
+    ref: 'main',
+    commitSha: head,
+    path,
+    blobSha: 'b'.repeat(40),
+  });
+  await mock.install(page);
+  await seedWorkspace(page, {
+    inputs: [
+      { id: 'one', title: 'one.md', text: '古い1\n', source: sourceOf('chapters/ch1.md') },
+      { id: 'two', title: 'two.txt', text: '古い2\n', source: sourceOf('chapters/ch2.txt') },
+    ],
+    groups: [{ id: 'g1', name: 'A用' }],
+    rules: [],
+  });
+  await openApp(page);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  const batch = await fetchSelection(page, 2);
+  const commit = batch.getByRole('button', { name: '2ファイルを取り込む' });
+  await expect(commit).toBeDisabled();
+  await expect(batch).toContainText('未決定 2件');
+
+  await batch.getByRole('button', { name: '更新先が1件の2件をすべて更新' }).click();
+  await expect(batch.getByRole('combobox', { name: 'chapters/ch1.md の取り込み方法' })).toHaveValue(
+    'update:one',
+  );
+  await commit.click();
+
+  // 追加ではなく更新なので、入力は増えず、タイトル（出力名）はそのまま本文が入れ替わる。
+  await expect(page.locator('.input-card')).toHaveCount(2);
+  await expect(page.locator('.input-card__title').nth(0)).toHaveValue('one.md');
+  await expect(page.locator('.input-card__preview').nth(0)).toHaveValue(
+    'アリスは川辺に座っていた。\n',
+  );
+});
+
+test('大きさの分からないファイルがあれば、合計が小さくても取得の前に警告する', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  mock.omitTreeSizes = true;
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
+  await expect(plan).toContainText('2件は大きさを事前に確認できません');
+  await expect(plan).toContainText('以上（2件は大きさ不明）');
+  expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(0);
 });
 
 test('「最新に更新」でコミットが進んだら、選択を解除したことを知らせる', async ({ page }) => {
@@ -873,12 +1052,20 @@ test('取得に失敗しても入力は増えず、再試行できる', async ({
 
 test('rate limit はネットワーク障害と区別して知らせる', async ({ page }) => {
   const mock = new GitHubMock([REPO]);
+  // 解除時刻まで待たずに確かめるため、ページの時計を進められるようにしておく。
+  await page.clock.install();
   await start(page, mock);
   await connect(page);
   mock.rateLimitedResponses = 1;
   await dialog(page).getByRole('button', { name: 'octo/novel' }).click();
   await expect(dialog(page).getByRole('alert')).toContainText('GitHub API の利用上限に達しました');
-  await dialog(page).getByRole('button', { name: '再試行' }).click();
+
+  // 表示している解除時刻（10分後）までは、再試行を押せない。
+  const retry = dialog(page).getByRole('button', { name: '再試行' });
+  await expect(retry).toBeDisabled();
+  await page.clock.fastForward('10:30');
+  await expect(retry).toBeEnabled();
+  await retry.click();
   await expect(dialog(page).getByRole('heading', { name: 'ファイルを選ぶ' })).toBeVisible();
 });
 
@@ -886,12 +1073,19 @@ test('secondary rate limit も本文から見分けて知らせる（retry-after
   page,
 }) => {
   const mock = new GitHubMock([REPO]);
+  // 解除時刻まで待たずに確かめるため、ページの時計を進められるようにしておく。
+  await page.clock.install();
   await start(page, mock);
   await connect(page);
   mock.secondaryRateLimitedResponses = 1;
   await dialog(page).getByRole('button', { name: 'octo/novel' }).click();
   await expect(dialog(page).getByRole('alert')).toContainText('GitHub API の利用上限に達しました');
   await expect(dialog(page).getByRole('alert')).not.toContainText('権限');
+  // 解除時刻は分からないので、GitHub の案内どおり少なくとも1分は再試行させない。
+  const retry = dialog(page).getByRole('button', { name: '再試行' });
+  await expect(retry).toBeDisabled();
+  await page.clock.fastForward('01:05');
+  await expect(retry).toBeEnabled();
 });
 
 test('トークンが失効したら（401）、接続を切って接続し直してもらう', async ({ page }) => {

@@ -1660,6 +1660,18 @@ button.github__entry:hover {
   overflow-wrap: anywhere;
 }
 
+.github__list-more {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.github__batch-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .github__batch-item {
   display: grid;
   gap: 6px;

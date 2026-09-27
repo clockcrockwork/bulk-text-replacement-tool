@@ -8,7 +8,21 @@ import {
   useState,
 } from 'react';
 import { formatTextMeta } from '../lib/format';
-import { describeEntryStatus, formatBytes, type GitHubCandidate } from '../lib/githubApi';
+import { describeEntryStatus, formatBytes } from '../lib/githubApi';
+import {
+  BATCH_LIST_LIMIT,
+  type BatchChoices,
+  choiceToValue,
+  chooseAddForUndecided,
+  chooseSingleUpdates,
+  countUndecided,
+  type GitHubBatchDecision,
+  initialBatchChoices,
+  needsDecision,
+  orderForReview,
+  toBatchDecisions,
+  valueToChoice,
+} from '../lib/githubBatchReview';
 import {
   type BatchWarning,
   type GitHubSelectionMark,
@@ -20,7 +34,7 @@ import {
   summarizeKnownSelection,
 } from '../lib/githubSelection';
 import { formatSourceDetail, shortSha } from '../lib/inputSource';
-import type { GitHubImportState } from '../state/githubImport';
+import { type GitHubImportError, type GitHubImportState, retryWaitMs } from '../state/githubImport';
 import type { GitHubRepository, GitHubTreeEntry } from '../types';
 import { Icon } from './Icon';
 
@@ -61,10 +75,7 @@ export interface GitHubBatchMatch {
   titleCollision: boolean;
 }
 
-/** 候補1件の取り込み方法。未決定の候補は App に渡さない。 */
-export type GitHubBatchDecision =
-  | { path: string; action: 'add' }
-  | { path: string; action: 'update'; inputId: string };
+export type { GitHubBatchDecision } from '../lib/githubBatchReview';
 
 interface GitHubImportDialogProps {
   state: GitHubImportState;
@@ -82,6 +93,57 @@ interface GitHubImportDialogProps {
   onAdd: () => void;
   onUpdate: (inputId: string) => void;
   onApplyBatch: (decisions: readonly GitHubBatchDecision[]) => void;
+}
+
+/**
+ * 失敗の知らせと、次に取れる手。
+ *
+ * rate limit のときは、表示している解除時刻までは「再試行」を押せなくする。GitHub は
+ * 解除前の再試行を続けないよう求めていて、一括取り込みでは1回の再試行が多数の要求を
+ * やり直す。解除時刻になったら押せるように、その時刻に描画し直す。
+ */
+function ErrorNotice({
+  error,
+  handlers,
+}: {
+  error: GitHubImportError;
+  handlers: GitHubDialogHandlers;
+}): JSX.Element {
+  // 残り時間は描画のたびに今の時刻から求める（別の失敗に差し替わっても古い時刻で数えない）。
+  // 解除時刻に描画し直すためだけに、再描画のきっかけを持つ。
+  const [, rerender] = useState(0);
+  const wait = retryWaitMs(error, Date.now());
+  useEffect(() => {
+    if (wait <= 0) return;
+    const timer = window.setTimeout(() => rerender((count) => count + 1), wait);
+    return () => window.clearTimeout(timer);
+  }, [wait]);
+
+  return (
+    <div className="dialog__error github__error" role="alert">
+      <span>{error.message}</span>
+      {error.recover === 'retry' ? (
+        <button
+          type="button"
+          className="btn btn--small"
+          disabled={wait > 0}
+          onClick={handlers.retry}
+        >
+          再試行
+        </button>
+      ) : null}
+      {error.recover === 'reconnect' ? (
+        <button type="button" className="btn btn--small" onClick={handlers.disconnect}>
+          接続し直す
+        </button>
+      ) : null}
+      {error.recover === 'dismiss' ? (
+        <button type="button" className="btn btn--small" onClick={handlers.dismissError}>
+          閉じる
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 /** 表示中の画面。フォーカスを移す目印に使う。 */
@@ -185,26 +247,7 @@ export function GitHubImportDialog({
           </p>
         ) : null}
 
-        {state.error ? (
-          <div className="dialog__error github__error" role="alert">
-            <span>{state.error.message}</span>
-            {state.error.recover === 'retry' ? (
-              <button type="button" className="btn btn--small" onClick={handlers.retry}>
-                再試行
-              </button>
-            ) : null}
-            {state.error.recover === 'reconnect' ? (
-              <button type="button" className="btn btn--small" onClick={handlers.disconnect}>
-                接続し直す
-              </button>
-            ) : null}
-            {state.error.recover === 'dismiss' ? (
-              <button type="button" className="btn btn--small" onClick={handlers.dismissError}>
-                閉じる
-              </button>
-            ) : null}
-          </div>
-        ) : null}
+        {state.error ? <ErrorNotice error={state.error} handlers={handlers} /> : null}
 
         <div className="dialog__actions">
           {connected ? (
@@ -768,6 +811,8 @@ function describeBatchWarning(warning: BatchWarning): string {
       return `GitHub へ ${warning.files}回リクエストします。GitHub の利用上限は通常 1時間 5,000回で、使い切るとしばらく取り込めなくなります。`;
     case 'storage':
       return `合計 ${formatBytes(warning.bytes)} あります。ブラウザへの保存は数MBで打ち止めになるため、取り込んだあと保存に失敗する可能性があります。`;
+    case 'unknownSize':
+      return `${warning.files}件は大きさを事前に確認できません。表示している合計は下限で、実際にはもっと大きく、保存に失敗する可能性があります。`;
   }
 }
 
@@ -794,7 +839,7 @@ function BatchPlanView({
         {plan.files}ファイルが見つかりました
       </h3>
       <p className="dialog__lead">
-        まだ取得していません。件数と容量を確かめてから取得してください。取得と検証が終わるまで入力テキストは変更されません。
+        ファイルの本文はまだ取得していません。件数と容量を確かめてから取得してください。取得と検証が終わるまで入力テキストは変更されません。
       </p>
       <ul className="dialog__details">
         <li>
@@ -810,13 +855,16 @@ function BatchPlanView({
         </ul>
       ) : null}
       <ul className="github__plan-list" aria-label="取り込むファイル">
-        {entries.map((entry) => (
+        {entries.slice(0, BATCH_LIST_LIMIT).map((entry) => (
           <li key={entry.path}>
             <span className="github__plan-path">{entry.path}</span>
-            {entry.size === null ? null : <span>{formatBytes(entry.size)}</span>}
+            <span>{entry.size === null ? '大きさ不明' : formatBytes(entry.size)}</span>
           </li>
         ))}
       </ul>
+      {entries.length > BATCH_LIST_LIMIT ? (
+        <p className="github__list-more">ほか {entries.length - BATCH_LIST_LIMIT}件</p>
+      ) : null}
       <div className="dialog__row">
         <button type="button" className="btn" onClick={handlers.clearBatch}>
           選択へ戻る
@@ -836,23 +884,6 @@ function BatchPlanView({
 
 // ---- 複数取り込みの確認 --------------------------------------------------------
 
-const ADD_NEW = '__add__';
-
-/** 選択欄の値を取り込み方法にする。未決定（空）のものは含めない。 */
-function toBatchDecisions(
-  candidates: readonly GitHubCandidate[],
-  decisions: ReadonlyMap<string, string>,
-): GitHubBatchDecision[] {
-  return candidates.flatMap((candidate): GitHubBatchDecision[] => {
-    const path = candidate.source.path;
-    const value = decisions.get(path);
-    if (!value) return [];
-    return value === ADD_NEW
-      ? [{ path, action: 'add' }]
-      : [{ path, action: 'update', inputId: value }];
-  });
-}
-
 function BatchCandidateView({
   state,
   handlers,
@@ -864,23 +895,30 @@ function BatchCandidateView({
   candidates: NonNullable<GitHubImportState['batchCandidates']>;
 }): JSX.Element {
   // 候補は数千件になり得るので、パスから引ける索引にしておく（行ごとに全体を探さない）。
-  const matchByPath = useMemo(
-    () => new Map(batchMatches.map((match) => [match.path, match])),
-    [batchMatches],
+  const candidateByPath = useMemo(
+    () => new Map(candidates.map((candidate) => [candidate.source.path, candidate])),
+    [candidates],
   );
-  // 同じ取り込み元が既にある候補は未決定（空）から始め、利用者に選ばせる。
-  const [decisions, setDecisions] = useState<ReadonlyMap<string, string>>(
+  const ordered = useMemo(
     () =>
-      new Map(
-        candidates.map((candidate) => {
-          const match = matchByPath.get(candidate.source.path);
-          return [candidate.source.path, match && match.sameSource.length > 0 ? '' : ADD_NEW];
-        }),
+      orderForReview(
+        batchMatches,
+        (match) =>
+          match.titleCollision || candidateByPath.get(match.path)?.encoding === 'shift_jis',
       ),
+    [batchMatches, candidateByPath],
   );
-  const unresolved = candidates.some((candidate) => !decisions.get(candidate.source.path));
+  // 同じ取り込み元が既にある候補は未決定から始め、利用者に選ばせる。
+  const [choices, setChoices] = useState<BatchChoices>(() => initialBatchChoices(batchMatches));
+  const undecided = countUndecided(batchMatches, choices);
+  const needingDecision = batchMatches.filter(needsDecision);
+  const singleTargets = needingDecision.filter(
+    (match) => match.sameSource.length === 1 && !choices.has(match.path),
+  ).length;
   const bytes = candidates.reduce((sum, candidate) => sum + candidate.size, 0);
   const shiftJis = candidates.filter((candidate) => candidate.encoding === 'shift_jis').length;
+  const shown = ordered.slice(0, BATCH_LIST_LIMIT);
+  const hidden = ordered.length - shown.length;
 
   return (
     <section className="github__section" aria-label="複数ファイルの取り込み確認">
@@ -895,41 +933,77 @@ function BatchCandidateView({
         {shiftJis > 0 ? (
           <li>{shiftJis}件は Shift_JIS として読み込みました。文字化けが無いか確認してください。</li>
         ) : null}
+        {needingDecision.length > 0 ? (
+          <li>
+            {needingDecision.length}件は同じ取り込み元の入力があります
+            {undecided > 0 ? `（未決定 ${undecided}件）` : ''}
+          </li>
+        ) : null}
       </ul>
 
-      <ul className="github__batch-list">
-        {candidates.map((candidate) => {
-          const match = matchByPath.get(candidate.source.path);
-          const sameSource = match?.sameSource ?? [];
+      {undecided > 0 ? (
+        // 数が多いと1件ずつ選ぶのは現実的でないので、推測を含まない範囲でまとめて決められるようにする。
+        <div className="github__batch-bulk">
+          {singleTargets > 0 ? (
+            <button
+              type="button"
+              className="btn btn--small"
+              onClick={() => setChoices((current) => chooseSingleUpdates(batchMatches, current))}
+            >
+              更新先が1件の{singleTargets}件をすべて更新
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="btn btn--small"
+            onClick={() => setChoices((current) => chooseAddForUndecided(batchMatches, current))}
+          >
+            未決定の{undecided}件をすべて別の入力として追加
+          </button>
+        </div>
+      ) : null}
+
+      <ul className="github__batch-list" aria-label="取り込むファイル">
+        {shown.map((match) => {
+          const candidate = candidateByPath.get(match.path);
+          if (!candidate) return null;
           return (
-            <li key={candidate.source.path} className="github__batch-item">
+            <li key={match.path} className="github__batch-item">
               <div className="github__batch-file">
-                <strong>{candidate.source.path}</strong>
+                <strong>{match.path}</strong>
                 <span>
                   {formatBytes(candidate.size)}
                   {candidate.encoding === 'shift_jis' ? ' · Shift_JIS' : ''}
                 </span>
               </div>
-              {match?.titleCollision ? (
+              {match.titleCollision ? (
                 <span className="github__batch-warning">
                   同じファイル名の別入力があります（別の取り込み元として扱います）
                 </span>
               ) : null}
-              {sameSource.length > 0 ? (
+              {needsDecision(match) ? (
                 <label className="github__batch-decision">
                   <span>同じ取り込み元があります</span>
                   <select
-                    aria-label={`${candidate.source.path} の取り込み方法`}
-                    value={decisions.get(candidate.source.path) ?? ''}
+                    aria-label={`${match.path} の取り込み方法`}
+                    value={choiceToValue(choices.get(match.path))}
                     onChange={(event) => {
-                      const value = event.currentTarget.value;
-                      setDecisions((current) => new Map(current).set(candidate.source.path, value));
+                      const choice = valueToChoice(event.currentTarget.value);
+                      setChoices((current) => {
+                        const next = new Map(current);
+                        if (choice) next.set(match.path, choice);
+                        else next.delete(match.path);
+                        return next;
+                      });
                     }}
                   >
                     <option value="">取り込み方法を選ぶ</option>
-                    <option value={ADD_NEW}>別の入力として追加</option>
-                    {sameSource.map((target) => (
-                      <option key={target.id} value={target.id}>
+                    <option value={choiceToValue({ action: 'add' })}>別の入力として追加</option>
+                    {match.sameSource.map((target) => (
+                      <option
+                        key={target.id}
+                        value={choiceToValue({ action: 'update', inputId: target.id })}
+                      >
                         {target.label} を更新
                       </option>
                     ))}
@@ -942,6 +1016,12 @@ function BatchCandidateView({
           );
         })}
       </ul>
+      {hidden > 0 ? (
+        <p className="github__list-more">
+          ほか {hidden}
+          件は一覧を省略しています（判断が要るもの・注意が要るものを先に並べています）。
+        </p>
+      ) : null}
 
       <div className="dialog__row">
         <button type="button" className="btn" onClick={handlers.clearBatch}>
@@ -950,8 +1030,8 @@ function BatchCandidateView({
         <button
           type="button"
           className="btn btn--primary"
-          disabled={state.busy !== null || unresolved}
-          onClick={() => onApplyBatch(toBatchDecisions(candidates, decisions))}
+          disabled={state.busy !== null || undecided > 0}
+          onClick={() => onApplyBatch(toBatchDecisions(batchMatches, choices))}
         >
           {candidates.length}ファイルを取り込む
         </button>

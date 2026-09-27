@@ -157,11 +157,18 @@ export const BATCH_WARN_FILES = 200;
  */
 export const BATCH_WARN_BYTES = 2 * 1024 * 1024;
 
-export type BatchWarning = { kind: 'requests'; files: number } | { kind: 'storage'; bytes: number };
+export type BatchWarning =
+  | { kind: 'requests'; files: number }
+  | { kind: 'storage'; bytes: number }
+  /**
+   * 大きさを事前に確かめられない項目がある。表示する合計は下限にすぎず、既知の分が
+   * しきい値未満でも実際には大きくなり得るので、容量の警告とは別に必ず知らせる。
+   */
+  | { kind: 'unknownSize'; files: number };
 
 export interface BatchPlanSummary {
   files: number;
-  /** tree が大きさを返した分の合計。 */
+  /** tree が大きさを返した分の合計。大きさ不明の項目があれば下限。 */
   bytes: number;
   /** 大きさの分からない項目の数。0 でなければ合計は下限。 */
   unknownSizes: number;
@@ -179,5 +186,6 @@ export function planBatch(entries: readonly GitHubTreeEntry[]): BatchPlanSummary
   const warnings: BatchWarning[] = [];
   if (entries.length > BATCH_WARN_FILES) warnings.push({ kind: 'requests', files: entries.length });
   if (bytes > BATCH_WARN_BYTES) warnings.push({ kind: 'storage', bytes });
+  if (unknownSizes > 0) warnings.push({ kind: 'unknownSize', files: unknownSizes });
   return { files: entries.length, bytes, unknownSizes, warnings };
 }

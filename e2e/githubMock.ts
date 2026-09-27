@@ -103,6 +103,8 @@ export class GitHubMock {
   failPaths: string[] = [];
   /** recursive tree 応答をこの回数だけ truncated にする。fallback E2E 用。 */
   recursiveTreeTruncations = 0;
+  /** true の間、tree 応答から blob の size を省く（大きさ不明の項目の E2E 用）。 */
+  omitTreeSizes = false;
 
   private readonly repositories = new Map<number, MockRepository>();
   private readonly objects = new Map<string, { tree: TreeItem[] } | { blob: Buffer }>();
@@ -284,8 +286,10 @@ export class GitHubMock {
   private handleTree(route: Route, treeSha: string, recursive: boolean): Promise<void> {
     const object = this.objects.get(treeSha);
     if (!object || !('tree' in object)) return this.json(route, 404, { message: 'Not Found' });
+    const withoutSizes = (items: TreeItem[]): TreeItem[] =>
+      this.omitTreeSizes ? items.map(({ size: _size, ...rest }) => rest) : items;
     if (recursive) {
-      const entries = this.recursiveTree(treeSha);
+      const entries = withoutSizes(this.recursiveTree(treeSha));
       const truncated = this.recursiveTreeTruncations > 0;
       if (truncated) this.recursiveTreeTruncations -= 1;
       return this.json(route, 200, {
@@ -294,7 +298,11 @@ export class GitHubMock {
         truncated,
       });
     }
-    return this.json(route, 200, { sha: treeSha, tree: object.tree, truncated: false });
+    return this.json(route, 200, {
+      sha: treeSha,
+      tree: withoutSizes(object.tree),
+      truncated: false,
+    });
   }
 
   private handleApi(route: Route): Promise<void> {
