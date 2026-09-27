@@ -175,7 +175,7 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   V1 後の機能追加・改善・通常の依存更新はすべてここで行う。
 - **`release/lolipop-v1`** — コンテスト提出用の V1 保守系統。分岐点は PR #6 の
   squash merge `221c233`、V1 baseline はタグ `v1.0.0`
-  （V1 freeze prep PR #__PR__）。ロリポップ配信を維持するための最小修正以外は入れない。
+  （V1 freeze prep PR #10）。ロリポップ配信を維持するための最小修正以外は入れない。
 
 ### release/lolipop-v1 を触る条件
 

@@ -222,7 +222,7 @@ design/          元になった Claude Design のエクスポート（参照用
 | 本流 | `main` | Vercel production | 継続開発する唯一の本筋。GitHub 連携など V1 後の機能追加はここへ入れる |
 | コンテスト提出版 | `release/lolipop-v1` | ロリポップ | V1 を固定した保守系統。新機能は入れず、提出・公開維持に必要な最小修正だけを backport する |
 
-V1 の固定基点はタグ `v1.0.0`（V1 freeze prep PR #__PR__ の squash merge）です。
+V1 の固定基点はタグ `v1.0.0`（V1 freeze prep PR #10 の squash merge）です。
 `release/lolipop-v1` へ `main` を丸ごと merge / rebase して追従させません。
 共通して必要な不具合修正は原則 `main` で直し、ロリポップ版にも必要なものだけを
 小さい commit / PR 単位で選択的に backport します。ロリポップ固有のホスティング修正は
