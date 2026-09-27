@@ -26,13 +26,13 @@ import {
   TOKEN_EXCHANGE_PATH,
   validateCallback,
 } from '../lib/githubAuth';
-import { shortSha } from '../lib/inputSource';
 import {
+  type GitHubTreeSelection,
   hasAnySelection,
   isPathSelected,
   selectionMayContainSelected,
-  type GitHubTreeSelection,
 } from '../lib/githubSelection';
+import { shortSha } from '../lib/inputSource';
 import {
   currentStep,
   type GitHubImportState,
@@ -79,9 +79,7 @@ async function enumerateSelectedEntries(
   selection: GitHubTreeSelection,
   signal: AbortSignal,
 ): Promise<GitHubTreeEntry[]> {
-  const queue: Array<{ path: string; treeSha: string }> = [
-    { path: '', treeSha: snapshot.treeSha },
-  ];
+  const queue: Array<{ path: string; treeSha: string }> = [{ path: '', treeSha: snapshot.treeSha }];
   const files: GitHubTreeEntry[] = [];
   const seen = new Set<string>();
 
@@ -101,10 +99,7 @@ async function enumerateSelectedEntries(
           seen.add(entry.path);
           files.push(entry);
         }
-      } else if (
-        entry.status === 'dir' &&
-        selectionMayContainSelected(selection, entry.path)
-      ) {
+      } else if (entry.status === 'dir' && selectionMayContainSelected(selection, entry.path)) {
         queue.push({ path: entry.path, treeSha: entry.sha });
       }
     }
@@ -113,7 +108,6 @@ async function enumerateSelectedEntries(
   files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return files;
 }
-
 
 export interface GitHubImport {
   config: GitHubAppConfig | null;
