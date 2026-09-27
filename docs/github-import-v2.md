@@ -528,6 +528,24 @@ Implementation decisions:
 - the Vercel Function is written in JavaScript with JSDoc types (TypeScript 7 has no JS transpile API for the Vercel builder to use)
 - browser requests do not send `X-GitHub-Api-Version` because GitHub's documented CORS policy does not allow it (§6 **REST API version and CORS**); rate limits are classified from exposed `x-ratelimit-*` headers and the response `message`
 
-### Slice 2 (planned)
+### Slice 2 (multi-file import)
 
-Checkbox tree picker (tri-state, unopened-directory inheritance, search that does not mutate selection), multi-file atomic import with bounded blob concurrency, recursive-tree fast path with truncation fallback, candidate summary for multiple files.
+Implemented:
+
+- directory/file checkbox picker with segment-aware include/exclude rules
+- tri-state directories, unopened-directory inheritance, descendant exclusion, and explicit re-inclusion
+- current-directory filter that changes visibility only and preserves selection
+- known selected file/directory count and byte summary before enumeration
+- exact file count and byte total after candidate preparation
+- recursive Git Trees fast path from the minimal selected roots
+- truncated recursive responses are discarded and retraversed with complete non-recursive subtree reads
+- final selected files are filtered by the selection rules and deduplicated by repository path
+- blob fetching is bounded to at most 4 concurrent requests and cancellation propagates to sibling requests
+- all blobs are fetched, decoded, and validated before the workspace is mutated
+- a failed path leaves the workspace unchanged and is shown in the error
+- batch same-source conflicts require an explicit update target; multiple matches are never guessed
+- same-basename/different-source collisions are warnings only
+- final batch application is one workspace reducer action, including untouched-sample cleanup
+- keyboard/mobile checkbox operation and screen-reader mixed state
+
+The existing one-file preview/import path remains available alongside the checkbox flow. It continues to use the same pinned commit and provenance rules.
