@@ -289,10 +289,7 @@ test('同じbasenameの別パスを一括選択すると衝突を知らせ、別
   await batch.getByRole('button', { name: '2ファイルを取り込む' }).click();
 
   await expect(page.locator('.input-card')).toHaveCount(3);
-  await expect(page.locator('.input-card__source')).toHaveText([
-    /a\/ch1\.md/,
-    /b\/ch1\.md/,
-  ]);
+  await expect(page.locator('.input-card__source')).toHaveText([/a\/ch1\.md/, /b\/ch1\.md/]);
 });
 
 test('取得の途中で閉じても、開き直せば続きから読み込む', async ({ page }) => {
