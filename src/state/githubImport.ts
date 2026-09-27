@@ -64,6 +64,8 @@ export interface GitHubImportState {
   trail: TrailStep[];
   /** 今いるディレクトリの一覧。null は取得中。 */
   listing: DirectoryListing | null;
+  /** このsnapshotで一度読み込んだ項目。選択件数/既知byteを場所を跨いで数える。 */
+  knownEntries: Readonly<Record<string, GitHubTreeEntry>>;
   candidate: GitHubCandidate | null;
   /** 複数選択を全件取得・検証したあとの候補。null は確認画面ではない。 */
   batchCandidates: GitHubCandidate[] | null;
@@ -118,6 +120,7 @@ export const initialGitHubImportState: GitHubImportState = {
   snapshot: null,
   trail: [],
   listing: null,
+  knownEntries: {},
   candidate: null,
   batchCandidates: null,
   selection: emptyTreeSelection(),
@@ -139,6 +142,7 @@ const CLEARED_SELECTION = {
   snapshot: null,
   trail: [],
   listing: null,
+  knownEntries: {},
   candidate: null,
   batchCandidates: null,
   selection: emptyTreeSelection(),
@@ -230,6 +234,7 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
         branches: null,
         trail: [{ path: '', treeSha: action.snapshot.treeSha }],
         listing: null,
+        knownEntries: {},
         candidate: null,
         batchCandidates: null,
         selection: emptyTreeSelection(),
@@ -246,7 +251,9 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
       if (here?.treeSha !== action.listing.treeSha || here.path !== action.listing.path) {
         return state;
       }
-      return { ...state, listing: action.listing, busy: null, error: null };
+      const knownEntries = { ...state.knownEntries };
+      for (const entry of action.listing.entries) knownEntries[entry.path] = entry;
+      return { ...state, listing: action.listing, knownEntries, busy: null, error: null };
     }
 
     case 'dir/enter':
