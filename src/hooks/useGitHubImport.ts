@@ -60,7 +60,7 @@ class GitHubBatchRequestError extends Error {
   }
 }
 
-async function mapWithConcurrency<T, R>(
+export async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
   signal: AbortSignal,
@@ -101,7 +101,7 @@ async function loadBatchTree(
   }
 }
 
-async function enumerateSelectedEntries(
+export async function enumerateSelectedEntries(
   api: GitHubClient,
   snapshot: GitHubSnapshot,
   selection: GitHubTreeSelection,
