@@ -129,9 +129,10 @@ test('認可から戻った直後の読み込みで、code と state を Referer
   await connect(page);
 
   // 戻りの読み込みで、同一オリジンの JS を取りに行っていること（何も見ずに通らないように）。
-  const afterCallback = referers.slice(
-    referers.findIndex((entry) => entry.url.includes(`code=${E2E_CODE}`)) + 1,
-  );
+  // 戻りの要求そのものを捕まえていなければ、以降の検証は初回の読み込みを見ているだけになる。
+  const callbackIndex = referers.findIndex((entry) => entry.url.includes(`code=${E2E_CODE}`));
+  expect(callbackIndex).toBeGreaterThanOrEqual(0);
+  const afterCallback = referers.slice(callbackIndex + 1);
   expect(afterCallback.some((entry) => /\/assets\/.+\.js$/.test(entry.url))).toBe(true);
   for (const { url, referer } of referers) {
     expect(referer ?? '', url).not.toContain('code=');
@@ -683,6 +684,61 @@ test('保存の直前（デバウンス中）に接続しても、書き出せ�
   expect(await page.evaluate((key) => sessionStorage.getItem(key), PENDING_AUTH_KEY)).toBeNull();
   // 編集は画面に残っている（書き出して逃がせる）。
   await page.getByRole('button', { name: '閉じる' }).click();
+  await expect(page.locator('.input-card__title')).toHaveValue('changed.md');
+});
+
+test('保存の直前（デバウンス中）に接続しても、直前の編集を書き出してから移り、戻っても残っている', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await mock.install(page);
+  await seed(page);
+  // 保存を記録する。画面を離れるとき（pagehide / 非表示）の書き出しは既存の保険なので、
+  // それより前に「直前の編集を含む内容」が書かれたかを区別して残す。記録はタブをまたいで
+  // 残るよう sessionStorage に置く（元の setItem で書き、記録そのものは数えない）。
+  await page.addInitScript((key) => {
+    let leaving = false;
+    const markLeaving = (): void => {
+      leaving = true;
+    };
+    window.addEventListener('pagehide', markLeaving, { capture: true });
+    document.addEventListener(
+      'visibilitychange',
+      () => {
+        if (document.visibilityState === 'hidden') markLeaving();
+      },
+      { capture: true },
+    );
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function setItem(name: string, value: string) {
+      original.call(this, name, value);
+      if (name === key && this === window.localStorage) {
+        const log = JSON.parse(window.sessionStorage.getItem('e2e-saves') ?? '[]') as unknown[];
+        log.push({ leaving, changed: value.includes('changed.md') });
+        original.call(window.sessionStorage, 'e2e-saves', JSON.stringify(log));
+      }
+    };
+  }, STORAGE_KEY);
+  // 時計を止めて、デバウンス（400ms）の保存が走らないうちに接続を押す。
+  await page.clock.install();
+  await openApp(page);
+  await page.clock.pauseAt(Date.now() + 60_000);
+
+  await page.locator('.input-card__title').fill('changed.md');
+  await connect(page);
+
+  // GitHub へ移る前（離れる前）に、直前の編集を含む内容が書かれている。
+  const saves = await page.evaluate(
+    () =>
+      JSON.parse(window.sessionStorage.getItem('e2e-saves') ?? '[]') as {
+        leaving: boolean;
+        changed: boolean;
+      }[],
+  );
+  expect(saves.some((save) => save.changed && !save.leaving)).toBe(true);
+
+  // 戻ってきたあとも編集は残っている。
+  await dialog(page).getByRole('button', { name: '閉じる' }).click();
   await expect(page.locator('.input-card__title')).toHaveValue('changed.md');
 });
 
