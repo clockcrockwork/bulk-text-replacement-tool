@@ -213,6 +213,10 @@ Directory import may use recursive tree as a fast path only if `truncated === fa
 
 If a recursive response is truncated, fall back to non-recursive subtree traversal. Never treat a truncated tree as a complete successful selection.
 
+Paginated listings (installations, repositories, branches) follow `Link: rel="next"` up to a safety cap. If the cap is reached while a next page still exists, the listing fails explicitly instead of returning a partial list, so "does not exist" is never confused with "not loaded".
+
+Git trees are content-addressed: identical directories at different paths share a tree SHA. Any cache or staleness check for a directory listing must key on **tree SHA + directory path**, because listing entries carry repository paths that become provenance and source identity.
+
 Blob fetch concurrency starts at 4 or fewer concurrent requests.
 
 Respect rate-limit signals the browser can actually read: `x-ratelimit-remaining` / `x-ratelimit-reset` (exposed through CORS) and the error `message` in the response body. `retry-after` is **not** in GitHub's `Access-Control-Expose-Headers`, so browser code cannot read it; when a secondary rate limit is detected from the status and message, wait at least one minute as GitHub's rate-limit documentation advises. Do not retry continuously.
@@ -519,6 +523,8 @@ Implementation decisions:
 
 - callback URL is the origin root (`https://<origin>/`) because the build uses relative asset paths (`base: './'`)
 - Client ID and App slug are build-time public values (`VITE_GITHUB_APP_CLIENT_ID`, `VITE_GITHUB_APP_SLUG`); without them the button is disabled. No runtime config endpoint. See `docs/github-app-setup.md`
+- directory listings are cached and matched by repository id + tree SHA + path (identical subtrees share a SHA)
+- pagination fails with an explicit error when the page cap is reached with pages remaining
 - the Vercel Function is written in JavaScript with JSDoc types (TypeScript 7 has no JS transpile API for the Vercel builder to use)
 - browser requests do not send `X-GitHub-Api-Version` because GitHub's documented CORS policy does not allow it (§6 **REST API version and CORS**); rate limits are classified from exposed `x-ratelimit-*` headers and the response `message`
 

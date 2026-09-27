@@ -143,7 +143,9 @@ export type GitHubErrorKind =
   | 'server'
   | 'network'
   /** 期待した形の応答ではない。 */
-  | 'invalidResponse';
+  | 'invalidResponse'
+  /** 一覧が長すぎて、辿れる上限までに終わらなかった（途中までの一覧は使わない）。 */
+  | 'listTooLong';
 
 export interface GitHubError {
   kind: GitHubErrorKind;
@@ -237,6 +239,8 @@ export function describeGitHubError(error: GitHubError): string {
       return 'GitHub に接続できませんでした。ネットワークを確認して再試行してください。';
     case 'invalidResponse':
       return 'GitHub から想定外の応答が返りました。再試行してください。';
+    case 'listTooLong':
+      return '一覧が長すぎて、最後まで読み込めませんでした。途中までの一覧は正しくないため表示しません。';
   }
 }
 

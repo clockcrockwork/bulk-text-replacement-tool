@@ -105,7 +105,10 @@ export function useGitHubImport(): GitHubImport {
   const [state, dispatch] = useReducer(githubImportReducer, initialGitHubImportState);
   const tokenRef = useRef<GitHubToken | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  /** tree は SHA で内容が決まるので、一度取ったものは使い回す（戻る操作で取り直さない）。 */
+  /**
+   * tree は SHA で内容が決まるので、一度取ったものは使い回す（戻る操作で取り直さない）。
+   * キーはリポジトリ・tree SHA・パスの組（`loadListing` を参照）。
+   */
   const treeCache = useRef(new Map<string, NormalizedTree>());
   /** 直前に失敗した操作。「再試行」で同じことをやり直す。 */
   const lastTask = useRef<(() => void) | null>(null);
@@ -166,7 +169,11 @@ export function useGitHubImport(): GitHubImport {
           }
           dispatch({
             type: 'fail',
-            error: { message: describeGitHubError(error.detail), recover: 'retry' },
+            error: {
+              message: describeGitHubError(error.detail),
+              // 一覧が長すぎるのは、やり直しても同じ結果で rate limit を食うだけなので再試行させない。
+              recover: error.detail.kind === 'listTooLong' ? 'dismiss' : 'retry',
+            },
           });
           return;
         }
@@ -190,12 +197,15 @@ export function useGitHubImport(): GitHubImport {
   };
 
   const loadListing = (snapshot: GitHubSnapshot, step: TrailStep, info?: string): void => {
-    const key = `${snapshot.repository.id}:${step.treeSha}`;
+    // パスもキーに含める。中身が同じディレクトリは別の場所でも同じ tree SHA になるが、
+    // 一覧の各項目はパス（出自と取り込み元の同一性に使う）を焼き込んでいるので、
+    // SHA だけで使い回すと別のフォルダのパスで取り込んでしまう。
+    const key = JSON.stringify([snapshot.repository.id, step.treeSha, step.path]);
     const deliver = (tree: NormalizedTree): void => {
       dispatch({
         type: 'listing/loaded',
         commitSha: snapshot.commitSha,
-        listing: { treeSha: step.treeSha, ...tree },
+        listing: { treeSha: step.treeSha, path: step.path, ...tree },
       });
       if (info) dispatch({ type: 'info', message: info });
     };

@@ -160,7 +160,12 @@ describe('ブランチの選択とコミットの固定', () => {
 });
 
 describe('固定したスナップショットからだけ読む', () => {
-  const listing = (treeSha: string) => ({ treeSha, entries: [], truncated: false });
+  const listing = (treeSha: string, path = '') => ({
+    treeSha,
+    path,
+    entries: [],
+    truncated: false,
+  });
 
   it('いまのコミット・いまのディレクトリの一覧だけを受け取る', () => {
     const loaded = githubImportReducer(PINNED, {
@@ -193,6 +198,28 @@ describe('固定したスナップショットからだけ読む', () => {
         listing: listing(SHA_B),
       }),
     ).toBe(inside);
+  });
+
+  it('同じ tree SHA でも、別のディレクトリの一覧は使わない（中身が同じフォルダ）', () => {
+    // a/ と b/ が同じ中身なら同じ tree SHA になる。b/ にいるときに a/ の一覧を受け取らない。
+    const inB = githubImportReducer(PINNED, {
+      type: 'dir/enter',
+      step: { path: 'b', treeSha: SHA_C },
+    });
+    expect(
+      githubImportReducer(inB, {
+        type: 'listing/loaded',
+        commitSha: SHA_A,
+        listing: listing(SHA_C, 'a'),
+      }),
+    ).toBe(inB);
+    expect(
+      githubImportReducer(inB, {
+        type: 'listing/loaded',
+        commitSha: SHA_A,
+        listing: listing(SHA_C, 'b'),
+      }).listing?.path,
+    ).toBe('b');
   });
 
   it('取得中に固定し直したら、古いコミットの内容は候補にしない', () => {

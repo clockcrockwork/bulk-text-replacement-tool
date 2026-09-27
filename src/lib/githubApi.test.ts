@@ -205,6 +205,7 @@ describe('describeGitHubError', () => {
       'server',
       'network',
       'invalidResponse',
+      'listTooLong',
     ];
     for (const kind of kinds) {
       expect(describeGitHubError({ kind, status: null, resetAt: null })).not.toBe('');

@@ -20,6 +20,12 @@ export interface TrailStep {
 
 export interface DirectoryListing {
   treeSha: string;
+  /**
+   * 一覧を取ったディレクトリのパス。項目の `path` はこれを元に組み立ててある。
+   * 中身が同じディレクトリは別の場所でも同じ tree SHA になるので、SHA だけでは
+   * どこの一覧かを決められない。
+   */
+  path: string;
   entries: GitHubTreeEntry[];
   truncated: boolean;
 }
@@ -209,7 +215,11 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
     case 'listing/loaded': {
       // 固定し直す前のスナップショットや、もう離れたディレクトリの応答は使わない。
       if (state.snapshot?.commitSha !== action.commitSha) return state;
-      if (currentStep(state)?.treeSha !== action.listing.treeSha) return state;
+      // SHA とパスの両方で照合する（同じ SHA の別のフォルダの一覧を取り違えない）。
+      const here = currentStep(state);
+      if (here?.treeSha !== action.listing.treeSha || here.path !== action.listing.path) {
+        return state;
+      }
       return { ...state, listing: action.listing, busy: null, error: null };
     }
 

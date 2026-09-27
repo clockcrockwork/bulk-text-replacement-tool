@@ -231,6 +231,56 @@ test('パンくずと「上の階層へ」で戻れる。一度開いたフォ�
   expect(mock.apiCalls(/\/git\/trees\//)).toHaveLength(2);
 });
 
+test('中身が同じ別のフォルダ（tree SHA が同じ）を開いても、選んだ側のパスで取り込む', async ({
+  page,
+}) => {
+  // Git では中身が同じディレクトリは同じ tree SHA になる。一覧を使い回すときにパスを
+  // 取り違えると、出自（source.path）と取り込み元の同一性が別のファイルに結び付く。
+  const twins = novelRepository({
+    branches: {
+      main: [
+        { path: 'a/ch1.md', content: '同じ本文\n' },
+        { path: 'b/ch1.md', content: '同じ本文\n' },
+      ],
+    },
+  });
+  const mock = new GitHubMock([twins]);
+  const rootTree = mock.treeOf(mock.headOf(twins.id, 'main'));
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  // a/ を一度開いて一覧をキャッシュさせてから、ルートへ戻って b/ を開く。
+  await entry(page, 'a/').click();
+  await expect(entry(page, 'ch1.md')).toBeVisible();
+  await dialog(page)
+    .getByRole('navigation', { name: '現在の場所' })
+    .getByRole('button', { name: 'novel' })
+    .click();
+  await entry(page, 'b/').click();
+  await expect(
+    dialog(page).getByRole('navigation', { name: '現在の場所' }).locator('[aria-current]'),
+  ).toHaveText('b');
+  await entry(page, 'ch1.md').click();
+
+  const confirm = dialog(page).getByRole('region', { name: '取り込む内容の確認' });
+  await expect(confirm).toContainText(': b/ch1.md');
+  await confirm.getByRole('button', { name: '入力に追加' }).click();
+  await expect(page.locator('.input-card__source')).toContainText('octo/novel · b/ch1.md');
+
+  // 保存された出自（source identity に使う path）も b/ch1.md。
+  const readSaved = () => page.evaluate((key) => localStorage.getItem(key) ?? '', STORAGE_KEY);
+  await expect.poll(readSaved).toContain('"path":"b/ch1.md"');
+  expect(await readSaved()).not.toContain('"path":"a/ch1.md"');
+
+  // 取り違えが起き得る条件（a/ と b/ が同じ tree SHA）を満たしていたことの確認。
+  const subtreeShas = mock
+    .apiCalls(/\/git\/trees\//)
+    .map((call) => call.url.split('/').pop())
+    .filter((sha) => sha !== rootTree);
+  expect(new Set(subtreeShas).size).toBe(1);
+});
+
 test('ブランチを変えると、そのブランチの先頭で固定し直す', async ({ page }) => {
   const mock = new GitHubMock([REPO]);
   await start(page, mock);

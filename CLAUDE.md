@@ -39,8 +39,9 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   `ErrorBoundary` だけは例外で、描画が落ちたときの復旧画面を自前で持つ。
 - `src/hooks/` — 再利用する副作用（スクロールロック、トースト、画面幅、永続化、GitHub 取り込み）。
 - `src/github/` — GitHub REST API への fetch だけを置く（`client.ts`）。応答の解釈は
-  `src/lib/githubApi.ts` の純粋関数に任せる。副作用なのでカバレッジの計測対象外で、
-  画面の流れは E2E（`e2e/githubMock.ts` で GitHub を置き換える）で見る。
+  `src/lib/githubApi.ts` の純粋関数に任せる。副作用なのでカバレッジの計測対象外。
+  ページ送りと送るヘッダは `client.test.ts`（fetch を差し替え）、画面の流れは E2E
+  （`e2e/githubMock.ts` で GitHub を置き換える）で見る。
 - `src/state/githubImport.ts` — 「GitHubから追加」ダイアログの純粋 reducer。ワークスペースとは
   別に持ち、永続化しない。
 - `api/` — Vercel Function。**OAuth のトークン交換だけ**（`api/github/token.js`）。
@@ -153,6 +154,11 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
     サーバー）で確かめる。
   - ブランチを選んだ時点でコミットを固定し、tree も blob もそこから読む。遅れて返った
     古い応答は reducer が捨てる。新しいコミットへは「最新に更新」でだけ移る。
+  - tree の一覧は項目にパスを焼き込んでいる。中身が同じディレクトリは別の場所でも同じ
+    tree SHA になるので、一覧のキャッシュや照合は **SHA とパスの組**で行う（SHA だけだと
+    別のフォルダのパスで取り込み、出自と同一性が別ファイルに結び付く）。
+  - 一覧のページ送りは上限（`MAX_PAGES`）で止めるが、続きが残っていれば途中までの一覧を
+    返さずに失敗させる（「無い」と「上限で見えていない」を取り違えさせない）。
   - 取り込み元の同一性は `repositoryId + ref + path`（`sourceIdentity`）。タイトルでは判定しない。
     同じ取り込み元が複数あるときに更新先を推測しない。
   - 対応拡張子は `ACCEPTED_EXTENSIONS`、文字コードは `decodeText` をローカルと共有する。

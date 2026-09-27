@@ -39,8 +39,12 @@ export class GitHubRequestError extends Error {
   }
 }
 
-/** 一覧の取得で辿るページ数の上限。応答が壊れていても無限に回らないための歯止め。 */
-const MAX_PAGES = 100;
+/**
+ * 一覧の取得で辿るページ数の上限（1ページ 100 件なので 1 万件）。応答が壊れていても
+ * 無限に回らないための歯止め。上限に達してもまだ続きがあるときは、途中までの一覧を
+ * 返さずに失敗させる（「無い」と「上限で見えていない」を取り違えさせない）。
+ */
+export const MAX_PAGES = 100;
 
 const JSON_ACCEPT = 'application/vnd.github+json';
 /** blob を base64 の JSON ではなく生のバイト列で受け取る。 */
@@ -138,6 +142,9 @@ export function createGitHubClient(
       if (!normalized) throw invalidResponse();
       items.push(...normalized);
       next = result.next;
+    }
+    if (next !== null) {
+      throw new GitHubRequestError({ kind: 'listTooLong', status: null, resetAt: null });
     }
     return items;
   };
