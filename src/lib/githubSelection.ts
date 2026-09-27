@@ -61,10 +61,6 @@ export function setTreeSelection(
   return { rules: next };
 }
 
-/**
- * Directory checkbox state. A descendant override that differs from the directory's effective
- * state makes it mixed, even if that descendant has not been expanded in the current view.
- */
 /** Whether a directory can contain any selected supported path. Used to prune lazy traversal. */
 export function selectionMayContainSelected(selection: GitHubTreeSelection, path: string): boolean {
   if (isPathSelected(selection, path)) return true;
@@ -88,28 +84,29 @@ export function selectionMark(selection: GitHubTreeSelection, path: string): Git
 
 export interface KnownSelectionSummary {
   files: number;
+  directories: number;
   bytes: number;
 }
 
-/** Count only importable entries that have actually been loaded; bulk enumeration resolves the rest. */
+/** Count only entries that have actually been loaded; bulk enumeration resolves the rest. */
 export function summarizeKnownSelection(
   selection: GitHubTreeSelection,
   entries: readonly GitHubTreeEntry[],
 ): KnownSelectionSummary {
   let files = 0;
+  let directories = 0;
   let bytes = 0;
   const seen = new Set<string>();
   for (const entry of entries) {
-    if (
-      entry.status !== 'importable' ||
-      seen.has(entry.path) ||
-      !isPathSelected(selection, entry.path)
-    ) {
+    if (seen.has(entry.path)) continue;
+    seen.add(entry.path);
+    if (entry.status === 'dir') {
+      if (selectionMark(selection, entry.path) === 'checked') directories += 1;
       continue;
     }
-    seen.add(entry.path);
+    if (entry.status !== 'importable' || !isPathSelected(selection, entry.path)) continue;
     files += 1;
     if (entry.size !== null) bytes += entry.size;
   }
-  return { files, bytes };
+  return { files, directories, bytes };
 }
