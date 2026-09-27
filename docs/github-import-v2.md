@@ -200,7 +200,15 @@ Examples:
 - deselecting `docs/draft.md` adds `docs/draft.md → exclude`, so `docs` becomes mixed
 - selecting a child below an excluded directory adds a more-specific `include` rule
 
-When a path is explicitly selected/deselected, remove redundant descendant rules that no longer change the result. The pure selection helpers live outside the React component and are unit-tested.
+When a file or directory is explicitly selected/deselected:
+
+1. remove every more-specific descendant rule under that path
+2. compare the requested state with the state inherited from the nearest remaining ancestor rule
+3. keep an exact rule only when it differs from the inherited state
+
+This keeps the rule set canonical. In particular, clicking a **mixed** directory to select it means “select this whole directory”: descendant exclusions are cleared and the directory becomes checked. Unchecking a checked/mixed directory similarly clears descendant overrides and excludes the whole directory.
+
+The pure selection helpers live outside the React component and are unit-tested.
 
 Directory checkbox state:
 
@@ -209,6 +217,13 @@ Directory checkbox state:
 - **mixed**: a descendant rule differs from the directory's effective state
 
 A directory does not need to be expanded to be selected.
+
+Selection lifecycle:
+
+- changing repository clears selection, prepared candidates, and conflict decisions
+- changing branch clears selection, prepared candidates, and conflict decisions
+- **最新に更新** on the same repository/ref may preserve path rules, but it must discard every prepared/enumerated candidate and revalidate the rules against the new pinned commit before import
+- after a successful batch commit, clear selection/preparation while keeping the GitHub connection, repository/branch, and explorer location where still valid
 
 Use a native checkbox where possible. Directory navigation and directory selection are separate controls: the checkbox changes selection; the directory name/button opens it. Do not make mobile users depend on a small disclosure arrow or hover target.
 
@@ -530,7 +545,9 @@ Rate-limit errors must be distinguishable from generic network failures.
 
 - tree normalization
 - selection-rule longest-prefix resolution with path-segment boundaries (`docs` must not match `docs2`)
-- redundant descendant rule compaction
+- explicit directory select/deselect clears descendant overrides and canonicalizes the rule set
+- redundant exact-rule removal when inherited state already matches
+- repository/branch selection reset semantics and same-ref refresh revalidation
 - tri-state directory selection
 - select parent before expansion, then child inherits selection
 - deselect child → parent becomes mixed
