@@ -49,8 +49,15 @@ export function usePersistedWorkspace(workspace: PersistedWorkspace): PersistedW
     return () => clearTimeout(timer);
   }, [inputs, groups, rules, theme, isSample]);
 
+  /**
+   * イベントハンドラから呼ぶ書き出し。このレンダーの値そのものを閉じ込めて書く。
+   *
+   * `latest.current` は effect（コミット後）で更新するので、「次の利用者操作より先に
+   * effect が済んでいる」ことに頼ると、1つ前の内容を成功として書いて画面を離れ得る。
+   * ハンドラはそれを描いたレンダーの関数なので、そのレンダーの値が利用者の見ている内容。
+   */
   const flush = (): boolean => {
-    const saved = saveWorkspace(latest.current);
+    const saved = saveWorkspace({ inputs, groups, rules, theme, isSample });
     setFailed(!saved);
     return saved;
   };

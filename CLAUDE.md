@@ -157,6 +157,7 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   - 認可で GitHub の画面へ移る直前に、保留中の編集も含めて保存を書き出す
     （`usePersistedWorkspace` の `flush` を `beforeNavigate` として渡す）。書けなければ移らない。
     表示中の `saveFailed` は最後に実行済みの保存の結果でしかなく、デバウンス中の編集は含まない。
+    `flush` はそのレンダーの値を書く（effect で更新する ref は、次の操作より先に更新済みとは限らない）。
   - バックエンドは原稿・ルール・リポジトリの内容を受け取らない。本文はブラウザから
     api.github.com へ直接取りに行く。Function も交換に要る3項目以外のキーがあれば 400 にし、
     本文は読みながら数えて 4KB を超えた時点で打ち切る（Content-Length が無くても読み切らない）。
@@ -192,7 +193,8 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   `Referrer-Policy` は `strict-origin` から動かさない。既定の `strict-origin-when-cross-origin`
   は同一オリジンの要求に URL 全体を送るので、認可から戻った直後の `/assets/*.js` の Referer に
   code / state が載る。`no-referrer` は Origin ヘッダにも効き、`null` になる経路がある
-  （Origin を照合するトークン交換が 403 で止まる）。
+  （Origin を照合するトークン交換が 403 で止まる）。`strict-origin` が防ぐのは code / state が
+  その後の要求へ伝わることまでで、戻りの `GET /?code=…` 自体は配信基盤に届く（そう書き広げない）。
   トークン交換の回数制限は Vercel Firewall（`/api/` の前方一致）で行い、Function にメモリ上の
   カウンタを置かない（`docs/github-app-setup.md`）。
 - **配信物とユーザーのテキストは別のレイヤー**として扱う。アプリの HTML / CSS / JS は

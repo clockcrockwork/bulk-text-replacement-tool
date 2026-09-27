@@ -58,8 +58,14 @@ const INVISIBLE_OR_CONTROL = UNSAFE_DISPLAY_CHARS;
  */
 export function sanitizeName(name: string, allowSlash: boolean): string {
   const forbidden = allowSlash ? /[\\:*?"<>|]/g : /[\\/:*?"<>|]/g;
-  // 前後の改行やタブは空白として先に落とす（従来どおり）。中に残ったものだけを `_` にする。
-  const cleaned = name.trim().replace(INVISIBLE_OR_CONTROL, '_').replace(forbidden, '_');
+  // 前後の空白・改行類（タブ・改行・U+2028/2029 など）は先に落とす（従来どおり）。中に残った
+  // ものだけを `_` にする。ただし BOM（U+FEFF）は JS の trim が空白として扱うので、trim より
+  // 先に置き換える。空白ではない見えない文字なので、前後にあっても黙って消さない。
+  const cleaned = name
+    .replace(/\ufeff/g, '_')
+    .trim()
+    .replace(INVISIBLE_OR_CONTROL, '_')
+    .replace(forbidden, '_');
   // `.` と `..` を落とす。これが残ると ZIP のエントリ名が `A用/../../evil.txt` のように
   // 展開先を抜け出す形になり得る（Zip Slip）。空の区切りもここで消える。
   return cleaned

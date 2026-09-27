@@ -117,6 +117,20 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
 - Function のコードは変えない。ルールはリクエストが Function に届く前に効く
 - **これはリポジトリの外の設定で、マージしただけでは有効にならない。** Publish して §5 の 9 を
   確かめるまで、L5（トークン交換のレート制限）は対応済みとして扱わない
+- 回数は厳密な上限（セキュリティ上の不変条件）ではなく、**乱用を抑える歯止め**として扱う。
+  計数はエッジで分散して行われるので、「全体で 1 分に必ず 10 回まで」を保証するものではない。
+  交換そのものの安全性は、PKCE・state・Origin と redirect_uri の許可リストが受け持つ
+
+### 本番への入れ方（段階導入）
+
+設定を誤ると OAuth 全体を止めるので、いきなり本番で制限を有効にしない。
+
+1. 同じ条件（`/api/` の前方一致）で、Then を **Log** にしたルールを Publish する
+2. 本番で正規の接続を1回行い、Firewall のログでその交換が1件だけ一致していることを確かめる
+   （ほかの経路を巻き込んでいないこと）
+3. Preview（固定した検証用の URL）で Rate Limit を有効にし、§5 の 9 の手順で 429 が返ることを確かめる
+4. 本番のルールを Rate Limit に切り替えて Publish する
+5. 本番で §5 の 9（3つのパスすべてで 429）を確かめる
 
 ## 4. 配信時のヘッダ
 
@@ -147,6 +161,12 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
   **実機の Safari（macOS と iOS）では §5 の 10 で確かめる**。インストール画面は
   `rel="noreferrer"`（`noopener` を含む）の新しいタブで開くので、COOP で壊れる参照は無い
 - ヘッダを無視する配信先のために、`index.html` にも `<meta name="referrer">` で同じ方針を書いている
+- `strict-origin` が防ぐのは、戻り URL の code / state が**その後の要求**（同一オリジンの JS・CSS、
+  Google Fonts、画面遷移）の Referer に**伝わること**まで。GitHub から戻る最初の要求
+  （`GET /?code=…&state=…`）そのものは、静的な SPA で query の callback を受ける以上、
+  Vercel の配信基盤に届く。「code が配信側のどのログにも残らない」とは言えない
+  （code は PKCE 付きの使い捨てで、単体ではトークンに交換できない）。§5 の 7 で見るのは
+  Function のログだけで、エッジやアクセスログの保持・表示範囲は別に確かめる
 - `/api/` の応答は Function が自前でヘッダを付ける（`Referrer-Policy: no-referrer` など）ので対象外にしている
 - `vite preview`（E2E の配信元）も `vercel.json` から**ヘッダの値**を読んで返す（`vite.config.ts`）。
   共有しているのは値だけで、`source` のパス条件（`/api/` の除外）は再現していない
