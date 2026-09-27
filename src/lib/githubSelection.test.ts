@@ -20,6 +20,16 @@ function file(path: string, size = 10): GitHubTreeEntry {
   };
 }
 
+function directory(path: string): GitHubTreeEntry {
+  return {
+    name: path.slice(path.lastIndexOf('/') + 1),
+    path,
+    sha: 'b'.repeat(40),
+    status: 'dir',
+    size: null,
+  };
+}
+
 describe('GitHub lazy tree selection', () => {
   it('selects an unopened directory conceptually and later children inherit it', () => {
     const selected = setTreeSelection(emptyTreeSelection(), 'chapters', true);
@@ -52,6 +62,23 @@ describe('GitHub lazy tree selection', () => {
     expect(isPathSelected(selected, 'chapters/ch2.md')).toBe(false);
   });
 
+  it('matches path segments, not string prefixes', () => {
+    const selected = setTreeSelection(emptyTreeSelection(), 'a', true);
+    expect(isPathSelected(selected, 'a/ch1.md')).toBe(true);
+    expect(isPathSelected(selected, 'ab/ch1.md')).toBe(false);
+    expect(selectionMayContainSelected(selected, 'ab')).toBe(false);
+  });
+
+  it('can exclude a subtree and re-include a more specific descendant', () => {
+    let selected = setTreeSelection(emptyTreeSelection(), 'chapters', true);
+    selected = setTreeSelection(selected, 'chapters/drafts', false);
+    selected = setTreeSelection(selected, 'chapters/drafts/keep.md', true);
+    expect(isPathSelected(selected, 'chapters/drafts/old.md')).toBe(false);
+    expect(isPathSelected(selected, 'chapters/drafts/keep.md')).toBe(true);
+    expect(selectionMark(selected, 'chapters/drafts')).toBe('mixed');
+    expect(selectionMark(selected, 'chapters')).toBe('mixed');
+  });
+
   it('prunes unselected branches but follows an explicitly selected descendant', () => {
     let selected = emptyTreeSelection();
     expect(hasAnySelection(selected)).toBe(false);
@@ -70,12 +97,14 @@ describe('GitHub lazy tree selection', () => {
     };
     expect(
       summarizeKnownSelection(selected, [
+        directory('chapters'),
+        directory('chapters/drafts'),
         file('chapters/ch1.md', 10),
         file('chapters/ch1.md', 10),
         file('chapters/ch2.txt', 20),
         unsupported,
         file('other.md', 30),
       ]),
-    ).toEqual({ files: 2, bytes: 30 });
+    ).toEqual({ files: 2, directories: 2, bytes: 30 });
   });
 });
