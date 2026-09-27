@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { GitHubTreeEntry } from '../types';
 import {
   emptyTreeSelection,
+  hasAnySelection,
   isPathSelected,
   selectionMark,
+  selectionMayContainSelected,
   setTreeSelection,
   summarizeKnownSelection,
 } from './githubSelection';
@@ -48,6 +50,16 @@ describe('GitHub lazy tree selection', () => {
     expect(selectionMark(selected, 'chapters')).toBe('mixed');
     expect(isPathSelected(selected, 'chapters/ch1.md')).toBe(true);
     expect(isPathSelected(selected, 'chapters/ch2.md')).toBe(false);
+  });
+
+  it('prunes unselected branches but follows an explicitly selected descendant', () => {
+    let selected = emptyTreeSelection();
+    expect(hasAnySelection(selected)).toBe(false);
+    selected = setTreeSelection(selected, 'chapters/drafts/ch1.md', true);
+    expect(hasAnySelection(selected)).toBe(true);
+    expect(selectionMayContainSelected(selected, 'chapters')).toBe(true);
+    expect(selectionMayContainSelected(selected, 'chapters/drafts')).toBe(true);
+    expect(selectionMayContainSelected(selected, 'images')).toBe(false);
   });
 
   it('known summary counts only loaded importable selected files and dedupes paths', () => {
