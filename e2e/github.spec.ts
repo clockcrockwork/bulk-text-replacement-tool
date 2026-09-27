@@ -230,6 +230,51 @@ test('フォルダ選択を未展開の子へ継承し、子を外すと親が m
   expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(1);
 });
 
+test('複数選択の列挙は recursive tree を fast path として使う', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  const before = mock.requests.length;
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+
+  const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+  await expect(batch).toContainText('chapters/ch1.md');
+  await expect(batch).toContainText('chapters/ch2.txt');
+
+  const batchTreeCalls = mock.requests
+    .slice(before)
+    .filter((request) => request.url.includes('/git/trees/'));
+  expect(batchTreeCalls.some((request) => request.url.includes('recursive=1'))).toBe(true);
+  expect(batchTreeCalls.filter((request) => !request.url.includes('recursive=1'))).toHaveLength(0);
+});
+
+test('recursive tree が truncated なら partial list を捨て、非再帰 traversal で完全列挙する', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  mock.recursiveTreeTruncations = 1;
+  const before = mock.requests.length;
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+
+  const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+  await expect(batch).toContainText('chapters/ch1.md');
+  await expect(batch).toContainText('chapters/ch2.txt');
+
+  const batchTreeCalls = mock.requests
+    .slice(before)
+    .filter((request) => request.url.includes('/git/trees/'));
+  expect(batchTreeCalls.some((request) => request.url.includes('recursive=1'))).toBe(true);
+  expect(batchTreeCalls.some((request) => !request.url.includes('recursive=1'))).toBe(true);
+});
+
 test('複数取得の途中でblobが1件でも失敗したら入力を1件も変更せず、再試行後にまとめて反映する', async ({
   page,
 }) => {
