@@ -261,6 +261,17 @@ Show failed paths and allow the user to retry or go back.
 
 Use bounded concurrency and `AbortController` so cancellation stops pending work.
 
+### Untouched sample workspace
+
+If the workspace is still the untouched first-run sample (`isSample === true`), a GitHub import clears the sample inputs, groups, and rules in the same mutation that applies the imported inputs. An edited sample is the user's work and is never cleared automatically.
+
+Whether the toast offers **元に戻す** depends on the import path:
+
+- **Single-file import**: offers **元に戻す**, the same as the V1 local import. Undo restores the sample snapshot, which also drops the one imported file; that file is cheap to import again.
+- **Multi-file import**: does **not** offer **元に戻す**. Undo restores the whole pre-import workspace, so it would also discard every imported file. Those files were fetched and validated over the network and cost rate limit to fetch again. The sample is only demo content, and a user who wants to study it can do so before importing. Losing the batch by accident is the heavier loss, so the batch path deliberately has no undo.
+
+The toast still says that the sample was cleared, so the removal is never silent.
+
 ## 8. Input provenance
 
 Extend `InputText` with optional GitHub provenance.
@@ -545,7 +556,7 @@ Implemented:
 - a failed path leaves the workspace unchanged and is shown in the error
 - batch same-source conflicts require an explicit update target; multiple matches are never guessed
 - same-basename/different-source collisions are warnings only
-- final batch application is one workspace reducer action, including untouched-sample cleanup
+- final batch application is one workspace reducer action, including untouched-sample cleanup (no undo; see §7 **Untouched sample workspace**)
 - keyboard/mobile checkbox operation and screen-reader mixed state
 
 The existing one-file preview/import path remains available alongside the checkbox flow. It continues to use the same pinned commit and provenance rules.
