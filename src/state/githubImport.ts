@@ -65,6 +65,8 @@ export interface GitHubImportState {
   /** 今いるディレクトリの一覧。null は取得中。 */
   listing: DirectoryListing | null;
   candidate: GitHubCandidate | null;
+  /** 複数選択を全件取得・検証したあとの候補。null は確認画面ではない。 */
+  batchCandidates: GitHubCandidate[] | null;
   /** lazy tree の選択。未展開ディレクトリの選択も規則として保持する。 */
   selection: GitHubTreeSelection;
   /** 取得中の内容。null なら待っていない。 */
@@ -100,6 +102,8 @@ export type GitHubImportAction =
   | { type: 'dir/goTo'; index: number }
   | { type: 'candidate/set'; candidate: GitHubCandidate }
   | { type: 'candidate/clear' }
+  | { type: 'batch/set'; candidates: GitHubCandidate[] }
+  | { type: 'batch/clear' }
   | { type: 'selection/set'; path: string; selected: boolean }
   | { type: 'selection/clear' };
 
@@ -134,6 +138,7 @@ const CLEARED_SELECTION = {
   trail: [],
   listing: null,
   candidate: null,
+  batchCandidates: null,
   selection: emptyTreeSelection(),
 } satisfies Partial<GitHubImportState>;
 
@@ -217,6 +222,7 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
         trail: [{ path: '', treeSha: action.snapshot.treeSha }],
         listing: null,
         candidate: null,
+        batchCandidates: null,
         selection: emptyTreeSelection(),
         busy: null,
         error: null,
@@ -260,10 +266,26 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
       // 取得中にスナップショットを変えていたら、古いコミットの内容なので使わない。
       if (state.snapshot?.commitSha !== action.candidate.source.commitSha) return state;
       if (state.snapshot.repository.id !== action.candidate.source.repositoryId) return state;
-      return { ...state, candidate: action.candidate, busy: null, error: null };
+      return { ...state, candidate: action.candidate, batchCandidates: null, busy: null, error: null };
 
     case 'candidate/clear':
       return { ...state, candidate: null, error: null };
+
+    case 'batch/set':
+      if (!state.snapshot) return state;
+      if (
+        action.candidates.some(
+          (candidate) =>
+            candidate.source.commitSha !== state.snapshot?.commitSha ||
+            candidate.source.repositoryId !== state.snapshot?.repository.id,
+        )
+      ) {
+        return state;
+      }
+      return { ...state, candidate: null, batchCandidates: action.candidates, busy: null, error: null };
+
+    case 'batch/clear':
+      return { ...state, batchCandidates: null, error: null };
 
     case 'selection/set':
       if (!state.snapshot) return state;
@@ -271,10 +293,17 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
         ...state,
         selection: setTreeSelection(state.selection, action.path, action.selected),
         candidate: null,
+        batchCandidates: null,
         error: null,
       };
 
     case 'selection/clear':
-      return { ...state, selection: emptyTreeSelection(), candidate: null, error: null };
+      return {
+        ...state,
+        selection: emptyTreeSelection(),
+        candidate: null,
+        batchCandidates: null,
+        error: null,
+      };
   }
 }
