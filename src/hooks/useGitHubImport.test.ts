@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GitHubClient } from '../github/client';
-import { setTreeSelection, emptyTreeSelection } from '../lib/githubSelection';
+import { emptyTreeSelection, setTreeSelection } from '../lib/githubSelection';
 import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types';
 import { enumerateSelectedEntries, mapWithConcurrency } from './useGitHubImport';
 
