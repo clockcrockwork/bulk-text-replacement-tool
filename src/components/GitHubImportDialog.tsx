@@ -80,7 +80,7 @@ function viewKey(state: GitHubImportState): string {
   if (state.batchCandidates) return `batch:${state.batchCandidates.length}`;
   if (state.candidate) return `candidate:${state.candidate.source.path}`;
   if (state.choosingBranch) return 'branches';
-  if (state.snapshot) return `browse:${state.snapshot.commitSha}:${state.trail.length}`;
+  if (state.snapshot) return `browse:${state.snapshot.commitSha}:${state.trail.at(-1)?.path ?? ''}`;
   if (state.repository) return 'repository';
   return 'repositories';
 }
