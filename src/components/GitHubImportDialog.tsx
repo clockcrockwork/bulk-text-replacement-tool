@@ -570,7 +570,7 @@ function Explorer({
       </div>
 
       <p className="github__selection-summary" aria-live="polite" aria-atomic="true">
-        読み込み済み範囲で選択中: {known.files}ファイル
+        読み込み済み範囲で選択中: {known.files}ファイル · {known.directories}フォルダ
         {known.bytes > 0 ? ` · ${formatBytes(known.bytes)}` : ''}
         {filter ? '（絞り込みで隠れた選択は解除されません）' : ''}
       </p>
