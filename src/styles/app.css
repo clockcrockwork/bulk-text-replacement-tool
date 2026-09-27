@@ -1587,6 +1587,15 @@ button.github__entry:hover {
   color: var(--text-muted);
 }
 
+.github__current-selection {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr);
+  align-items: center;
+  min-height: 2.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
 .github__select-row {
   display: grid;
   grid-template-columns: 2.75rem minmax(0, 1fr);
