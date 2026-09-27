@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { SOURCE_HEADER } from '../lib/table';
 import { Icon } from './Icon';
+import { RuleCell } from './RuleCell';
 import { RuleFlags, RuleRowActions } from './RuleFlags';
 import { cellId, type RuleGridProps, srcCellLabel, valueCellLabel } from './ruleTypes';
 
@@ -65,13 +66,14 @@ export function RuleTable({
           {rows.map(({ rule, index, error, hits }) => (
             <tr key={rule.id}>
               <td className="rule-table__src-cell">
-                <input
-                  className="cell-input rule-table__input"
-                  data-cell={cellId(index, 0)}
+                <RuleCell
+                  className="rule-table__input"
+                  cell={cellId(index, 0)}
                   value={rule.src}
-                  onChange={(event) => ruleHandlers.onChangeSrc(rule.id, event.target.value)}
+                  label={srcCellLabel(index)}
                   placeholder="置換元"
-                  aria-label={srcCellLabel(index)}
+                  onChange={(value) => ruleHandlers.onChangeSrc(rule.id, value)}
+                  onEdit={() => ruleHandlers.onEditCell(rule.id, null)}
                 />
                 {error ? <div className="rule-table__error">{error}</div> : null}
               </td>
@@ -80,15 +82,14 @@ export function RuleTable({
                 return (
                   <td key={group.id}>
                     <div className="rule-table__value-cell">
-                      <input
-                        className="cell-input rule-table__input"
-                        data-cell={cellId(index, groupIndex + 1)}
+                      <RuleCell
+                        className="rule-table__input"
+                        cell={cellId(index, groupIndex + 1)}
                         value={rule.values[group.id] ?? ''}
-                        onChange={(event) =>
-                          ruleHandlers.onChangeValue(rule.id, group.id, event.target.value)
-                        }
+                        label={valueCellLabel(index, group.name)}
                         placeholder="—"
-                        aria-label={valueCellLabel(index, group.name)}
+                        onChange={(value) => ruleHandlers.onChangeValue(rule.id, group.id, value)}
+                        onEdit={() => ruleHandlers.onEditCell(rule.id, group.id)}
                       />
                       {hit !== undefined ? (
                         <span

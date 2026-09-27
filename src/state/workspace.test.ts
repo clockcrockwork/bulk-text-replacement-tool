@@ -35,6 +35,7 @@ function state(overrides: Partial<WorkspaceState> = {}): WorkspaceState {
     lastSignature: null,
     outGroupId: null,
     fileViews: {},
+    cellEdit: null,
     importOpen: false,
     importText: '',
     importMode: 'replace',

@@ -363,6 +363,8 @@
   min-width: 0;
   padding: 12px;
   color: var(--color-text);
+  /* 複数行セルは <button> になるので、入力欄と同じ字面になるよう継承を明示する。 */
+  font: inherit;
   background: transparent;
   border: 0;
 }
@@ -1161,6 +1163,30 @@
   font-size: 13px;
   background: var(--color-accent);
   box-shadow: var(--shadow-overlay);
+}
+
+.dialog--cell {
+  width: min(560px, calc(100% - 32px));
+  max-width: min(560px, calc(100% - 32px));
+}
+
+.dialog__textarea--cell {
+  min-height: 140px;
+  font-size: 16px;
+}
+
+/* 複数行の値を持つセル。1行入力と同じ枠のまま、要約だけを出す。 */
+.cell-input--multiline {
+  width: 100%;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cell-input--multiline:hover {
+  border-color: var(--color-accent);
 }
 
 .dialog--confirm {

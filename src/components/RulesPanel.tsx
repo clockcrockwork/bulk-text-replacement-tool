@@ -16,9 +16,10 @@ const VIEW_OPTIONS: readonly ToggleOption<'table' | 'card'>[] = [
   { value: 'card', label: 'カード' },
 ];
 
-const KEY_HINT_CARDS = '↑↓ / Tab で前後の欄へ · Enter で次の欄（最後の欄なら行を追加）';
+const KEY_HINT_CARDS =
+  '↑↓ / Tab で前後の欄へ · Enter で次の欄（最後の欄なら行を追加）· Shift+Enter で複数行編集';
 const KEY_HINT_TABLE =
-  '↑↓ / Enter で上下の行へ · ← → / Tab で左右の欄へ · 最終行で Enter を押すと行を追加';
+  '↑↓ / Enter で上下の行へ · ← → / Tab で左右の欄へ · 最終行で Enter を押すと行を追加 · Shift+Enter で複数行編集';
 
 function focusCell(row: number, col: number): boolean {
   const element = document.querySelector<HTMLInputElement>(`[data-cell="${row}:${col}"]`);
@@ -98,6 +99,17 @@ export function RulesPanel({
     if (event.altKey || event.ctrlKey || event.metaKey) return;
 
     const [row = 0, col = 0] = cell.split(':').map(Number);
+
+    // 1行入力では改行を打てないので、複数行にしたいときの入口をキーボードにも置く。
+    if (event.key === 'Enter' && event.shiftKey) {
+      const rule = rules[row];
+      if (rule) {
+        event.preventDefault();
+        ruleHandlers.onEditCell(rule.id, col === 0 ? null : (groups[col - 1]?.id ?? null));
+        return;
+      }
+    }
+
     const action = resolveGridNav({
       key: event.key,
       shiftKey: event.shiftKey,

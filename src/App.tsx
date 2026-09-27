@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { AppHeader } from './components/AppHeader';
 import { type BackupCandidate, BackupDialog } from './components/BackupDialog';
+import { CellEditor } from './components/CellEditor';
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog';
 import { DropOverlay } from './components/DropOverlay';
 import { EditorOverlay } from './components/EditorOverlay';
@@ -17,7 +18,12 @@ import { ImportDialog } from './components/ImportDialog';
 import { InputPanel } from './components/InputPanel';
 import { OutputPanel } from './components/OutputPanel';
 import { RulesPanel } from './components/RulesPanel';
-import type { GroupHandlers, RuleHandlers } from './components/ruleTypes';
+import {
+  type GroupHandlers,
+  type RuleHandlers,
+  srcCellLabel,
+  valueCellLabel,
+} from './components/ruleTypes';
 import { TabBar, type TabDescriptor } from './components/TabBar';
 import { Toast } from './components/Toast';
 import { useConfirm } from './hooks/useConfirm';
@@ -363,6 +369,8 @@ export function App(): JSX.Element {
     },
     onMove: (index, delta) => dispatch({ type: 'rules/move', index, delta }),
     onRemove: (id) => dispatch({ type: 'rules/remove', id }),
+    onEditCell: (ruleId, groupId) =>
+      dispatch({ type: 'cellEdit/open', target: { ruleId, groupId } }),
   };
 
   const groupHandlers: GroupHandlers = {
@@ -427,6 +435,37 @@ export function App(): JSX.Element {
       flash(`${file.name} を Shift_JIS として読み込みました。文字化けが無いか確かめてください`);
     }
   };
+
+  /**
+   * 編集中のセル。対象が消えている（行やグループを削除した）場合は開かない。
+   */
+  const cellEdit = ((): {
+    label: string;
+    value: string;
+    onChange: (value: string) => void;
+  } | null => {
+    const target = state.cellEdit;
+    if (!target) return null;
+    const index = state.rules.findIndex((rule) => rule.id === target.ruleId);
+    const rule = state.rules[index];
+    if (!rule) return null;
+
+    if (target.groupId === null) {
+      return {
+        label: srcCellLabel(index),
+        value: rule.src,
+        onChange: (src) => dispatch({ type: 'rules/update', id: rule.id, patch: { src } }),
+      };
+    }
+    const group = state.groups.find((candidate) => candidate.id === target.groupId);
+    if (!group) return null;
+    return {
+      label: valueCellLabel(index, group.name),
+      value: rule.values[group.id] ?? '',
+      onChange: (value) =>
+        dispatch({ type: 'rules/setValue', ruleId: rule.id, groupId: group.id, value }),
+    };
+  })();
 
   const editingIndex = state.inputs.findIndex((input) => input.id === state.editingId);
   const editing = editingIndex >= 0 ? state.inputs[editingIndex] : undefined;
@@ -578,6 +617,15 @@ export function App(): JSX.Element {
           onFileSelected={(event) => void selectBackupFile(event)}
           onApply={applyBackup}
           onClose={closeBackup}
+        />
+      ) : null}
+
+      {cellEdit ? (
+        <CellEditor
+          label={cellEdit.label}
+          value={cellEdit.value}
+          onChange={cellEdit.onChange}
+          onClose={() => dispatch({ type: 'cellEdit/close' })}
         />
       ) : null}
 

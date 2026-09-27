@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  formatCellPreview,
   formatIndex,
   formatInputSummary,
   formatTextMeta,
   formatTime,
+  isMultiline,
   timestampForFileName,
 } from './format';
 
@@ -26,6 +28,26 @@ describe('formatTextMeta', () => {
 
   it('大きい行数は桁区切りを入れる', () => {
     expect(formatTextMeta('a\n'.repeat(1234))).toBe('1,235行');
+  });
+});
+
+describe('formatCellPreview / isMultiline', () => {
+  it('1行の値はそのまま', () => {
+    expect(isMultiline('アリス')).toBe(false);
+    expect(formatCellPreview('アリス')).toBe('アリス');
+  });
+
+  it('複数行は1行目だけ見せて、複数行であることを示す', () => {
+    expect(isMultiline('一行目\n二行目')).toBe(true);
+    expect(formatCellPreview('一行目\n二行目')).toBe('一行目… [複数行]');
+  });
+
+  it('先頭が改行でも壊れない', () => {
+    expect(formatCellPreview('\n二行目')).toBe('… [複数行]');
+  });
+
+  it('末尾の改行だけでも複数行として扱う（見えない違いを隠さない）', () => {
+    expect(formatCellPreview('一行目\n')).toBe('一行目… [複数行]');
   });
 });
 

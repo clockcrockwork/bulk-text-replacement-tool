@@ -18,6 +18,8 @@ export interface RuleHandlers {
   onToggleOrder: (rule: Rule) => void;
   onMove: (index: number, delta: number) => void;
   onRemove: (id: string) => void;
+  /** 複数行セルの編集を開く。`groupId` が null なら置換元の列。 */
+  onEditCell: (ruleId: string, groupId: string | null) => void;
 }
 
 export interface GroupHandlers {
@@ -51,4 +53,13 @@ export function srcCellLabel(index: number): string {
 
 export function valueCellLabel(index: number, groupName: string): string {
   return `${index + 1}行目の置換先（${groupName || '無名のグループ'}）`;
+}
+
+/**
+ * セルのアクセシブル名に、複数行であることを添える。
+ *
+ * 要約表示（`一行目… [複数行]`）だけだと、読み上げでは省略されたことが分からない。
+ */
+export function multilineCellLabel(base: string): string {
+  return `${base}（複数行・編集を開く）`;
 }

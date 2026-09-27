@@ -255,3 +255,76 @@ test('TSV に書き出したルールは、そのまま読み戻せる', async (
   await expect(cell(page, 2, 0)).toHaveValue('foo\tbar');
   await expect(cell(page, 2, 1)).toHaveValue('X');
 });
+
+test.describe('複数行ルール', () => {
+  test('Shift+Enter で複数行にでき、表では1行の要約になる', async ({ page }) => {
+    await cell(page, 0, 1).click();
+    await page.keyboard.press('Shift+Enter');
+
+    const editor = page.locator('dialog.dialog--cell[open]');
+    await expect(editor).toBeVisible();
+    await expect(editor.getByRole('heading')).toHaveText('1行目の置換先（A用）');
+    await editor.locator('textarea').fill('一行目\n二行目');
+    await editor.getByRole('button', { name: '完了' }).click();
+
+    // 表は1行1ルールのまま。改行位置を詰め込んで見せたりはしない。
+    const summary = page.locator('[data-cell="0:1"]');
+    await expect(summary).toHaveText('一行目… [複数行]');
+    await expect(summary).toHaveAttribute('aria-label', /複数行・編集を開く/);
+  });
+
+  test('要約を押すと中身が編集でき、改行が消えない', async ({ page }) => {
+    await cell(page, 0, 1).click();
+    await page.keyboard.press('Shift+Enter');
+    await page.locator('dialog.dialog--cell textarea').fill('一行目\n二行目');
+    await page.getByRole('button', { name: '完了' }).click();
+
+    await page.locator('[data-cell="0:1"]').click();
+    const editor = page.locator('dialog.dialog--cell[open]');
+    await expect(editor.locator('textarea')).toHaveValue('一行目\n二行目');
+    await editor.locator('textarea').fill('一行目\n二行目\n三行目');
+    await editor.getByRole('button', { name: '完了' }).click();
+
+    await page.locator('[data-cell="0:1"]').click();
+    await expect(page.locator('dialog.dialog--cell textarea')).toHaveValue(
+      '一行目\n二行目\n三行目',
+    );
+  });
+
+  test('複数行の置換先はそのまま出力に入る', async ({ page }) => {
+    await cell(page, 0, 1).click();
+    await page.keyboard.press('Shift+Enter');
+    await page.locator('dialog.dialog--cell textarea').fill('あー\nちゃん');
+    await page.getByRole('button', { name: '完了' }).click();
+
+    await page.getByRole('button', { name: '変換', exact: true }).click();
+    await page.getByRole('button', { name: 'テキスト', exact: true }).click();
+    await expect(page.locator('.file-card__plain')).toHaveValue(
+      'あー\nちゃんとびるが並ぶ。あー\nちゃんは笑った。\n',
+    );
+  });
+
+  test('複数行ルールは CSV に書き出して読み戻せる', async ({ page }) => {
+    await cell(page, 0, 1).click();
+    await page.keyboard.press('Shift+Enter');
+    await page.locator('dialog.dialog--cell textarea').fill('一行目\n二行目');
+    await page.getByRole('button', { name: '完了' }).click();
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByRole('button', { name: 'CSV書き出し' }).click(),
+    ]);
+    const text = await readFile(await download.path(), 'utf8');
+
+    await page.getByRole('button', { name: '表から読み込み' }).click();
+    await page.getByRole('button', { name: '置き換える' }).click();
+    await page.locator('.dialog__textarea').first().fill(text.replace(BOM, ''));
+    await page.getByRole('button', { name: '読み込む' }).click();
+    await page
+      .locator('dialog.dialog--confirm')
+      .getByRole('button', { name: '置き換える' })
+      .click();
+
+    await expect(page.locator('[data-cell="0:1"]')).toHaveText('一行目… [複数行]');
+  });
+});

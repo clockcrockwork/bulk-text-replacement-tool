@@ -23,6 +23,12 @@ function dedupeGroupNames(groups: readonly Group[]): Group[] {
   });
 }
 
+/** 複数行セルの編集対象。`groupId` が null なら置換元の列。 */
+export interface CellEditTarget {
+  ruleId: string;
+  groupId: string | null;
+}
+
 /** 出力ペインの本文表示モード。 */
 export type FileView = 'highlight' | 'plain';
 
@@ -49,6 +55,13 @@ export interface WorkspaceState {
   outGroupId: string | null;
   /** `${groupId}:${fileIndex}` → 表示モード。 */
   fileViews: Record<string, FileView>;
+  /**
+   * 複数行セルの編集対象。`groupId` が null なら置換元の列。
+   *
+   * 改行を含む値は1行の `<input>` に載せられない（載せると編集した瞬間に改行が消える）。
+   * 表の一覧性は崩さず、編集だけ別の場所で行う。
+   */
+  cellEdit: CellEditTarget | null;
   importOpen: boolean;
   importText: string;
   importMode: ImportMode;
@@ -81,7 +94,9 @@ export type WorkspaceAction =
   | { type: 'import/apply'; groups: Group[]; rules: Rule[] }
   | { type: 'result/set'; result: ConversionResult; signature: string }
   | { type: 'output/selectGroup'; id: string }
-  | { type: 'output/setFileView'; key: string; view: FileView };
+  | { type: 'output/setFileView'; key: string; view: FileView }
+  | { type: 'cellEdit/open'; target: CellEditTarget }
+  | { type: 'cellEdit/close' };
 
 /** 置換元が空の新規行。表の末尾に置いて入力待ちにする。 */
 export function createEmptyRule(): Rule {
@@ -147,6 +162,7 @@ export function initWorkspace(): WorkspaceState {
     lastSignature: null,
     outGroupId: null,
     fileViews: {},
+    cellEdit: null,
     importOpen: false,
     importText: '',
     // 既定は非破壊側。置き換えは取り消せないので、選ぶのはユーザーの明示操作にする。
@@ -219,6 +235,7 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
         lastSignature: null,
         outGroupId: null,
         fileViews: {},
+        cellEdit: null,
       };
 
     case 'groups/add': {
@@ -327,6 +344,12 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
 
     case 'output/setFileView':
       return { ...state, fileViews: { ...state.fileViews, [action.key]: action.view } };
+
+    case 'cellEdit/open':
+      return { ...state, cellEdit: action.target };
+
+    case 'cellEdit/close':
+      return { ...state, cellEdit: null };
 
     default: {
       // すべての action を処理し終えたことを型で保証する。
