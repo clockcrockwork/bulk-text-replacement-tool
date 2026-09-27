@@ -332,9 +332,9 @@ describe('複数選択', () => {
     expect(accepted.batchCandidates).toHaveLength(1);
 
     const repinned = githubImportReducer(PINNED, { type: 'snapshot/pinned', snapshot: MOVED });
-    expect(
-      githubImportReducer(repinned, { type: 'batch/set', candidates: [candidate()] }),
-    ).toBe(repinned);
+    expect(githubImportReducer(repinned, { type: 'batch/set', candidates: [candidate()] })).toBe(
+      repinned,
+    );
   });
 });
 
