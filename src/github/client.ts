@@ -12,6 +12,7 @@ import {
   normalizeInstallations,
   normalizeRefCommitSha,
   normalizeRepositories,
+  normalizeRecursiveTree,
   normalizeTree,
   PER_PAGE,
   parseNextLink,
@@ -62,6 +63,13 @@ export interface GitHubClient {
   ): Promise<GitHubSnapshot>;
   /** 固定したスナップショットの中の1階層。`dir` はその tree の置かれたパス。 */
   getTree(
+    snapshot: GitHubSnapshot,
+    treeSha: string,
+    dir: string,
+    signal: AbortSignal,
+  ): Promise<NormalizedTree>;
+  /** 固定した tree 以下を recursive API で一括取得する。truncated はそのまま返す。 */
+  getTreeRecursive(
     snapshot: GitHubSnapshot,
     treeSha: string,
     dir: string,
@@ -179,6 +187,16 @@ export function createGitHubClient(
     async getTree(snapshot, treeSha, dir, signal) {
       const url = `${GITHUB_API_ORIGIN}${repoPath(snapshot.repository)}/git/trees/${treeSha}`;
       const tree = normalizeTree((await getJson(url, signal)).value, dir);
+      if (!tree) throw invalidResponse();
+      return tree;
+    },
+
+    async getTreeRecursive(snapshot, treeSha, dir, signal) {
+      const url = new URL(
+        `${GITHUB_API_ORIGIN}${repoPath(snapshot.repository)}/git/trees/${treeSha}`,
+      );
+      url.searchParams.set('recursive', '1');
+      const tree = normalizeRecursiveTree((await getJson(url.toString(), signal)).value, dir);
       if (!tree) throw invalidResponse();
       return tree;
     },
