@@ -121,6 +121,11 @@ describe('workspaceReducer', () => {
       { type: 'inputs/applyGitHubBatch', updates: [], adds: [added] },
     );
     expect(next.inputs).toEqual([added]);
+    expect(next.groups).toHaveLength(1);
+    expect(next.groups[0]?.name).toBe('グループ1');
+    expect(next.rules).toHaveLength(1);
+    expect(next.rules[0]?.src).toBe('');
+    expect(next.result).toBeNull();
     expect(next.isSample).toBe(false);
   });
 
