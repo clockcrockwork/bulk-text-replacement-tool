@@ -64,6 +64,7 @@ export interface GitHubImport {
   enterDirectory: (entry: GitHubTreeEntry) => void;
   goTo: (index: number) => void;
   selectFile: (entry: GitHubTreeEntry) => void;
+  setSelected: (path: string, selected: boolean) => void;
   clearCandidate: () => void;
   /** 取り込みを確定したあとに呼ぶ。ダイアログを閉じる。 */
   finish: () => void;
@@ -447,6 +448,7 @@ export function useGitHubImport(): GitHubImport {
       dispatch({ type: 'dir/goTo', index });
       loadListing(snapshot, step);
     },
+    setSelected: (path, selected) => dispatch({ type: 'selection/set', path, selected }),
     selectFile: (entry) => {
       const snapshot = state.snapshot;
       if (!snapshot || entry.status !== 'importable') return;
