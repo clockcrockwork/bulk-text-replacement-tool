@@ -262,13 +262,15 @@ export function describeCallbackFailure(reason: CallbackFailure): string {
 /**
  * トークン交換が失敗したときの文言。
  *
- * 429 は Vercel Firewall のレート制限（`docs/github-app-setup.md` §3）。数十秒〜1分で
- * 解けるので、状態コードだけを見せて「失敗した」で終わらせず、待てば直ることを伝える。
- * すぐに押し直すとまた数えられて制限が延びる。
+ * 429 は Vercel Firewall のレート制限（`docs/github-app-setup.md` §3）。窓が明ければ解けるので、
+ * 状態コードだけを見せて「失敗した」で終わらせず、待てば直ることを伝える。すぐに押し直すと
+ * また数えられて制限が延びる。
+ * 待つ時間は書かない。窓の長さはリポジトリの外（Firewall のルール）で決まり、プランによっては
+ * 60 秒を選べない。ここに数字を書くと、ルールを変えたときに画面だけ古い案内が残る。
  */
 export function describeTokenExchangeFailure(status: number): string {
   if (status === 429) {
-    return 'GitHub への接続が短時間に続いたため、一時的に制限されています。1分ほど待ってから、もう一度接続してください（作業データはそのまま残っています）。';
+    return 'GitHub への接続が短時間に続いたため、一時的に制限されています。少し時間をおいてから、もう一度接続してください（作業データはそのまま残っています）。';
   }
   return `GitHub との接続に失敗しました（トークンの交換に失敗: ${status}）。もう一度接続してください。`;
 }

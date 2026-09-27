@@ -860,7 +860,7 @@ test('トークン交換が 429（Firewall のレート制限）なら、待っ�
 
   const alert = dialog(page).getByRole('alert');
   await expect(alert).toContainText('一時的に制限されています');
-  await expect(alert).toContainText('1分ほど待ってから、もう一度接続してください');
+  await expect(alert).toContainText('少し時間をおいてから、もう一度接続してください');
   expect(mock.tokenCalls).toHaveLength(1);
   // 制限が解けたら、同じ画面から接続し直せる。
   mock.tokenStatus = 200;

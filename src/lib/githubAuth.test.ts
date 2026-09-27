@@ -313,7 +313,9 @@ describe('トークン', () => {
 describe('describeTokenExchangeFailure', () => {
   it('429（Firewall のレート制限）は、待ってから接続し直せばよいと伝える', () => {
     const message = describeTokenExchangeFailure(429);
-    expect(message).toContain('1分ほど待ってから');
+    expect(message).toContain('少し時間をおいてから');
+    // 窓の長さは Firewall のルールで決まるので、画面には具体的な時間を書かない。
+    expect(message).not.toMatch(/\d+\s*(?:秒|分)/);
     expect(message).toContain('もう一度接続');
     expect(message).not.toContain('429');
   });

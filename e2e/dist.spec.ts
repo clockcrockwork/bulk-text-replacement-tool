@@ -52,7 +52,14 @@ test('配信する HTML にフレーム埋め込み禁止・nosniff・Referrer-P
   expect(headers['cross-origin-opener-policy']).toBe('same-origin');
   // 使っていない強い機能は閉じておく（多層防御）。クリップボードはコピーで使うので閉じない。
   const permissions = headers['permissions-policy'] ?? '';
-  for (const feature of ['camera', 'microphone', 'geolocation', 'payment', 'usb']) {
+  for (const feature of [
+    'camera',
+    'microphone',
+    'geolocation',
+    'payment',
+    'usb',
+    'display-capture',
+  ]) {
     expect(permissions).toContain(`${feature}=()`);
   }
   expect(permissions).not.toContain('clipboard');
