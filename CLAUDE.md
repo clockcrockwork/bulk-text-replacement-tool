@@ -306,10 +306,15 @@ Vercel は `main`、ロリポップは `release/lolipop-v1` の build artifact �
 `push` は `main` のみ、他は `pull_request` で走る（同じコミットに同名チェックが2系統
 報告されると required status checks が不安定になるため）。失敗時だけレポートを回収する。
 
-Action は**コミット SHA（40 桁）で固定**し、後ろに `# v7.0.1` のように版を書く
-（`scripts/checkActionsPinned.mjs`、`npm run lint` に含まれる。ワークフローと
-`.github/actions` 以下の composite action が対象で、1 行で読めない `uses:` の書き方も落とす）。タグは付け替えられるので、
-Action 側が乗っ取られると `@v7` のまま中身が変わる。更新は Dependabot（`github-actions`）が
-SHA と注記を一緒に書き換える PR で受け取る。Action を足すときは
+Action は**コミット SHA（40 桁）で固定**し、後ろに `# v7.0.1` のように版を書く。
+検査は `scripts/checkActionsPinned.mjs`（`npm run lint` に含まれる）で、判定は
+`scripts/lib/actionsPin.js`（テストあり）。ワークフローと `.github/actions` 以下の
+composite action を YAML として読み、実際のキーが `uses` の箇所を見る（行の正規表現に
+戻さない。引用したキーをすり抜けさせ、`run: |` の本文を Action と取り違える）。
+1 行に収まらない書き方・別名（`*anchor`）・読めない YAML は通さずに落とす。
+タグは付け替えられるので、Action 側が乗っ取られると `@v7` のまま中身が変わる。
+更新は Dependabot（`github-actions`）が SHA と注記を一緒に書き換える PR で受け取る。
+ただし `directory: /` が追従するのは `.github/workflows` だけなので、composite action を
+足したら `dependabot.yml` にそのディレクトリも足す。Action を足すときは
 `git ls-remote --tags https://github.com/<owner>/<repo>.git` でタグの指す SHA を確かめる
 （注釈付きタグなら `^{}` の行がコミット）。
