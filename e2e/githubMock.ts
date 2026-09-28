@@ -103,6 +103,8 @@ export class GitHubMock {
   secondaryRateLimitedResponses = 0;
   /** パスに含まれると失敗させる（blob の取得失敗など）。 */
   failPaths: string[] = [];
+  /** 200 以外なら、トークン交換がその状態コードで失敗する（429 は Vercel Firewall の制限）。 */
+  tokenStatus = 200;
 
   private readonly repositories = new Map<number, MockRepository>();
   private readonly objects = new Map<string, { tree: TreeItem[] } | { blob: Buffer }>();
@@ -243,6 +245,13 @@ export class GitHubMock {
       const body = route.request().postData() ?? '';
       this.tokenCalls.push(body);
       this.tokenOrigins.push(await route.request().headerValue('origin'));
+      if (this.tokenStatus !== 200) {
+        return route.fulfill({
+          status: this.tokenStatus,
+          headers: { 'content-type': 'text/plain', 'cache-control': 'no-store' },
+          body: 'Too Many Requests',
+        });
+      }
       return route.fulfill({
         status: 200,
         headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },

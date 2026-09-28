@@ -3,8 +3,10 @@ import { createGitHubClient, type GitHubClient, GitHubRequestError } from '../gi
 import {
   buildCandidate,
   describeGitHubError,
+  type GitHubFetchStage,
   type NormalizedTree,
   orderBranches,
+  recoveryFor,
 } from '../lib/githubApi';
 import {
   base64UrlEncode,
@@ -17,6 +19,7 @@ import {
   type GitHubToken,
   installationUrl,
   isTokenUsable,
+  nonCanonicalTarget,
   PENDING_AUTH_KEY,
   parseExchangeErrorCode,
   parsePendingAuth,
@@ -29,6 +32,7 @@ import {
   validateCallback,
 } from '../lib/githubAuth';
 import { shortSha } from '../lib/inputSource';
+import { revealUnsafeChars } from '../lib/revealText';
 import {
   currentStep,
   type GitHubImportState,
@@ -49,6 +53,11 @@ export interface GitHubImport {
   config: GitHubAppConfig | null;
   /** App のインストール・権限設定の画面。 */
   installUrl: string | null;
+  /**
+   * 正規でないオリジンで開かれているとき、正規のオリジンの URL。接続は始めさせない。
+   * 正規のオリジン（または固定していない配信）なら null。
+   */
+  canonicalUrl: string | null;
   state: GitHubImportState;
   open: () => void;
   close: () => void;
@@ -60,6 +69,11 @@ export interface GitHubImport {
   reloadRepositories: () => void;
   selectRepository: (repository: GitHubRepository) => void;
   clearRepository: () => void;
+  /**
+   * リポジトリの一覧を取り直して選び直す。リポジトリが消えた・見えなくなった・空だった
+   * ときの次の手（手元の一覧は古いので、選び直す前に取り直す）。
+   */
+  reselectRepository: () => void;
   showBranches: () => void;
   hideBranches: () => void;
   selectBranch: (ref: string) => void;
@@ -128,12 +142,21 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
   const lastTask = useRef<(() => void) | null>(null);
   const handledCallback = useRef(false);
   /**
+   * ページを離れた（bfcache に入った）回数。トークン交換は中断口を共有しないので、
+   * 離れる前に始めた交換が戻ったあとに返ってきても、その結果でトークンを持ち直さない。
+   */
+  const pageLeft = useRef(0);
+  /**
    * 接続の手続き（認可の画面へ移る準備と、戻ったあとのトークン交換）の世代。
    * 途中で「閉じる」と進め、それより前に始めた手続きの結果を捨てる。
    * 交換はコードが1回しか使えないので fetch 自体は止めないが、閉じたあとに返った
    * トークンは持たない（閉じたのに裏で接続が完了し、一覧を取りに行く、を起こさない）。
+   *
+   * `pageLeft` とは契機が別（こちらは閉じる、あちらは bfcache）なので、交換の結果は
+   * 両方の世代が変わっていないときだけ採用する。
    */
   const attempt = useRef(0);
+  const canonicalUrl = APP_CONFIG ? nonCanonicalTarget(APP_CONFIG, window.location.origin) : null;
 
   /** 進行中の取得を止めて、新しい取得の中断口を作る。 */
   const begin = (): AbortController => {
@@ -167,13 +190,16 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
    * 新しい取得を始めると前の取得は中断する（遅れて返った古い応答で画面を戻さない）。
    */
   const run = <T>(
+    stage: GitHubFetchStage,
     label: string,
     task: (api: GitHubClient, signal: AbortSignal) => Promise<T>,
     onDone: (value: T) => void,
+    /** 選んでいたブランチが見つからないとき、ブランチの一覧へ戻す（`recoveryFor`）。 */
+    chooseBranch?: () => void,
   ): void => {
     const api = client();
     if (!api) return;
-    const again = (): void => run(label, task, onDone);
+    const again = (): void => run(stage, label, task, onDone, chooseBranch);
     lastTask.current = again;
     const controller = begin();
     dispatch({ type: 'busy', label });
@@ -188,12 +214,17 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
             dropConnection(describeGitHubError(error.detail));
             return;
           }
+          // やり直しても変わらない失敗に「再試行」を出さない（段階ごとに戻る先を決める）。
+          const recovery = recoveryFor(error.detail, stage);
+          if (recovery === 'chooseBranch' && chooseBranch) {
+            chooseBranch();
+            return;
+          }
           dispatch({
             type: 'fail',
             error: {
               message: describeGitHubError(error.detail),
-              // 一覧が長すぎるのは、やり直しても同じ結果で rate limit を食うだけなので再試行させない。
-              recover: error.detail.kind === 'listTooLong' ? 'dismiss' : 'retry',
+              recover: recovery === 'chooseBranch' ? 'retry' : recovery,
             },
           });
           return;
@@ -211,6 +242,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
 
   const loadRepositories = (): void => {
     run(
+      'repositories',
       'リポジトリを読み込んでいます',
       (api, signal) => api.listRepositories(signal),
       (repositories) => dispatch({ type: 'repositories/loaded', repositories }),
@@ -239,6 +271,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       return;
     }
     run(
+      'tree',
       'フォルダを読み込んでいます',
       (api, signal) => api.getTree(snapshot, step.treeSha, step.path, signal),
       (tree) => {
@@ -248,14 +281,28 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
     );
   };
 
-  /** ブランチの HEAD を解決して固定し、ルートを開く。 */
-  const pin = (repository: GitHubRepository, ref: string, previous?: GitHubSnapshot): void => {
+  /**
+   * ブランチの HEAD を解決して固定し、ルートを開く。
+   *
+   * `resume` は「最新に更新」で先頭が変わっていなかったときに開き直す場所。確認を始めた
+   * 時点で一覧の取得が終わっていなかったなら、その取得は確認のために中断している
+   * （`run` は前の取得を止める）。「最新です」とだけ言って戻ると、一覧の無い画面に残る。
+   */
+  const pin = (
+    repository: GitHubRepository,
+    ref: string,
+    previous?: GitHubSnapshot,
+    resume?: TrailStep,
+  ): void => {
     run(
+      'snapshot',
       `${ref} の最新コミットを確認しています`,
       (api, signal) => api.resolveSnapshot(repository, ref, signal),
       (snapshot) => {
         if (previous && previous.commitSha === snapshot.commitSha) {
-          dispatch({ type: 'info', message: `最新です（${shortSha(snapshot.commitSha)} のまま）` });
+          const message = `最新です（${shortSha(snapshot.commitSha)} のまま）`;
+          if (resume) loadListing(previous, resume, message);
+          else dispatch({ type: 'info', message });
           return;
         }
         dispatch({ type: 'snapshot/pinned', snapshot });
@@ -265,26 +312,41 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
           previous ? `${shortSha(snapshot.commitSha)} に更新しました` : undefined,
         );
       },
+      // 一覧を取ったあとで既定ブランチが改名・削除されると、同じ ref は何度解決しても 404。
+      // 再試行を押させ続けず、今あるブランチから選び直してもらう。
+      () =>
+        loadBranches(
+          repository,
+          `ブランチ ${revealUnsafeChars(ref)} が見つかりませんでした（名前が変わったか、削除された可能性があります）。ブランチを選んでください。`,
+        ),
     );
   };
 
-  const loadBranches = (repository: GitHubRepository): void => {
+  /** ブランチの一覧を開く。`notice` は一覧が出たあとに添える知らせ（ここへ戻された理由）。 */
+  const loadBranches = (repository: GitHubRepository, notice?: string): void => {
     dispatch({ type: 'branches/show' });
     run(
+      'branches',
       'ブランチを読み込んでいます',
       (api, signal) => api.listBranches(repository, signal),
-      (names) =>
+      (names) => {
         dispatch({
           type: 'branches/loaded',
           repositoryId: repository.id,
           branches: orderBranches(names, repository.defaultBranch),
-        }),
+        });
+        if (notice) dispatch({ type: 'info', message: notice });
+      },
     );
   };
 
   const exchangeCode = async (code: string, verifier: string): Promise<void> => {
     dispatch({ type: 'connect/start' });
+    const startedPage = pageLeft.current;
     const started = attempt.current;
+    /** 交換を始めてから、閉じられたか bfcache に入ったか。どちらでも結果は捨てる。 */
+    const superseded = (): boolean =>
+      pageLeft.current !== startedPage || attempt.current !== started;
     // 交換は中断口を共有しない。コードは1回しか使えないので、他の操作や
     // （開発時の Strict Mode による）effect の片付けで止めると、やり直せなくなる。
     try {
@@ -303,8 +365,9 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       // 失敗の本文は理由コードだけを読む（読めなくても状態コードで知らせる）。
       const payload: unknown = await response.json().catch(() => null);
       const token = response.ok ? parseTokenResponse(payload, Date.now()) : null;
-      // 交換の途中で閉じられていたら、返ってきたトークンは捨てる（取り消し済み）。
-      if (attempt.current !== started) return;
+      // 交換の途中でページを離れたか閉じられていたら、返ってきたトークンは捨てる
+      // （接続は解除・取り消し済み）。
+      if (superseded()) return;
       if (!token) {
         dropConnection(
           describeTokenExchangeFailure(
@@ -318,7 +381,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       dispatch({ type: 'connect/done' });
       loadRepositories();
     } catch (error) {
-      if (attempt.current !== started) return;
+      if (superseded()) return;
       console.error('GitHub のトークン交換に失敗しました', error);
       dropConnection(
         'GitHub との接続に失敗しました。ネットワークを確認して、もう一度接続してください。',
@@ -359,21 +422,47 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
 
   // GitHub の画面からブラウザの「戻る」で帰ってくると、bfcache から「接続中」のまま
   // 復元される（ボタンが押せないまま残る）。引き返した認可として片付ける。
+  //
+  // 接続済みのまま bfcache に入ったページも、戻るとトークンごと復元される（JS のヒープが
+  // そのまま戻る）。共用の端末で次の人が「戻る」を押すと、前の利用者の権限でリポジトリを
+  // 読めてしまうので、bfcache に入る時点（persisted な pagehide）でトークンを捨てる。
+  // 戻ったとき（persisted な pageshow）にも念のため同じ片付けをする。
+  // タブの切り替え（visibilitychange）では切らない。ページはそのまま残っているため。
   useEffect(() => {
+    const releaseToken = (): void => {
+      pageLeft.current += 1;
+      abortRef.current?.abort();
+      abortRef.current = null;
+      tokenRef.current = null;
+      treeCache.current.clear();
+      lastTask.current = null;
+      dispatch({ type: 'page/persisted' });
+    };
+    const onPageHide = (event: PageTransitionEvent): void => {
+      if (!event.persisted) return;
+      // 認可の画面へ移るとき（接続中）もここを通る。戻り先で使う state と verifier は
+      // 消さない（新しいページの読み込みで使う）。
+      releaseToken();
+    };
     const onPageShow = (event: PageTransitionEvent): void => {
       if (!event.persisted) return;
       removePendingAuth();
       dispatch({ type: 'connect/abandon' });
+      releaseToken();
     };
+    window.addEventListener('pagehide', onPageHide);
     window.addEventListener('pageshow', onPageShow);
-    return () => window.removeEventListener('pageshow', onPageShow);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', onPageShow);
+    };
   }, []);
 
   // 画面を離れるときに取得中の通信を止める。
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const connect = async (): Promise<void> => {
-    if (!APP_CONFIG || state.connection !== 'disconnected') return;
+    if (!APP_CONFIG || canonicalUrl || state.connection !== 'disconnected') return;
     // 押した時点で「接続中」にしてボタンを止める。二重に押すと認可が2本走り、
     // 保存した state と戻ってきた state が食い違う。
     dispatch({ type: 'connect/start' });
@@ -423,6 +512,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
   return {
     config: APP_CONFIG,
     installUrl: APP_CONFIG ? installationUrl(APP_CONFIG) : null,
+    canonicalUrl,
     state,
     open: () => {
       dispatch({ type: 'open' });
@@ -471,19 +561,31 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       abortRef.current?.abort();
       dispatch({ type: 'repository/clear' });
     },
+    reselectRepository: () => {
+      abortRef.current?.abort();
+      dispatch({ type: 'repository/clear' });
+      loadRepositories();
+    },
     showBranches: () => {
       if (state.repository) loadBranches(state.repository);
     },
     hideBranches: () => {
       abortRef.current?.abort();
       dispatch({ type: 'branches/hide' });
+      // ブランチの一覧を開いた時点で、元の一覧の取得を中断していることがある
+      // （一覧を待たずに「ブランチを変更」を押した）。戻る先に一覧が無ければ取り直す。
+      const step = currentStep(state);
+      if (state.snapshot && state.listing === null && step) loadListing(state.snapshot, step);
     },
     selectBranch: (ref) => {
       if (state.repository) pin(state.repository, ref);
     },
     refreshSnapshot: () => {
       const snapshot = state.snapshot;
-      if (snapshot) pin(snapshot.repository, snapshot.ref, snapshot);
+      if (!snapshot) return;
+      // 一覧を待っている途中で押されたら、先頭が変わっていなくても今の場所を開き直す。
+      const resume = state.listing === null ? currentStep(state) : undefined;
+      pin(snapshot.repository, snapshot.ref, snapshot, resume);
     },
     enterDirectory: (entry) => {
       const snapshot = state.snapshot;
@@ -503,6 +605,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       const snapshot = state.snapshot;
       if (!snapshot || entry.status !== 'importable') return;
       run(
+        'blob',
         `${entry.name} を取得しています`,
         (api, signal) => api.getBlob(snapshot, entry.sha, signal),
         (buffer) => {

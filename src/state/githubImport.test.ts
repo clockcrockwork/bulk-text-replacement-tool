@@ -7,6 +7,7 @@ import {
   type GitHubImportState,
   githubImportReducer,
   initialGitHubImportState,
+  PAGE_LEFT_NOTICE,
 } from './githubImport';
 
 const SHA_A = 'a'.repeat(40);
@@ -77,6 +78,31 @@ describe('接続', () => {
       'disconnected',
     );
     expect(githubImportReducer(PINNED, { type: 'connect/abandon' })).toBe(PINNED);
+  });
+
+  it('接続済みのまま bfcache に入る／から戻ると、切断して知らせる（開閉の状態は残す）', () => {
+    const opened = githubImportReducer(PINNED, { type: 'open' });
+    expect(githubImportReducer(opened, { type: 'page/persisted' })).toEqual({
+      ...initialGitHubImportState,
+      open: true,
+      notice: PAGE_LEFT_NOTICE,
+    });
+    const closed = githubImportReducer(PINNED, { type: 'close' });
+    expect(githubImportReducer(closed, { type: 'page/persisted' })).toMatchObject({
+      open: false,
+      connection: 'disconnected',
+      repository: null,
+      snapshot: null,
+      notice: PAGE_LEFT_NOTICE,
+    });
+  });
+
+  it('接続中（認可の画面へ移る途中）と未接続は bfcache の出入りで変えない', () => {
+    const connecting = run([{ type: 'open' }, { type: 'connect/start' }]);
+    expect(githubImportReducer(connecting, { type: 'page/persisted' })).toBe(connecting);
+    expect(githubImportReducer(initialGitHubImportState, { type: 'page/persisted' })).toBe(
+      initialGitHubImportState,
+    );
   });
 
   it('切断すると選んでいたものを捨て、知らせだけ残す（開いたまま）', () => {

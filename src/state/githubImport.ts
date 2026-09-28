@@ -33,7 +33,8 @@ export interface DirectoryListing {
 /** 画面に出す失敗。`recover` は利用者が取れる次の手。 */
 export interface GitHubImportError {
   message: string;
-  recover: 'retry' | 'reconnect' | 'dismiss';
+  /** `reselect` はリポジトリの一覧を取り直して選び直す（`recoveryFor`）。 */
+  recover: 'retry' | 'reconnect' | 'dismiss' | 'reselect';
 }
 
 export type ConnectionState =
@@ -74,6 +75,11 @@ export type GitHubImportAction =
   | { type: 'connect/done' }
   /** 認可へ遷移したあと、戻ってきた（引き返した）。接続中なら未接続へ戻す。 */
   | { type: 'connect/abandon' }
+  /**
+   * ページが bfcache に入る／から戻る（`persisted` な pagehide / pageshow）。
+   * 接続済みなら切断して知らせる。トークンは呼び出し側が同時に捨てる。
+   */
+  | { type: 'page/persisted' }
   /** 切断する。トークンの失効やユーザーの操作で呼ぶ。 */
   | { type: 'disconnect'; notice: string | null }
   | { type: 'busy'; label: string }
@@ -93,6 +99,10 @@ export type GitHubImportAction =
   | { type: 'dir/goTo'; index: number }
   | { type: 'candidate/set'; candidate: GitHubCandidate }
   | { type: 'candidate/clear' };
+
+/** bfcache に入った（ページを離れた）ために切断したときの知らせ。 */
+export const PAGE_LEFT_NOTICE =
+  'ページを離れたため、GitHub との接続を解除しました。もう一度接続してください。';
 
 export const initialGitHubImportState: GitHubImportState = {
   open: false,
@@ -153,6 +163,16 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
 
     case 'connect/abandon':
       return state.connection === 'connecting' ? { ...state, connection: 'disconnected' } : state;
+
+    case 'page/persisted':
+      // bfcache から戻ると JS のヒープごと復元され、メモリにだけ持つトークンも生き返る。
+      // 共用の端末で、タブを閉じずに別のサイトへ移ったあと次の人が「戻る」を押すと、
+      // 前の利用者の権限でリポジトリを読めてしまうので、ページを離れた時点で切断する。
+      // 接続中（認可の画面へ移る途中）は変えない。戻ったときの片付けは connect/abandon が行い、
+      // 認可から正しく戻る流れ（新しいページの読み込み）には関わらない。
+      return state.connection === 'connected'
+        ? { ...initialGitHubImportState, open: state.open, notice: PAGE_LEFT_NOTICE }
+        : state;
 
     case 'connect/done':
       return { ...state, connection: 'connected', busy: null, error: null };

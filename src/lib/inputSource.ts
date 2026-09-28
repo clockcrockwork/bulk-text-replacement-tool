@@ -1,4 +1,5 @@
 import type { GitHubInputSource, InputText } from '../types';
+import { revealUnsafeChars } from './revealText';
 
 /**
  * 入力の出自（どこから取り込んだか）を扱う。
@@ -77,12 +78,19 @@ export function shortSha(sha: string): string {
   return sha.slice(0, 7);
 }
 
-/** 入力カードに出す出自の要約。「owner/repo · path」 */
+/**
+ * 入力カードに出す出自の要約。「owner/repo · path」
+ *
+ * 表示専用なので、パスやブランチ名に紛れた双方向制御文字などは見える形にする
+ * （`revealUnsafeChars`）。同一性の判定には使わないこと（`sourceIdentity` を使う）。
+ */
 export function formatSourceLabel(source: GitHubInputSource): string {
-  return `${source.owner}/${source.repo} · ${source.path}`;
+  return revealUnsafeChars(`${source.owner}/${source.repo} · ${source.path}`);
 }
 
-/** 出自の詳細（ブランチとコミット）。title 属性など補足の表示に使う。 */
+/** 出自の詳細（ブランチとコミット）。title 属性など補足の表示に使う。表示専用。 */
 export function formatSourceDetail(source: GitHubInputSource): string {
-  return `${source.owner}/${source.repo} の ${source.ref}（${shortSha(source.commitSha)}）: ${source.path}`;
+  return revealUnsafeChars(
+    `${source.owner}/${source.repo} の ${source.ref}（${shortSha(source.commitSha)}）: ${source.path}`,
+  );
 }

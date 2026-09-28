@@ -145,6 +145,10 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   - アクセストークンは `useGitHubImport` の ref（メモリ）にだけ持つ。localStorage /
     sessionStorage / ワークスペース / 作業データに書かない。sessionStorage に置いてよいのは
     リダイレクトを跨ぐ state と PKCE verifier だけで、戻った時点で消す。
+  - bfcache に入るとき（`persisted` な pagehide）と戻ったときに、トークンを捨てて切断する
+    （`page/persisted`）。戻るとヒープごと復元され、メモリのトークンも生き返るため
+    （共用の端末で次の人が「戻る」で前の利用者の権限を使える）。交換の途中で離れた場合も、
+    あとから返った交換の結果で接続し直さない（`pageLeft`）。タブの切り替えでは切らない。
   - トークンは**期限付きだけ**を使う。`expires_in` は正の整数で 1 日（`MAX_TOKEN_LIFETIME_SECONDS`）
     以内、`token_type` は bearer であること。外れた応答は Function が 502 にし、ブラウザ
     （`parseTokenResponse`）も受け付けない。GitHub App の期限切れ設定がオフにされると
@@ -152,8 +156,13 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
     直すと `Infinity` になり実質無期限になるので、上限で断る。
   - 接続の途中（`connecting`）で閉じたら取り消す（`attempt` の世代を進める）。トークン交換の
     fetch はコードが1回しか使えないので止めないが、閉じたあとに返った結果は捨てる。
+    **`attempt`（閉じる）と `pageLeft`（bfcache）は契機が別なので、交換の結果は両方を見て捨てる**
+    （統合するときに片方を落とすと、どちらかの修正が戻る）。
   - 認可は毎回アプリが state と PKCE（S256）を付けて始める。GitHub の「インストール時に
     OAuth を要求」には頼らない。callback はオリジン直下（`base: './'` なので下位パス不可）。
+  - 正規のオリジンは `VITE_GITHUB_APP_ORIGIN`（`readGitHubAppConfig`）。それ以外のオリジン
+    （Production の別名など）では接続を始めさせず、正規の URL へのリンクを出すだけにする。
+    **自動で移動させない**（verifier も作業データもオリジンごとの保存先にあり、移ると失われる）。
   - 認可で GitHub の画面へ移る直前に、保留中の編集も含めて保存を書き出す
     （`usePersistedWorkspace` の `flush` を `beforeNavigate` として渡す）。書けなければ移らない。
     表示中の `saveFailed` は最後に実行済みの保存の結果でしかなく、デバウンス中の編集は含まない。
@@ -175,6 +184,15 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
     サーバー）で確かめる。
   - ブランチを選んだ時点でコミットを固定し、tree も blob もそこから読む。遅れて返った
     古い応答は reducer が捨てる。新しいコミットへは「最新に更新」でだけ移る。
+  - 新しい取得は前の取得を中断する（`run`）。中断したあとに**戻る先の一覧が無い**経路
+    （一覧を待たずに「最新に更新」して先頭が同じだった／「ブランチを変更」→「変えずに戻る」）では、
+    今の場所を取り直す。中断だけして戻ると、読み込み中でもエラーでもない空の画面に残る。
+  - 失敗のあとの次の手は `recoveryFor`（取得の段階 × 失敗の種類）で決める。**やり直しても
+    変わらない失敗に「再試行」を出さない**。既定ブランチが改名・削除されて ref が 404 なら
+    ブランチの一覧へ戻し、ブランチ一覧・tree・blob の 404 と空のリポジトリはリポジトリの一覧を
+    取り直して選び直してもらう（手元の一覧は古い）。
+  - 保存に失敗している間は接続を始めさせない代わりに、ダイアログの中から作業データを
+    書き出せるようにする（書き出しは既存の `exportBackup` と同じ処理）。
   - tree の一覧は項目にパスを焼き込んでいる。中身が同じディレクトリは別の場所でも同じ
     tree SHA になるので、一覧のキャッシュや照合は **SHA とパスの組**で行う（SHA だけだと
     別のフォルダのパスで取り込み、出自と同一性が別ファイルに結び付く）。
@@ -183,8 +201,17 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   - 取り込み元の同一性は `repositoryId + ref + path`（`sourceIdentity`）。タイトルでは判定しない。
     同じ取り込み元が複数あるときに更新先を推測しない。
   - 対応拡張子は `ACCEPTED_EXTENSIONS`、文字コードは `decodeText` をローカルと共有する。
+  - GitHub から来た名前（ファイル名・パス・ブランチ名）と入力のタイトルは、画面に出すときに
+    `revealUnsafeChars`（`src/lib/revealText.ts`）を通す。双方向制御文字などを `⟨U+202E⟩` の
+    形で見せ、一覧の偽装を防ぐ（`<bdi>` では中の RLO が効いたまま）。**変えるのは表示だけ**で、
+    保存・比較・出力名には元の文字列を使う。文字の集合は `sanitizeName` と共有している。
+    編集欄（`<input>`）は値を変えられないので、入力カードに見える形の名前を別に添える。
+  - トークン交換の 429 は Vercel Firewall のレート制限。`describeTokenExchangeFailure` で
+    「待ってから接続し直す」と伝える。
 - **配信時のヘッダ**は `vercel.json` の `headers`（`frame-ancestors 'none'`・`X-Frame-Options`・
-  `nosniff`・`Referrer-Policy: strict-origin`）。`vite preview` も同じ値を返すので、E2E は
+  `nosniff`・`Referrer-Policy: strict-origin`・`Cross-Origin-Opener-Policy: same-origin`・
+  `Permissions-Policy`）。COOP の下でも OAuth の往復で sessionStorage が残ることは E2E が
+  見るが、実機の Safari は手で確かめる（docs §5）。`vite preview` も同じ値を返すので、E2E は
   このヘッダの下で走る（共有するのは値だけで、`/api/` を除くパス条件は Preview で確かめる）。
   `Referrer-Policy` は `strict-origin` から動かさない。既定の `strict-origin-when-cross-origin`
   は同一オリジンの要求に URL 全体を送るので、認可から戻った直後の `/assets/*.js` の Referer に

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { expect, type Page, test } from '@playwright/test';
 import { PENDING_AUTH_KEY } from '../src/lib/githubAuth';
 import { STORAGE_KEY } from '../src/lib/storage';
@@ -65,7 +66,15 @@ test('接続前に同意画面を出し、読み取り専用であることと�
   const consent = dialog(page).getByRole('region', { name: 'GitHub との接続' });
   await expect(consent).toContainText('読み取り専用');
   await expect(consent).toContainText('リポジトリ単位');
-  await expect(consent).toContainText('再読み込みやタブを閉じたあとは、もう一度接続が必要');
+  await expect(consent).toContainText(
+    '再読み込み・タブを閉じる・ほかのページへ移動したあとは、もう一度接続が必要',
+  );
+  // 取得するもの（一覧のためのメタデータと、選んだファイルの本文だけ）と、残るもの（出自）。
+  await expect(consent).toContainText('リポジトリ・ブランチ・フォルダの情報');
+  await expect(consent).toContainText('本文を取得するのは、この画面で選んだファイルだけ');
+  await expect(consent).toContainText('owner/repo・ブランチ・パス・コミットの SHA');
+  await expect(consent).toContainText('localStorage');
+  await expect(consent).toContainText('作業データの書き出しにも含まれます');
   // 同意するまでは GitHub にもバックエンドにも何も送らない。
   expect(mock.requests.filter((request) => /github\.com|\/api\//.test(request.url))).toEqual([]);
 
@@ -140,6 +149,82 @@ test('認可から戻った直後の読み込みで、code と state を Referer
   }
 });
 
+/**
+ * bfcache への出入りを起こす。
+ *
+ * Playwright の Chromium は `--disable-back-forward-cache` で起動し、route で差し替えた
+ * 要求があるページも bfcache に載らないので、本物の「戻る」では再現できない。
+ * ページが受け取るのと同じ `persisted` 付きの pagehide / pageshow を送り、アプリの
+ * 片付けがつながっていることを確かめる（実機の「戻る」は手で確かめる）。
+ */
+async function leaveAndComeBack(page: Page, persisted: boolean): Promise<void> {
+  await page.evaluate((flag) => {
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: flag }));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: flag }));
+  }, persisted);
+}
+
+test('接続したまま bfcache に入ると接続を解除し、戻っても前の接続では読めない', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+
+  // タブを離れずにページが残る（persisted でない）遷移の合図では切らない。
+  await leaveAndComeBack(page, false);
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toBeVisible();
+
+  const callsBefore = mock.requests.length;
+  await leaveAndComeBack(page, true);
+
+  // 同意画面へ戻り、理由を知らせる。リポジトリの一覧は出ない。
+  const consent = dialog(page).getByRole('region', { name: 'GitHub との接続' });
+  await expect(consent.getByRole('alert')).toContainText('ページを離れたため');
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toHaveCount(0);
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeEnabled();
+  // 閉じて開き直しても、前のトークンで GitHub へ取りに行かない。
+  await dialog(page).getByRole('button', { name: '閉じる' }).click();
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeVisible();
+  expect(mock.requests.slice(callsBefore)).toEqual([]);
+});
+
+test('トークン交換の途中で bfcache に入ったら、あとから返った交換の結果で接続し直さない', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+
+  // 交換の応答を止めておく（モックより後に張った route が先に効く）。
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reached: () => void = () => {};
+  const exchangeStarted = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  await page.route('**/api/github/token', async (route) => {
+    reached();
+    await held;
+    await route.fallback();
+  });
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).click();
+  await exchangeStarted;
+
+  await leaveAndComeBack(page, true);
+  release();
+
+  // 交換は返ってくるが、その結果でトークンを持ち直さない（一覧を取りに行かない）。
+  await expect.poll(() => mock.tokenCalls.length).toBe(1);
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeEnabled();
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toHaveCount(0);
+  expect(mock.apiCalls(/^\/user\/installations$/)).toEqual([]);
+});
+
 test('アクセストークンはどこにも保存せず、再読み込みすると接続し直しになる', async ({ page }) => {
   const mock = new GitHubMock([REPO]);
   await start(page, mock);
@@ -202,6 +287,10 @@ test('リポジトリ → 既定ブランチの固定 → フォルダ → 1フ�
   const head = mock.headOf(REPO.id, 'main');
   await expect(dialog(page).locator('.github__facts')).toContainText('main');
   await expect(dialog(page).locator('.github__facts')).toContainText(head.slice(0, 7));
+  // 「閉じる」では接続が残ることを、共用の端末を想定して見せる。
+  await expect(dialog(page).locator('.github__session-note')).toContainText(
+    '「閉じる」では、このタブの GitHub との接続は残ります',
+  );
 
   // ルートは非再帰の tree で取り、フォルダを開くと次の階層を取りに行く。
   await expect(entry(page, 'chapters/')).toBeVisible();
@@ -339,6 +428,128 @@ test('中身が同じ別のフォルダ（tree SHA が同じ）を開いても�
     .map((call) => call.url.split('/').pop())
     .filter((sha) => sha !== rootTree);
   expect(new Set(subtreeShas).size).toBe(1);
+});
+
+/**
+ * 一致する API への要求を、`release()` を呼ぶまで止めておく。止めたあいだにアプリが
+ * 中断した要求は、そのまま捨てる（中断済みの要求は続きを流せない）。
+ * 利用者が「待たずに別のボタンを押す」操作を、応答の遅さに頼らずに再現するために使う。
+ */
+async function holdRequests(page: Page, pattern: string): Promise<() => void> {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(pattern, async (route) => {
+    await gate;
+    await route.fallback().catch(() => {});
+  });
+  return release;
+}
+
+test('一覧を待っている途中に「最新に更新」を押しても、先頭が同じなら一覧を開き直す', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  const releaseTrees = await holdRequests(page, 'https://api.github.com/**/git/trees/**');
+  await entry(page, 'chapters/').click();
+  await expect(dialog(page).getByRole('status')).toContainText('フォルダを読み込んでいます');
+
+  // 確認のために一覧の取得は中断される。先頭が変わっていなければ、同じ場所を開き直す。
+  await dialog(page).getByRole('button', { name: '最新に更新' }).click();
+  releaseTrees();
+  await expect(entry(page, 'ch1.md')).toBeVisible();
+  await expect(dialog(page).getByRole('status')).toContainText('最新です');
+  await expect(dialog(page).getByRole('navigation', { name: '現在の場所' })).toContainText(
+    'chapters',
+  );
+});
+
+test('一覧を待っている途中に「ブランチを変更」→「変えずに戻る」としても、一覧を開き直す', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  const releaseTrees = await holdRequests(page, 'https://api.github.com/**/git/trees/**');
+  const releaseBranches = await holdRequests(page, 'https://api.github.com/**/branches**');
+  await entry(page, 'chapters/').click();
+  await expect(dialog(page).getByRole('status')).toContainText('フォルダを読み込んでいます');
+
+  // ブランチの一覧も待たずに戻る。どちらの取得も中断されている。
+  await dialog(page).getByRole('button', { name: 'ブランチを変更' }).click();
+  await expect(dialog(page).getByRole('heading', { name: 'ブランチを選ぶ' })).toBeVisible();
+  await dialog(page).getByRole('button', { name: 'ブランチを変えずに戻る' }).click();
+  releaseBranches();
+  releaseTrees();
+
+  await expect(dialog(page).getByRole('heading', { name: 'ファイルを選ぶ' })).toBeVisible();
+  await expect(entry(page, 'ch1.md')).toBeVisible();
+});
+
+test('既定ブランチが改名・削除されていたら、再試行ではなくブランチの一覧から選び直してもらう', async ({
+  page,
+}) => {
+  // リポジトリの一覧は既定ブランチを main と返すが、main はもう無い（trunk に改名された）。
+  const mock = new GitHubMock([
+    novelRepository({
+      defaultBranch: 'main',
+      branches: { trunk: [{ path: 'ch1.md', content: '改名後のブランチの原稿\n' }] },
+    }),
+  ]);
+  await start(page, mock);
+  await connect(page);
+  await dialog(page).getByRole('button', { name: 'octo/novel' }).click();
+
+  // 同じ ref を何度解決しても 404 なので、「再試行」は出さずにブランチの一覧へ戻す。
+  await expect(dialog(page).getByRole('heading', { name: 'ブランチを選ぶ' })).toBeVisible();
+  await expect(dialog(page).getByRole('status')).toContainText(
+    'ブランチ main が見つかりませんでした',
+  );
+  await expect(dialog(page).getByRole('button', { name: '再試行' })).toHaveCount(0);
+
+  await dialog(page)
+    .getByRole('button', { name: /^trunk/ })
+    .click();
+  await expect(dialog(page).getByRole('heading', { name: 'ファイルを選ぶ' })).toBeVisible();
+  await expect(entry(page, 'ch1.md')).toBeVisible();
+});
+
+test('リポジトリが消えた・見えなくなったら、リポジトリの一覧を取り直して選び直してもらう', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+
+  // 一覧を取ったあとで、リポジトリが削除されたか App のアクセス対象から外れた。
+  // ref もブランチの一覧も 404 になる（どちらも同じ理由なので、再試行では直らない）。
+  await page.route('https://api.github.com/repos/octo/novel/**', (route) =>
+    route.request().method() === 'OPTIONS'
+      ? route.fallback()
+      : route.fulfill({
+          status: 404,
+          headers: { 'access-control-allow-origin': '*', 'content-type': 'application/json' },
+          body: JSON.stringify({ message: 'Not Found' }),
+        }),
+  );
+  await dialog(page).getByRole('button', { name: 'octo/novel' }).click();
+
+  const alert = dialog(page).getByRole('alert');
+  await expect(alert).toContainText('見つかりませんでした');
+  await expect(alert.getByRole('button', { name: '再試行' })).toHaveCount(0);
+  const installationsBefore = mock.apiCalls(/^\/user\/installations$/).length;
+  await alert.getByRole('button', { name: 'リポジトリを選び直す' }).click();
+
+  // 手元の一覧は古いので、取り直してから選んでもらう。
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toBeVisible();
+  expect(mock.apiCalls(/^\/user\/installations$/).length).toBeGreaterThan(installationsBefore);
 });
 
 test('ブランチを変えると、そのブランチの先頭で固定し直す', async ({ page }) => {
@@ -716,6 +927,17 @@ test('ブラウザへの保存に失敗している間は、画面遷移する�
   await page.getByRole('button', { name: 'GitHubから追加' }).click();
   await expect(dialog(page).getByRole('alert')).toContainText('保存できていない作業が失われます');
   await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeDisabled();
+
+  // その場から書き出せる（モーダルの外の「作業データ」を探させない）。保存できていない
+  // 編集も、書き出したファイルには入っている。
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    dialog(page).getByRole('button', { name: '作業データを書き出す' }).click(),
+  ]);
+  expect(download.suggestedFilename()).toMatch(/^bulk-replace-workspace-\d{8}-\d{4}\.json$/);
+  const exported = await readFile(await download.path(), 'utf8');
+  expect(exported).toContain('changed.md');
+  expect(mock.authorizeCalls).toEqual([]);
 });
 
 test('保存の直前（デバウンス中）に接続しても、書き出せなければ画面遷移しない', async ({ page }) => {
@@ -837,4 +1059,117 @@ test('キーボードだけでフォルダを辿ってファイルを選べる',
   await expect(dialog(page)).toHaveCount(0);
   await goToTab(page, '入力');
   await expect(page.locator('.input-card')).toHaveCount(1);
+});
+
+test('トークン交換が 429（Firewall のレート制限）なら、待ってから接続し直すよう伝える', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  mock.tokenStatus = 429;
+  await start(page, mock);
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).click();
+
+  const alert = dialog(page).getByRole('alert');
+  await expect(alert).toContainText('一時的に制限されています');
+  await expect(alert).toContainText('少し時間をおいてから、もう一度接続してください');
+  expect(mock.tokenCalls).toHaveLength(1);
+  // 制限が解けたら、同じ画面から接続し直せる。
+  mock.tokenStatus = 200;
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).click();
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toBeVisible();
+});
+
+test('正規でないオリジンで開いたら、接続を始めさせず正規の URL へのリンクを出す', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await mock.install(page);
+  await seed(page);
+  // 同じビルドを別名のオリジンで配る（Vercel の Production の別名と同じ状況）。
+  // 名前解決に頼らず、別名への要求を配信元へ中継する。
+  const alias = 'http://bulk-alias.test';
+  await page.route(`${alias}/**`, async (route) => {
+    const url = new URL(route.request().url());
+    const response = await route.fetch({
+      url: `http://127.0.0.1:4173${url.pathname}${url.search}`,
+    });
+    await route.fulfill({ response });
+  });
+  await page.goto(`${alias}/`);
+  await page.waitForSelector('.brand__name');
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeDisabled();
+  const notice = dialog(page).locator('.github__origin');
+  await expect(notice).toContainText('このアドレスでは GitHub に接続できません');
+  await expect(notice).toContainText('移った先には引き継がれません');
+  // 自動では移らない（verifier も作業データもオリジンごとの保存先にある）。新しいタブで開く。
+  const link = notice.getByRole('link', { name: 'http://127.0.0.1:4173/ を開く' });
+  await expect(link).toHaveAttribute('href', 'http://127.0.0.1:4173/');
+  await expect(link).toHaveAttribute('target', '_blank');
+  expect(new URL(page.url()).origin).toBe(alias);
+
+  // 認可にもトークン交換にも進んでいない。
+  expect(mock.authorizeCalls).toEqual([]);
+  expect(mock.tokenCalls).toEqual([]);
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), PENDING_AUTH_KEY)).toBeNull();
+});
+
+test('ファイル名の双方向制御文字は見える形で出し、取り込んだタイトルと出自は変えない', async ({
+  page,
+}) => {
+  // 一覧では `invoicedm.txt` に見える名前（RLO で拡張子を偽装）。
+  const spoofed = 'invoice\u202etxt.md';
+  const mock = new GitHubMock([
+    novelRepository({
+      branches: {
+        main: [
+          { path: `bills/${spoofed}`, content: '請求書の原稿\n' },
+          { path: 'bills/plain.md', content: 'ふつうの原稿\n' },
+        ],
+      },
+    }),
+  ]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+  await entry(page, 'bills/').click();
+
+  const list = dialog(page).locator('.github__list');
+  await expect(list).toContainText('invoice⟨U+202E⟩txt.md');
+  const names = await list.locator('.github__entry-name').allTextContents();
+  expect(names.join('\n')).not.toContain('\u202e');
+
+  await dialog(page)
+    .getByRole('button', { name: /invoice⟨U\+202E⟩txt\.md/ })
+    .click();
+  const confirm = dialog(page).getByRole('region', { name: '取り込む内容の確認' });
+  await expect(confirm.getByRole('heading')).toHaveText('invoice⟨U+202E⟩txt.md を取り込む');
+  await expect(confirm).toContainText('bills/invoice⟨U+202E⟩txt.md');
+  await confirm.getByRole('button', { name: '入力に追加' }).click();
+  await expect(page.locator('.toast')).toContainText(
+    'GitHub から invoice⟨U+202E⟩txt.md を追加しました',
+  );
+
+  // 編集欄の値（データ）は元の名前のまま。見える形の名前を別に添える。
+  const card = page.locator('.input-card').nth(1);
+  await expect(card.locator('.input-card__title')).toHaveValue(spoofed);
+  await expect(card.locator('.input-card__reveal')).toContainText('invoice⟨U+202E⟩txt.md');
+  await expect(card.locator('.input-card__source')).toContainText('bills/invoice⟨U+202E⟩txt.md');
+  // ふつうの名前の入力には何も添えない。
+  await expect(page.locator('.input-card').nth(0).locator('.input-card__reveal')).toHaveCount(0);
+
+  // 保存データのタイトルと出自のパスも元のまま（表示だけを変えている）。
+  await dialog(page).waitFor({ state: 'detached' });
+  await expect
+    .poll(async () => {
+      const raw = await page.evaluate((key) => localStorage.getItem(key), STORAGE_KEY);
+      const saved = JSON.parse(raw ?? '{}') as {
+        inputs?: { title: string; source?: { path: string } }[];
+      };
+      const input = saved.inputs?.[1];
+      return [input?.title, input?.source?.path];
+    })
+    .toEqual([spoofed, `bills/${spoofed}`]);
 });

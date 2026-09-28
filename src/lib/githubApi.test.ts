@@ -11,6 +11,7 @@ import {
   GITHUB_CORS_ALLOWED_REQUEST_HEADERS,
   GITHUB_CORS_EXPOSED_RESPONSE_HEADERS,
   type GitHubErrorKind,
+  type GitHubFetchStage,
   githubRequestHeaders,
   isLfsPointer,
   joinPath,
@@ -25,6 +26,7 @@ import {
   orderBranches,
   parseNextLink,
   readErrorMessage,
+  recoveryFor,
 } from './githubApi';
 import { BOM } from './text';
 
@@ -177,6 +179,48 @@ describe('classifyErrorResponse', () => {
         now,
       ).resetAt,
     ).toBe(now + 60_000);
+  });
+});
+
+describe('recoveryFor', () => {
+  const error = (kind: GitHubErrorKind) => ({ kind, status: null, resetAt: null });
+  const stages: GitHubFetchStage[] = ['repositories', 'branches', 'snapshot', 'tree', 'blob'];
+
+  it('選んでいたブランチが無いときは、再試行ではなくブランチの一覧へ戻す', () => {
+    expect(recoveryFor(error('notFound'), 'snapshot')).toBe('chooseBranch');
+  });
+
+  it('リポジトリ以下が無い（消えた・見えなくなった）ときは、リポジトリを選び直す', () => {
+    expect(recoveryFor(error('notFound'), 'branches')).toBe('reselect');
+    expect(recoveryFor(error('notFound'), 'tree')).toBe('reselect');
+    expect(recoveryFor(error('notFound'), 'blob')).toBe('reselect');
+  });
+
+  it('リポジトリの一覧そのものが 404 なら、再試行する', () => {
+    expect(recoveryFor(error('notFound'), 'repositories')).toBe('retry');
+  });
+
+  it('コミットの無いリポジトリは、やり直しても同じなので選び直す', () => {
+    for (const stage of stages)
+      expect(recoveryFor(error('emptyRepository'), stage)).toBe('reselect');
+  });
+
+  it('一覧が長すぎるのは、やり直しても同じなので閉じるだけ', () => {
+    for (const stage of stages) expect(recoveryFor(error('listTooLong'), stage)).toBe('dismiss');
+  });
+
+  it('一時的な失敗は、どの段階でも再試行する', () => {
+    const kinds: GitHubErrorKind[] = [
+      'rateLimited',
+      'server',
+      'network',
+      'invalidResponse',
+      'forbidden',
+      'sso',
+    ];
+    for (const kind of kinds) {
+      for (const stage of stages) expect(recoveryFor(error(kind), stage)).toBe('retry');
+    }
   });
 });
 
