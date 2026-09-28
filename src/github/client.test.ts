@@ -124,13 +124,16 @@ describe('blob の上限', () => {
     return (async () => new Response(body, { status: 200, headers })) as typeof fetch;
   }
 
-  const getBlob = (fetchImpl: typeof fetch, maxBytes: number) =>
-    createGitHubClient('t', fetchImpl).getBlob(
-      SNAPSHOT,
-      SHA,
-      new AbortController().signal,
+  const getBlob = (
+    fetchImpl: typeof fetch,
+    maxBytes: number,
+    take?: (bytes: number) => boolean,
+    signal = new AbortController().signal,
+  ) =>
+    createGitHubClient('t', fetchImpl).getBlob(SNAPSHOT, SHA, signal, {
       maxBytes,
-    );
+      ...(take ? { take } : {}),
+    });
 
   it('上限ちょうどまでは、分けて届いた本文をつないで返す', async () => {
     const { stream } = streamed(4, 3);
@@ -160,6 +163,43 @@ describe('blob の上限', () => {
     await expect(getBlob(blobFetch(stream, { 'content-length': '8' }), 10)).rejects.toBeInstanceOf(
       GitHubBlobTooLargeError,
     );
+  });
+
+  it('1件の上限を超えたときは scope が file', async () => {
+    const { stream } = streamed(4, 1000);
+    await expect(getBlob(blobFetch(stream), 10)).rejects.toMatchObject({ scope: 'file' });
+  });
+
+  it('届いた分ずつ共有の予算から差し引き、足りなくなった時点で読むのをやめる', async () => {
+    const { stream, log } = streamed(4, 1000);
+    const taken: number[] = [];
+    let budget = 10;
+    const take = (bytes: number): boolean => {
+      taken.push(bytes);
+      budget -= bytes;
+      return budget >= 0;
+    };
+    await expect(getBlob(blobFetch(stream), 1_000_000, take)).rejects.toMatchObject({
+      scope: 'total',
+    });
+    // 3つ目（合計 12 バイト）で予算を超え、それ以上は差し引かずに取り消す。
+    expect(taken).toEqual([4, 4, 4]);
+    expect(log.cancelled).toBe(true);
+    expect(log.pulled).toBeLessThan(10);
+  });
+
+  it('中断されたら、続きを読まずに取り消す', async () => {
+    const { stream, log } = streamed(4, 1000);
+    const controller = new AbortController();
+    const take = (): boolean => {
+      controller.abort();
+      return true;
+    };
+    await expect(
+      getBlob(blobFetch(stream), 1_000_000, take, controller.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(log.cancelled).toBe(true);
+    expect(log.pulled).toBeLessThan(10);
   });
 
   it('本文の途中で切れたら、通信の失敗として分類する', async () => {

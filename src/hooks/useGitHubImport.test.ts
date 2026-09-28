@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GitHubBlobTooLargeError, type GitHubClient } from '../github/client';
+import { createGitHubClient, GitHubBlobTooLargeError, type GitHubClient } from '../github/client';
 import { emptyTreeSelection, setTreeSelection } from '../lib/githubSelection';
 import { MAX_IMPORT_TOTAL_BYTES, MAX_INPUT_BYTES } from '../lib/inputLimits';
 import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types';
@@ -246,24 +246,72 @@ describe('enumerateSelectedEntries', () => {
 });
 
 describe('fetchBatchCandidates', () => {
-  /** パスごとに決まった大きさの本文を返す。要求された上限と回数を記録する。 */
+  /** パスごとに決まった大きさの本文を一度に返す。要求された上限と回数を記録する。 */
   function blobs(sizes: Record<string, number>) {
     const requested: { sha: string; maxBytes: number }[] = [];
     const api = client({
-      getBlob: async (_snapshot, sha, _signal, maxBytes) => {
-        requested.push({ sha, maxBytes });
+      getBlob: async (_snapshot, sha, _signal, limit) => {
+        requested.push({ sha, maxBytes: limit.maxBytes });
         const size = sizes[sha] ?? 0;
-        if (size > maxBytes) throw new GitHubBlobTooLargeError(maxBytes);
+        if (size > limit.maxBytes) throw new GitHubBlobTooLargeError('file');
+        if (limit.take && !limit.take(size)) throw new GitHubBlobTooLargeError('total');
         return new ArrayBuffer(size);
       },
     });
     return { api, requested };
   }
 
+  const CHUNK = 64 * 1024;
+
+  /**
+   * 本物のクライアントに、blob を CHUNK ずつ間を空けて流す GitHub をつなぐ。並行する取得が
+   * 交互に進むので、共有の予算が届いた分ずつ効いているかを確かめられる。
+   * `failAt` の blob は、その量を流したところで通信が切れる。
+   */
+  function streamingGitHub(sizes: Record<string, number>, failAt: Record<string, number> = {}) {
+    const log = { delivered: 0, cancelled: new Set<string>(), finished: new Set<string>() };
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const sha = String(input).split('/').pop() ?? '';
+      const size = sizes[sha] ?? 0;
+      let sent = 0;
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          if (failAt[sha] !== undefined && sent >= (failAt[sha] ?? 0)) {
+            controller.error(new TypeError('network'));
+            return;
+          }
+          if (sent >= size) {
+            log.finished.add(sha);
+            controller.close();
+            return;
+          }
+          const bytes = Math.min(CHUNK, size - sent);
+          sent += bytes;
+          log.delivered += bytes;
+          controller.enqueue(new Uint8Array(bytes));
+        },
+        cancel() {
+          log.cancelled.add(sha);
+        },
+      });
+      return new Response(body, { status: 200 });
+    }) as typeof fetch;
+    return { api: createGitHubClient('t', fetchImpl), log };
+  }
+
   const at = (path: string, sha: string): GitHubTreeEntry => ({
     ...entry(path, 'importable', sha),
     size: null,
   });
+
+  const fetchAll = (
+    api: GitHubClient,
+    entries: GitHubTreeEntry[],
+    cache = new Map<string, ArrayBuffer>(),
+  ) => fetchBatchCandidates(api, SNAPSHOT, entries, cache, new AbortController().signal, () => {});
+
+  const keyOf = (sha: string): string => JSON.stringify([REPOSITORY.id, sha]);
 
   it('1件ずつ上限付きで取り、全件を候補にする', async () => {
     const { api, requested } = blobs({ [SHA_A]: 3, [SHA_B]: 4 });
@@ -283,46 +331,69 @@ describe('fetchBatchCandidates', () => {
 
   it('1件が上限を超えたら、そのファイルを名指しして再試行の無い失敗にする', async () => {
     const { api } = blobs({ [SHA_A]: MAX_INPUT_BYTES + 1 });
-    const result = fetchBatchCandidates(
-      api,
-      SNAPSHOT,
-      [at('big/huge.md', SHA_A)],
-      new Map(),
-      new AbortController().signal,
-      () => {},
-    );
+    const result = fetchAll(api, [at('big/huge.md', SHA_A)]);
     await expect(result).rejects.toBeInstanceOf(GitHubBatchPreparationError);
-    await expect(result).rejects.toThrow('big/huge.md は 5MB を超えるため取り込めません。');
+    await expect(result).rejects.toThrow('big/huge.md は 5MiB を超えるため取り込めません。');
   });
 
-  it('1件ずつは上限内でも、合計が1回の上限を超えたら止める（大きさ不明の項目）', async () => {
-    const half = MAX_IMPORT_TOTAL_BYTES / 2;
-    const { api } = blobs({ [SHA_A]: half, [SHA_B]: half, [SHA_C]: 1 });
-    const result = fetchBatchCandidates(
-      api,
-      SNAPSHOT,
-      [at('a.md', SHA_A), at('b.md', SHA_B), at('c.md', SHA_C)],
-      new Map(),
-      new AbortController().signal,
-      () => {},
-    );
-    await expect(result).rejects.toThrow('合計が 5MB を超える');
-  });
+  it('並行する取得で予算を共有し、合計が上限を超えたら全部の取得を途中で止める', async () => {
+    const size = 4 * 1024 * 1024;
+    const shas = [SHA_A, SHA_B, SHA_C, 'd'.repeat(40)];
+    const { api, log } = streamingGitHub(Object.fromEntries(shas.map((sha) => [sha, size])));
+    const cache = new Map<string, ArrayBuffer>();
 
-  it('控えから使った分も合計に数え、取り直さない', async () => {
-    const { api, requested } = blobs({ [SHA_B]: 1 });
-    const cache = new Map([
-      [JSON.stringify([REPOSITORY.id, SHA_A]), new ArrayBuffer(MAX_IMPORT_TOTAL_BYTES)],
-    ]);
-    const result = fetchBatchCandidates(
+    const result = fetchAll(
       api,
-      SNAPSHOT,
-      [at('a.md', SHA_A), at('b.md', SHA_B)],
+      shas.map((sha, index) => at(`f${index}.md`, sha)),
       cache,
-      new AbortController().signal,
-      () => {},
     );
-    await expect(result).rejects.toThrow('合計が 5MB を超える');
+    await expect(result).rejects.toThrow('合計が 5MiB を超える');
+
+    // 4本とも 4MiB を読み切らず、操作全体で読んだ量は予算と、各取得が先読みした分までに収まる。
+    expect(log.finished.size).toBe(0);
+    expect(log.cancelled.size).toBe(shas.length);
+    expect(log.delivered).toBeLessThanOrEqual(MAX_IMPORT_TOTAL_BYTES + shas.length * 2 * CHUNK);
+    expect(cache.size).toBe(0);
+  });
+
+  it('上限で失敗したら、その取り込みで控えた blob も捨てる', async () => {
+    const small = 1024 * 1024;
+    const { api, log } = streamingGitHub({
+      [SHA_A]: small,
+      [SHA_B]: small,
+      [SHA_C]: MAX_INPUT_BYTES,
+    });
+    const cache = new Map<string, ArrayBuffer>();
+    const result = fetchAll(api, [at('a.md', SHA_A), at('b.md', SHA_B), at('c.md', SHA_C)], cache);
+    await expect(result).rejects.toThrow('合計が 5MiB を超える');
+    // 小さい2件は読み切れていたが、この選択は何度やっても通らないので控えに残さない。
+    expect(log.finished).toEqual(new Set([SHA_A, SHA_B]));
+    expect(cache.size).toBe(0);
+  });
+
+  it('通信の失敗なら、読み切れた blob は控えに残して再試行で取り直さない', async () => {
+    const { api } = streamingGitHub({ [SHA_A]: 10, [SHA_B]: CHUNK * 4 }, { [SHA_B]: CHUNK });
+    const cache = new Map<string, ArrayBuffer>();
+    const result = fetchAll(api, [at('a.md', SHA_A), at('b.md', SHA_B)], cache);
+    await expect(result).rejects.toMatchObject({ requestError: { detail: { kind: 'network' } } });
+    expect([...cache.keys()]).toEqual([keyOf(SHA_A)]);
+  });
+
+  it('控えから使った分も予算に数え、取り直さない', async () => {
+    const { api, requested } = blobs({ [SHA_B]: 1 });
+    const cache = new Map([[keyOf(SHA_A), new ArrayBuffer(MAX_IMPORT_TOTAL_BYTES)]]);
+    const result = fetchAll(api, [at('a.md', SHA_A), at('b.md', SHA_B)], cache);
+    await expect(result).rejects.toThrow('合計が 5MiB を超える');
     expect(requested.map(({ sha }) => sha)).toEqual([SHA_B]);
+  });
+
+  it('今回の計画に無い控えは、始める時点で捨てる（選び直しで積み上げない）', async () => {
+    const { api } = blobs({ [SHA_B]: 1 });
+    const cache = new Map([
+      [keyOf(SHA_A), new ArrayBuffer(10)],
+      [keyOf(SHA_C), new ArrayBuffer(10)],
+    ]);
+    await fetchAll(api, [at('a.md', SHA_A), at('b.md', SHA_B)], cache);
+    expect([...cache.keys()].sort()).toEqual([keyOf(SHA_A), keyOf(SHA_B)].sort());
   });
 });

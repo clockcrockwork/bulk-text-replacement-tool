@@ -16,10 +16,10 @@ describe('上限の値', () => {
   });
 
   it('画面の表記は MB 単位の整数', () => {
-    expect(formatLimit(MAX_INPUT_BYTES)).toBe('5MB');
+    expect(formatLimit(MAX_INPUT_BYTES)).toBe('5MiB');
   });
 
   it('合計が上限を超えたときの文言に上限を入れる', () => {
-    expect(describeImportTotalTooLarge()).toContain('合計が 5MB を超える');
+    expect(describeImportTotalTooLarge()).toContain('合計が 5MiB を超える');
   });
 });

@@ -35,9 +35,14 @@ export const MAX_IMPORT_TOTAL_BYTES = 5 * MiB;
  */
 export const STORAGE_CONFIRM_CODE_UNITS = 4 * MiB;
 
-/** 画面に出す上限の表記（「5MB」）。 */
+/**
+ * 画面に出す上限の表記（「5MiB」）。
+ *
+ * 境界は 1024 倍の単位で決めているので、表記も MiB にする。「5MB」と書くと、5,100,000 バイトの
+ * ファイルが「5MB 超え」に見えるのに取り込める、という食い違いが出る。
+ */
 export function formatLimit(bytes: number): string {
-  return `${bytes / MiB}MB`;
+  return `${bytes / MiB}MiB`;
 }
 
 /** 1回の取り込みの合計が上限を超えたときの文言。ローカルと GitHub で共通にする。 */

@@ -663,7 +663,7 @@ test('未展開のフォルダを選ぶと、blob を取る前に正確な件数
   await expect(page.locator('.input-card')).toHaveCount(1);
 });
 
-test('分かっている合計が 5MB を超える選択は、取得を始めさせない', async ({ page }) => {
+test('分かっている合計が 5MiB を超える選択は、取得を始めさせない', async ({ page }) => {
   const repository = novelRepository({
     branches: {
       main: [
@@ -680,7 +680,7 @@ test('分かっている合計が 5MB を超える選択は、取得を始めさ
   await dialog(page).getByRole('checkbox', { name: 'big フォルダを選択' }).check();
   await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
   const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
-  await expect(plan.getByRole('alert')).toContainText('選んだファイルの合計が 5MB を超えるため');
+  await expect(plan.getByRole('alert')).toContainText('選んだファイルの合計が 5MiB を超えるため');
   await expect(plan.getByRole('button', { name: '2ファイルを取得' })).toBeDisabled();
   expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(0);
 });
@@ -2390,8 +2390,8 @@ test('ファイル名の双方向制御文字は見える形で出し、取り�
     .toEqual([spoofed, `bills/${spoofed}`]);
 });
 
-test.describe('取り込む大きさの上限（5MB）', () => {
-  test('大きさの分かる 5MB 超えは、一覧で理由を出して選ばせない', async ({ page }) => {
+test.describe('取り込む大きさの上限（5MiB）', () => {
+  test('大きさの分かる 5MiB 超えは、一覧で理由を出して選ばせない', async ({ page }) => {
     const mock = new GitHubMock([
       novelRepository({
         branches: { main: [{ path: 'huge.md', content: 'a'.repeat(5 * MiB + 1) }] },
@@ -2403,11 +2403,11 @@ test.describe('取り込む大きさの上限（5MB）', () => {
 
     await expect(
       dialog(page).locator('.github__list .is-disabled', { hasText: 'huge.md' }),
-    ).toContainText('5MB を超えるため取り込めません');
+    ).toContainText('5MiB を超えるため取り込めません');
     expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(0);
   });
 
-  test('大きさの分からない 5MB 超えは、取得の途中で止め、再試行を出さない', async ({ page }) => {
+  test('大きさの分からない 5MiB 超えは、取得の途中で止め、再試行を出さない', async ({ page }) => {
     const mock = new GitHubMock([
       novelRepository({
         branches: { main: [{ path: 'huge.md', content: 'a'.repeat(5 * MiB + 1) }] },
@@ -2420,7 +2420,7 @@ test.describe('取り込む大きさの上限（5MB）', () => {
 
     await entry(page, 'huge.md').click();
     const alert = dialog(page).getByRole('alert');
-    await expect(alert).toContainText('huge.md は 5MB を超えるため取り込めません。');
+    await expect(alert).toContainText('huge.md は 5MiB を超えるため取り込めません。');
     // 何度取っても大きさは変わらないので、再試行ではなく閉じるだけにする。
     await expect(alert.getByRole('button', { name: '再試行' })).toHaveCount(0);
     await expect(alert.getByRole('button', { name: '閉じる' })).toBeVisible();
@@ -2428,7 +2428,7 @@ test.describe('取り込む大きさの上限（5MB）', () => {
     await expect(page.locator('.input-card')).toHaveCount(1);
   });
 
-  test('大きさの分からない一括で合計が 5MB を超えたら、途中で止めて入力を変えない', async ({
+  test('大きさの分からない一括で合計が 5MiB を超えたら、途中で止めて入力を変えない', async ({
     page,
   }) => {
     const mock = new GitHubMock([
@@ -2450,12 +2450,12 @@ test.describe('取り込む大きさの上限（5MB）', () => {
     await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
     const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
     await expect(plan).toContainText(
-      '取得の途中で合計が 5MB を超えたら、そこで止めて取り込みません',
+      '取得の途中で合計が 5MiB を超えたら、そこで止めて取り込みません',
     );
     await plan.getByRole('button', { name: '2ファイルを取得' }).click();
 
     const alert = dialog(page).getByRole('alert');
-    await expect(alert).toContainText('選んだファイルの合計が 5MB を超えるため');
+    await expect(alert).toContainText('選んだファイルの合計が 5MiB を超えるため');
     await expect(alert.getByRole('button', { name: '再試行' })).toHaveCount(0);
     await expect(
       dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' }),

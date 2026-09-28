@@ -436,7 +436,8 @@ V2 behavior:
   - an over-cap file is a non-retryable failure (it fails the whole batch; inputs stay unchanged)
 - hard cap of 5 MiB for one import operation (single file or batch)
   - the plan step (§7) blocks fetching when the known total is over the cap
-  - while fetching, the total of fetched blobs (including cached ones) is counted, and the batch stops once it exceeds the cap
+  - while fetching, all concurrent blob streams share one byte budget that is consumed chunk by chunk (cached blobs count too); once it is exceeded, every stream is cancelled, so the bytes received by the whole operation stay within the budget plus one in-flight chunk per stream
+  - the blob cache keeps only fully read blobs; entries outside the current plan are dropped when a fetch starts, and entries added by a failed attempt are dropped when the failure is not retryable (over the cap, LFS, …)
 - warn in the plan step when the selection has more than 200 files (each blob is one more request against the usual 5,000 requests/hour; the warning counts only these blob requests, because the tree requests of the enumeration have already been spent when the plan is shown)
 - warn whenever some entries have an unknown size. The shown total is then only a lower bound, and the batch may stop during fetching, so this case is never shown as "no warning"
 - before applying (add, update, or batch commit), estimate the serialized length of the resulting workspace; if it may exceed browser storage, ask for confirmation. This is a pre-warning only; `saveWorkspace()` success remains the final signal
@@ -506,8 +507,8 @@ Handle at least:
 - rate limit
 - network error
 - unsupported file
-- file over the input limit (5 MB), including one found only while reading an unknown-size blob
-- batch total over the input limit (5 MB)
+- file over the input limit (5 MiB), including one found only while reading an unknown-size blob
+- batch total over the input limit (5 MiB)
 - Git LFS pointer detected
 - decode failure
 - Shift_JIS fallback

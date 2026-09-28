@@ -165,10 +165,10 @@ describe('describeTooLargeFiles', () => {
   it('無ければ何も言わず、1件なら名前、複数なら件数で知らせる', () => {
     expect(describeTooLargeFiles([])).toBeNull();
     expect(describeTooLargeFiles(['huge.md'])).toBe(
-      'huge.md は 5MB を超えるため取り込みませんでした',
+      'huge.md は 5MiB を超えるため取り込みませんでした',
     );
     expect(describeTooLargeFiles(['a.md', 'b.md'])).toBe(
-      '2件は 5MB を超えるため取り込みませんでした',
+      '2件は 5MiB を超えるため取り込みませんでした',
     );
   });
 

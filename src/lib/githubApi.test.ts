@@ -431,7 +431,7 @@ describe('tree の分類', () => {
     expect(describeEntryStatus('dir')).toBeNull();
     expect(describeEntryStatus('importable')).toBeNull();
     expect(describeEntryStatus('unsupported')).toBe('非対応の形式');
-    expect(describeEntryStatus('tooLarge')).toBe('5MB を超えるため取り込めません');
+    expect(describeEntryStatus('tooLarge')).toBe('5MiB を超えるため取り込めません');
     expect(describeEntryStatus('symlink')).toBe('シンボリックリンク');
     expect(describeEntryStatus('submodule')).toBe('サブモジュール');
   });
@@ -498,7 +498,7 @@ describe('buildCandidate', () => {
     const huge = new ArrayBuffer(MAX_INPUT_BYTES + 1);
     expect(buildCandidate(SNAPSHOT, entry, huge)).toEqual({
       kind: 'error',
-      message: 'chapters/ch1.md は 5MB を超えるため取り込めません。',
+      message: 'chapters/ch1.md は 5MiB を超えるため取り込めません。',
     });
     expect(buildCandidate(SNAPSHOT, entry, new ArrayBuffer(MAX_INPUT_BYTES)).kind).toBe('ok');
   });
@@ -506,7 +506,7 @@ describe('buildCandidate', () => {
 
 describe('上限を超える blob', () => {
   it('文言は一覧・取得・候補で共通で、見えない文字は見える形にする', () => {
-    expect(blobTooLargeMessage('docs/a.md')).toBe('docs/a.md は 5MB を超えるため取り込めません。');
+    expect(blobTooLargeMessage('docs/a.md')).toBe('docs/a.md は 5MiB を超えるため取り込めません。');
     expect(blobTooLargeMessage('a\u202egpj.md')).toContain('⟨U+202E⟩');
   });
 

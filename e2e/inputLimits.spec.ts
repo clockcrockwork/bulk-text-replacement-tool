@@ -21,20 +21,20 @@ test.beforeEach(async ({ page }) => {
   await openApp(page);
 });
 
-test('5MB を超えるファイルは読まずに外し、名前を知らせて、残りは取り込む', async ({ page }) => {
+test('5MiB を超えるファイルは読まずに外し、名前を知らせて、残りは取り込む', async ({ page }) => {
   await pick(page, [textFile('huge.md', 5 * MiB + 1), textFile('ok.md', 10)]);
 
   await expect(page.locator('.toast')).toHaveText(
-    '1件のファイルを追加しました · huge.md は 5MB を超えるため取り込みませんでした',
+    '1件のファイルを追加しました · huge.md は 5MiB を超えるため取り込みませんでした',
   );
   await expect(page.locator('.input-card')).toHaveCount(2);
   await expect(page.locator('.input-card__title').nth(1)).toHaveValue('ok.md');
 });
 
-test('1件ずつは上限内でも、合計が 5MB を超えたら1件も取り込まない', async ({ page }) => {
+test('1件ずつは上限内でも、合計が 5MiB を超えたら1件も取り込まない', async ({ page }) => {
   await pick(page, [textFile('a.md', 3 * MiB), textFile('b.md', 3 * MiB)]);
 
-  await expect(page.locator('.toast')).toContainText('選んだファイルの合計が 5MB を超えるため');
+  await expect(page.locator('.toast')).toContainText('選んだファイルの合計が 5MiB を超えるため');
   await expect(page.locator('.input-card')).toHaveCount(1);
 });
 
