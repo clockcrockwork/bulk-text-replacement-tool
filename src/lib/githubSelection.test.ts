@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GitHubTreeEntry } from '../types';
 import {
-  BATCH_WARN_BYTES,
   BATCH_WARN_FILES,
   emptyTreeSelection,
   hasAnySelection,
@@ -14,6 +13,7 @@ import {
   summarizeExcluded,
   summarizeKnownSelection,
 } from './githubSelection';
+import { MAX_IMPORT_TOTAL_BYTES } from './inputLimits';
 
 function file(path: string, size: number | null = 10): GitHubTreeEntry {
   return {
@@ -155,6 +155,7 @@ describe('取得前の計画', () => {
       files: 2,
       bytes: 30,
       unknownSizes: 0,
+      overLimit: false,
       warnings: [],
     });
   });
@@ -164,6 +165,7 @@ describe('取得前の計画', () => {
       files: 3,
       bytes: 10,
       unknownSizes: 2,
+      overLimit: false,
       warnings: [{ kind: 'unknownSize', files: 2 }],
     });
   });
@@ -172,20 +174,27 @@ describe('取得前の計画', () => {
     const entries = Array.from({ length: BATCH_WARN_FILES - 1 }, (_, index) =>
       file(`f${index}.md`, 0),
     );
-    entries.push(file('big.md', BATCH_WARN_BYTES));
+    entries.push(file('big.md', MAX_IMPORT_TOTAL_BYTES));
     expect(entries).toHaveLength(BATCH_WARN_FILES);
-    expect(planBatch(entries).warnings).toEqual([]);
+    const plan = planBatch(entries);
+    expect(plan.warnings).toEqual([]);
+    expect(plan.overLimit).toBe(false);
   });
 
-  it('件数と容量がしきい値を超えたら、それぞれ警告する', () => {
+  it('件数がしきい値を超えたら警告する', () => {
     const entries = Array.from({ length: BATCH_WARN_FILES + 1 }, (_, index) =>
       file(`f${index}.md`, 0),
     );
-    entries.push(file('big.md', BATCH_WARN_BYTES + 1));
     expect(planBatch(entries).warnings).toEqual([
-      { kind: 'requests', files: BATCH_WARN_FILES + 2 },
-      { kind: 'storage', bytes: BATCH_WARN_BYTES + 1 },
+      { kind: 'requests', files: BATCH_WARN_FILES + 1 },
     ]);
+  });
+
+  it('分かっている分の合計が1回の上限を超えたら、取得させない', () => {
+    const half = MAX_IMPORT_TOTAL_BYTES / 2;
+    const plan = planBatch([file('a.md', half), file('b.md', half + 1)]);
+    expect(plan.overLimit).toBe(true);
+    expect(plan.warnings).toEqual([]);
   });
 });
 

@@ -15,6 +15,7 @@ import {
   normalizeRepositories,
   normalizeTree,
   PER_PAGE,
+  parseContentLength,
   parseNextLink,
   readErrorMessage,
 } from '../lib/githubApi';
@@ -28,6 +29,34 @@ import type { GitHubRepository, GitHubSnapshot } from '../types';
  * 任せ、ここは送ることと失敗の分類だけを持つ。副作用があるのでユニットテストの
  * 計測対象から外し、画面の流れは E2E（モックした GitHub）で確かめる。
  */
+
+/**
+ * blob が上限を超えていた。超えた時点で読むのをやめて投げるので、本文は手元に残らない。
+ *
+ * `scope` は超えた上限の種類。`file` は1件の上限（`maxBytes`）、`total` は操作全体で共有する
+ * 予算（`BlobReadLimit.take`）。どのファイル・どの操作かは呼び出し側が知っているので、
+ * 文言も呼び出し側で作る。
+ */
+export class GitHubBlobTooLargeError extends Error {
+  constructor(readonly scope: 'file' | 'total') {
+    super(`GitHub blob: over the ${scope} limit`);
+    this.name = 'GitHubBlobTooLargeError';
+  }
+}
+
+/** blob を読むときの上限。 */
+export interface BlobReadLimit {
+  /** 1件の上限（バイト）。 */
+  maxBytes: number;
+  /**
+   * 読んだ分を、操作全体で共有する予算から差し引く。足りなければ false を返し、読むのをやめる。
+   *
+   * 一括取り込みは複数の blob を並行して読むので、読み終えてから合計を足すと、上限を
+   * 超えたと分かるまでに並行する取得がそれぞれ上限近くまで読めてしまう。届いた分ずつ
+   * 差し引けば、操作全体で読む量は予算と、各取得がその時点で受け取っていた1回分までに収まる。
+   */
+  take?: (bytes: number) => boolean;
+}
 
 /** 分類済みの失敗。呼び出し側は `error.kind` で分岐する。 */
 export class GitHubRequestError extends Error {
@@ -75,7 +104,70 @@ export interface GitHubClient {
     dir: string,
     signal: AbortSignal,
   ): Promise<NormalizedTree>;
-  getBlob(snapshot: GitHubSnapshot, blobSha: string, signal: AbortSignal): Promise<ArrayBuffer>;
+  /**
+   * blob の本文。上限（`limit`）を超えたら `GitHubBlobTooLargeError`。
+   *
+   * tree が大きさを返さない項目（`size === null`）があるので、一覧で断れなかった分も
+   * ここで止める。全部受け取ってから断ると、上限の何倍もの本文をメモリに載せてしまう。
+   */
+  getBlob(
+    snapshot: GitHubSnapshot,
+    blobSha: string,
+    signal: AbortSignal,
+    limit: BlobReadLimit,
+  ): Promise<ArrayBuffer>;
+}
+
+/**
+ * 本文を読みながら数え、上限を超えた時点で読むのをやめる。
+ *
+ * `Content-Length` が1件の上限を超えていれば読まずに断る。上限内でも信用はしない
+ * （圧縮されていれば展開前の長さで、無いこともある）。中断されたら、続きを待たずに
+ * 読むのをやめる（並行する取得が失敗したときに、残りを読み続けない）。
+ */
+async function readBodyWithLimit(
+  response: Response,
+  limit: BlobReadLimit,
+  signal: AbortSignal,
+): Promise<ArrayBuffer> {
+  const { maxBytes, take = () => true } = limit;
+  const declared = parseContentLength(response.headers.get('content-length'));
+  if (declared !== null && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    throw new GitHubBlobTooLargeError('file');
+  }
+  const reader = response.body?.getReader();
+  if (!reader) {
+    // 本文をストリームで読めない実装。読み切ってから確かめるしかない。
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength > maxBytes) throw new GitHubBlobTooLargeError('file');
+    if (!take(buffer.byteLength)) throw new GitHubBlobTooLargeError('total');
+    return buffer;
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    let exceeded: GitHubBlobTooLargeError['scope'] | null = null;
+    if (total > maxBytes) exceeded = 'file';
+    else if (!take(value.byteLength)) exceeded = 'total';
+    if (exceeded || signal.aborted) {
+      // 残りは受け取らない（接続ごと打ち切る）。
+      await reader.cancel().catch(() => {});
+      if (exceeded) throw new GitHubBlobTooLargeError(exceeded);
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes.buffer;
 }
 
 function invalidResponse(): GitHubRequestError {
@@ -201,13 +293,13 @@ export function createGitHubClient(
       return tree;
     },
 
-    async getBlob(snapshot, blobSha, signal) {
+    async getBlob(snapshot, blobSha, signal, limit) {
       const url = `${GITHUB_API_ORIGIN}${repoPath(snapshot.repository)}/git/blobs/${blobSha}`;
       const response = await request(url, RAW_ACCEPT, signal);
       try {
-        return await response.arrayBuffer();
+        return await readBodyWithLimit(response, limit, signal);
       } catch (error) {
-        if (signal.aborted) throw error;
+        if (signal.aborted || error instanceof GitHubBlobTooLargeError) throw error;
         throw new GitHubRequestError({ kind: 'network', status: null, resetAt: null });
       }
     },

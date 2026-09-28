@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { GitHubSnapshot } from '../types';
 import {
+  blobTooLargeMessage,
   buildCandidate,
   classifyErrorResponse,
   classifyTreeEntry,
@@ -15,7 +16,6 @@ import {
   githubRequestHeaders,
   isLfsPointer,
   joinPath,
-  MAX_BLOB_BYTES,
   mergeRepositories,
   normalizeBranches,
   normalizeCommitTreeSha,
@@ -25,10 +25,12 @@ import {
   normalizeRepositories,
   normalizeTree,
   orderBranches,
+  parseContentLength,
   parseNextLink,
   readErrorMessage,
   recoveryFor,
 } from './githubApi';
+import { MAX_INPUT_BYTES } from './inputLimits';
 import { BOM } from './text';
 
 const SHA_A = 'a'.repeat(40);
@@ -346,8 +348,9 @@ describe('tree の分類', () => {
     // 名前が対応拡張子でも、リンクとサブモジュールは中身がスナップショットの外にあり得る。
     expect(classifyTreeEntry('120000', 'blob', 'link.md', 10)).toBe('symlink');
     expect(classifyTreeEntry('160000', 'commit', 'sub.md', null)).toBe('submodule');
-    expect(classifyTreeEntry('100644', 'blob', 'huge.md', MAX_BLOB_BYTES + 1)).toBe('tooLarge');
-    expect(classifyTreeEntry('100644', 'blob', 'edge.md', MAX_BLOB_BYTES)).toBe('importable');
+    // 上限はローカルのファイルと同じ（GitHub の blob API の 100MB ではない）。
+    expect(classifyTreeEntry('100644', 'blob', 'huge.md', MAX_INPUT_BYTES + 1)).toBe('tooLarge');
+    expect(classifyTreeEntry('100644', 'blob', 'edge.md', MAX_INPUT_BYTES)).toBe('importable');
     expect(classifyTreeEntry('100644', 'weird', 'a.md', 1)).toBeNull();
   });
 
@@ -428,7 +431,7 @@ describe('tree の分類', () => {
     expect(describeEntryStatus('dir')).toBeNull();
     expect(describeEntryStatus('importable')).toBeNull();
     expect(describeEntryStatus('unsupported')).toBe('非対応の形式');
-    expect(describeEntryStatus('tooLarge')).toContain('100MB');
+    expect(describeEntryStatus('tooLarge')).toBe('5MiB を超えるため取り込めません');
     expect(describeEntryStatus('symlink')).toBe('シンボリックリンク');
     expect(describeEntryStatus('submodule')).toBe('サブモジュール');
   });
@@ -492,10 +495,29 @@ describe('buildCandidate', () => {
     expect(buildCandidate(SNAPSHOT, { ...entry, status: 'symlink' }, bytes('x')).kind).toBe(
       'error',
     );
-    const huge = { byteLength: MAX_BLOB_BYTES + 1 } as ArrayBuffer;
+    const huge = new ArrayBuffer(MAX_INPUT_BYTES + 1);
     expect(buildCandidate(SNAPSHOT, entry, huge)).toEqual({
       kind: 'error',
-      message: 'chapters/ch1.md は 100MB を超えるため取り込めません。',
+      message: 'chapters/ch1.md は 5MiB を超えるため取り込めません。',
     });
+    expect(buildCandidate(SNAPSHOT, entry, new ArrayBuffer(MAX_INPUT_BYTES)).kind).toBe('ok');
+  });
+});
+
+describe('上限を超える blob', () => {
+  it('文言は一覧・取得・候補で共通で、見えない文字は見える形にする', () => {
+    expect(blobTooLargeMessage('docs/a.md')).toBe('docs/a.md は 5MiB を超えるため取り込めません。');
+    expect(blobTooLargeMessage('a\u202egpj.md')).toContain('⟨U+202E⟩');
+  });
+
+  it('Content-Length は整数として読めるときだけ使う', () => {
+    expect(parseContentLength('5242881')).toBe(5242881);
+    expect(parseContentLength(' 12 ')).toBe(12);
+    expect(parseContentLength(null)).toBeNull();
+    expect(parseContentLength('')).toBeNull();
+    expect(parseContentLength('-1')).toBeNull();
+    expect(parseContentLength('1.5')).toBeNull();
+    expect(parseContentLength('12, 12')).toBeNull();
+    expect(parseContentLength('9'.repeat(20))).toBeNull();
   });
 });

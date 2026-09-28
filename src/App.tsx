@@ -11,7 +11,7 @@ import {
 import { AppHeader } from './components/AppHeader';
 import { type BackupCandidate, BackupDialog } from './components/BackupDialog';
 import { CellEditor } from './components/CellEditor';
-import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog';
+import { type ConfirmChoice, ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog';
 import { DropOverlay } from './components/DropOverlay';
 import { EditorOverlay } from './components/EditorOverlay';
 import {
@@ -41,10 +41,13 @@ import { buildBackup, parseBackup } from './lib/backup';
 import { copyText, downloadBlob } from './lib/browser';
 import { collectRuleErrors, findUnmatchedRules } from './lib/diagnostics';
 import { formatFallbackTitle, formatIndex, timestampForFileName } from './lib/format';
-import { readInputFiles } from './lib/inputFiles';
+import { formatBytes } from './lib/githubApi';
+import { describeTooLargeFiles, readInputFiles } from './lib/inputFiles';
+import { describeImportTotalTooLarge } from './lib/inputLimits';
 import { findSameSource, matchBatchSources, sourceIdentity } from './lib/inputSource';
 import { runConversion } from './lib/replace';
 import { revealUnsafeChars } from './lib/revealText';
+import { mayExceedStorage } from './lib/storage';
 import {
   buildRulesFromTable,
   type Delimiter,
@@ -60,6 +63,8 @@ import {
   createInput,
   createSampleReset,
   initWorkspace,
+  toPersisted,
+  type WorkspaceAction,
   workspaceReducer,
   workspaceSignature,
 } from './state/workspace';
@@ -205,62 +210,122 @@ export function App(): JSX.Element {
     };
   };
 
+  /** 手つかずのサンプルなら、取り込みの前に片付ける分も見込みに入れる。 */
+  const withSampleClear = (actions: readonly WorkspaceAction[]): WorkspaceAction[] =>
+    state.isSample
+      ? [{ type: 'sample/clear', reset: createSampleReset() }, ...actions]
+      : [...actions];
+
+  /**
+   * 取り込みを反映したあとの内容がブラウザに保存しきれない見込みなら、取り込む前に確かめる。
+   * 取り込んでよければ true。
+   *
+   * 反映する action をいまの状態に先に当ててみて、保存する形の長さで判定する（reducer は
+   * 純粋なので当ててみられる）。本文の長さと取り込むバイト数を足すような、単位の違う
+   * 値の足し算はしない。見込みは目安で、実際に保存できたかは `saveWorkspace` の成否が決め、
+   * 失敗すれば出したままの警告になる。
+   */
+  const confirmStorage = async (
+    actions: readonly WorkspaceAction[],
+    details: readonly string[],
+  ): Promise<boolean> => {
+    const next = actions.reduce(workspaceReducer, state);
+    if (!mayExceedStorage(toPersisted(next))) return true;
+    const choice = await confirm.ask({
+      title: 'ブラウザに保存できない可能性があります',
+      message:
+        '取り込むと、ブラウザの保存容量を超える見込みです。保存できないまま閉じたり再読み込みしたりすると、取り込んだ本文とそのあとの編集は失われます。取り込んだら、作業データを書き出して手元に残してください。',
+      details,
+      confirmLabel: '取り込む',
+    });
+    return choice === 'confirm';
+  };
+
+  /**
+   * 同じ名前の入力が既にあるとき、置き換えるか増やすかを尋ねる。
+   *
+   * 同じ名前の入力が既にあると、更新したつもりが2件に増える。
+   * 外部エディタで直して同じファイルを入れ直す、という流れは自然なので確認する。
+   */
+  const askDuplicates = async (duplicated: readonly InputText[]): Promise<ConfirmChoice> => {
+    if (duplicated.length === 0) return 'alt';
+    return confirm.ask({
+      title: '同じ名前の入力があります',
+      message: '中身を新しいものに置き換えますか。別の入力として増やすこともできます。',
+      details: duplicated.map((input) => revealUnsafeChars(input.title)),
+      confirmLabel: '置き換える',
+      altLabel: '別の入力として追加',
+    });
+  };
+
+  /** 置き換える場合は、同じ名前の既存入力の本文を差し替え、残りを追加する。 */
+  const localAddActions = (inputs: readonly InputText[], replace: boolean): WorkspaceAction[] => {
+    if (!replace) return [{ type: 'inputs/addMany', inputs: [...inputs] }];
+    const actions: WorkspaceAction[] = [];
+    const added: InputText[] = [];
+    for (const input of inputs) {
+      const existing = state.inputs.find((candidate) => candidate.title === input.title);
+      if (existing) {
+        actions.push({ type: 'inputs/update', id: existing.id, patch: { text: input.text } });
+      } else {
+        added.push(input);
+      }
+    }
+    if (added.length > 0) actions.push({ type: 'inputs/addMany', inputs: added });
+    return actions;
+  };
+
   const addFiles = async (list: FileList | null): Promise<void> => {
     if (!list || list.length === 0) return;
-    const { inputs, skipped, guessedShiftJis } = await readInputFiles(list);
-    if (inputs.length === 0) {
-      flash(`${skipped}件は非対応形式のためスキップしました`);
+    const { inputs, skipped, tooLarge, overTotalBytes, guessedShiftJis } =
+      await readInputFiles(list);
+    // どれを残すかは決められないので、合計の超過は1件も取り込まない。
+    if (overTotalBytes !== null) {
+      flash(`${describeImportTotalTooLarge()}（合計 ${formatBytes(overTotalBytes)}）`);
       return;
     }
-
-    // 同じ名前の入力が既にあると、更新したつもりが2件に増える。
-    // 外部エディタで直して同じファイルを入れ直す、という流れは自然なので確認する。
-    const existingTitles = new Set(state.inputs.map((input) => input.title));
-    const duplicated = inputs.filter((input) => existingTitles.has(input.title));
-    let replaceExisting = false;
-    if (duplicated.length > 0) {
-      const choice = await confirm.ask({
-        title: '同じ名前の入力があります',
-        message: '中身を新しいものに置き換えますか。別の入力として増やすこともできます。',
-        details: duplicated.map((input) => revealUnsafeChars(input.title)),
-        confirmLabel: '置き換える',
-        altLabel: '別の入力として追加',
-      });
-      if (choice === 'cancel') return;
-      replaceExisting = choice === 'confirm';
-    }
-
-    const undoSample = clearSampleBeforeAdding();
-
-    if (replaceExisting) {
-      for (const input of inputs) {
-        const existing = state.inputs.find((candidate) => candidate.title === input.title);
-        if (existing) {
-          dispatch({ type: 'inputs/update', id: existing.id, patch: { text: input.text } });
-        }
-      }
-      const added = inputs.filter((input) => !existingTitles.has(input.title));
-      if (added.length > 0) dispatch({ type: 'inputs/addMany', inputs: added });
+    const tooLargeNote = describeTooLargeFiles(tooLarge);
+    if (inputs.length === 0) {
       flash(
-        `${duplicated.length}件を置き換えました` +
-          (added.length > 0 ? ` · ${added.length}件を追加しました` : ''),
-        undoSample,
+        [tooLargeNote, skipped ? `${skipped}件は非対応形式のためスキップしました` : null]
+          .filter(Boolean)
+          .join(' · '),
       );
       return;
     }
 
-    dispatch({ type: 'inputs/addMany', inputs });
-    flash(
-      `${inputs.length}件のファイルを追加しました` +
-        (skipped ? ` · ${skipped}件は非対応形式のためスキップ` : '') +
-        // Shift_JIS は「UTF-8 として読めなかった」だけの推測なので、
-        // 黙って取り込まず、目で確かめてもらう。
-        (guessedShiftJis.length > 0
-          ? ` · ${guessedShiftJis.length}件は Shift_JIS として読み込みました（文字化けが無いか確認してください）`
-          : '') +
-        (undoSample ? ' · サンプルを片付けました' : ''),
-      undoSample,
-    );
+    const existingTitles = new Set(state.inputs.map((input) => input.title));
+    const duplicated = inputs.filter((input) => existingTitles.has(input.title));
+    const choice = await askDuplicates(duplicated);
+    if (choice === 'cancel') return;
+    const replaceExisting = choice === 'confirm';
+
+    const actions = localAddActions(inputs, replaceExisting);
+    const details = [`取り込むファイル ${inputs.length}件`];
+    if (!(await confirmStorage(withSampleClear(actions), details))) return;
+
+    const undoSample = clearSampleBeforeAdding();
+    for (const action of actions) dispatch(action);
+
+    const added = inputs.length - (replaceExisting ? duplicated.length : 0);
+    const notes = replaceExisting
+      ? [
+          `${duplicated.length}件を置き換えました`,
+          added > 0 ? `${added}件を追加しました` : null,
+          tooLargeNote,
+        ]
+      : [
+          `${inputs.length}件のファイルを追加しました`,
+          skipped ? `${skipped}件は非対応形式のためスキップ` : null,
+          tooLargeNote,
+          // Shift_JIS は「UTF-8 として読めなかった」だけの推測なので、
+          // 黙って取り込まず、目で確かめてもらう。
+          guessedShiftJis.length > 0
+            ? `${guessedShiftJis.length}件は Shift_JIS として読み込みました（文字化けが無いか確認してください）`
+            : null,
+          undoSample ? 'サンプルを片付けました' : null,
+        ];
+    flash(notes.filter(Boolean).join(' · '), undoSample);
   };
 
   // ---- GitHub から追加 -------------------------------------------------------
@@ -309,15 +374,19 @@ export function App(): JSX.Element {
       ? ' · Shift_JIS として読み込みました（文字化けが無いか確認してください）'
       : '';
 
-  const addFromGitHub = (): void => {
+  const addFromGitHub = async (): Promise<void> => {
     const candidate = githubCandidate;
     if (!candidate) return;
+    const action: WorkspaceAction = {
+      type: 'inputs/addMany',
+      inputs: [{ ...createInput(candidate.title, candidate.text), source: candidate.source }],
+    };
+    if (!(await confirmStorage(withSampleClear([action]), [revealUnsafeChars(candidate.title)]))) {
+      return;
+    }
     guard('GitHub からの取り込み', () => {
       const undoSample = clearSampleBeforeAdding();
-      dispatch({
-        type: 'inputs/addMany',
-        inputs: [{ ...createInput(candidate.title, candidate.text), source: candidate.source }],
-      });
+      dispatch(action);
       github.finish();
       flash(
         `GitHub から ${revealUnsafeChars(candidate.title)} を追加しました` +
@@ -328,18 +397,22 @@ export function App(): JSX.Element {
     });
   };
 
-  const updateFromGitHub = (inputId: string): void => {
+  const updateFromGitHub = async (inputId: string): Promise<void> => {
     const candidate = githubCandidate;
     if (!candidate) return;
     const target = state.inputs.find((input) => input.id === inputId);
     if (!target) return;
+    // タイトルは利用者が付け直した出力名かもしれないので残し、本文と出自だけ差し替える。
+    const action: WorkspaceAction = {
+      type: 'inputs/update',
+      id: inputId,
+      patch: { text: candidate.text, source: candidate.source },
+    };
+    if (!(await confirmStorage([action], [revealUnsafeChars(target.title || candidate.title)]))) {
+      return;
+    }
     guard('GitHub からの取り込み', () => {
-      // タイトルは利用者が付け直した出力名かもしれないので残し、本文と出自だけ差し替える。
-      dispatch({
-        type: 'inputs/update',
-        id: inputId,
-        patch: { text: candidate.text, source: candidate.source },
-      });
+      dispatch(action);
       github.finish();
       flash(
         `${revealUnsafeChars(target.title || candidate.title)} を GitHub の内容で更新しました` +
@@ -348,7 +421,7 @@ export function App(): JSX.Element {
     });
   };
 
-  const applyGitHubBatch = (decisions: readonly GitHubBatchDecision[]): void => {
+  const applyGitHubBatch = async (decisions: readonly GitHubBatchDecision[]): Promise<void> => {
     const candidates = github.state.batchCandidates;
     if (!candidates || candidates.length === 0) return;
     const byPath = new Map(decisions.map((decision) => [decision.path, decision]));
@@ -382,6 +455,15 @@ export function App(): JSX.Element {
       updates.push({ id: target.id, text: candidate.text, source: candidate.source });
     }
 
+    // 手つかずのサンプルは action の中で片付くので、見込みにもそのまま含まれる。
+    const action: WorkspaceAction = {
+      type: 'inputs/applyGitHubBatch',
+      updates,
+      adds,
+      sampleReset: createSampleReset(),
+    };
+    if (!(await confirmStorage([action], [`取り込むファイル ${candidates.length}件`]))) return;
+
     guard('GitHub からの一括取り込み', () => {
       // 「元に戻す」は、取り込む前の内容（片付けたサンプルを含む）へ戻し、一括の確認画面も
       // 決めた内容ごと開き直す。取得済みの候補を使うので取り直しにならず、違うフォルダや
@@ -394,12 +476,7 @@ export function App(): JSX.Element {
         isSample: state.isSample,
       };
       const clearedSample = state.isSample;
-      dispatch({
-        type: 'inputs/applyGitHubBatch',
-        updates,
-        adds,
-        sampleReset: createSampleReset(),
-      });
+      dispatch(action);
       github.finishBatch();
       const shiftJis = candidates.filter((candidate) => candidate.encoding === 'shift_jis').length;
       flash(
@@ -876,9 +953,9 @@ export function App(): JSX.Element {
           sameSource={githubSameSource}
           titleCollision={githubTitleCollision}
           batchMatches={githubBatchMatches}
-          onAdd={addFromGitHub}
-          onUpdate={updateFromGitHub}
-          onApplyBatch={applyGitHubBatch}
+          onAdd={() => void addFromGitHub()}
+          onUpdate={(inputId) => void updateFromGitHub(inputId)}
+          onApplyBatch={(decisions) => void applyGitHubBatch(decisions)}
         />
       ) : null}
 
