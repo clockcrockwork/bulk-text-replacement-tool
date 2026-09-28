@@ -282,15 +282,23 @@ describe('トークン', () => {
     });
   });
 
-  it('有効期限が無ければ null のまま', () => {
-    expect(parseTokenResponse({ access_token: 'ghu_x' }, 0)).toEqual({
-      accessToken: 'ghu_x',
-      expiresAt: null,
-    });
+  it('有効期限の無い・壊れたトークンは受け付けない（期限なしとして使い続けない）', () => {
+    expect(parseTokenResponse({ access_token: 'ghu_x' }, 0)).toBeNull();
+    expect(parseTokenResponse({ access_token: 'ghu_x', expires_in: 0 }, 0)).toBeNull();
+    expect(parseTokenResponse({ access_token: 'ghu_x', expires_in: -60 }, 0)).toBeNull();
+    expect(parseTokenResponse({ access_token: 'ghu_x', expires_in: '28800' }, 0)).toBeNull();
+    expect(parseTokenResponse({ access_token: 'ghu_x', expires_in: Number.NaN }, 0)).toBeNull();
+    expect(
+      parseTokenResponse({ access_token: 'ghu_x', expires_in: Number.POSITIVE_INFINITY }, 0),
+    ).toBeNull();
   });
 
   it('refresh token が紛れ込んでも読まない', () => {
-    const token = parseTokenResponse({ access_token: 'ghu_x', refresh_token: 'ghr_y' }, 0);
+    const token = parseTokenResponse(
+      { access_token: 'ghu_x', expires_in: 28800, refresh_token: 'ghr_y' },
+      0,
+    );
+    expect(token).not.toBeNull();
     expect(JSON.stringify(token)).not.toContain('ghr_y');
   });
 
@@ -304,9 +312,6 @@ describe('トークン', () => {
     const token = { accessToken: 'x', expiresAt: 100_000 };
     expect(isTokenUsable(token, 100_000 - TOKEN_EXPIRY_MARGIN_MS - 1)).toBe(true);
     expect(isTokenUsable(token, 100_000 - TOKEN_EXPIRY_MARGIN_MS)).toBe(false);
-    expect(isTokenUsable({ accessToken: 'x', expiresAt: null }, Number.MAX_SAFE_INTEGER)).toBe(
-      true,
-    );
   });
 });
 

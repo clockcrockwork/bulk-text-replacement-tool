@@ -26,7 +26,8 @@ GitHub → Settings → Developer settings → GitHub Apps → New GitHub App
 - **GitHub App name**: 任意。ここで決まる slug（URL の `github.com/apps/<slug>`）を控える
 - **Homepage URL**: `https://bulk-text-replacement-tool.vercel.app/`
 - **Callback URL**: `https://bulk-text-replacement-tool.vercel.app/` を1つだけ
-- **Expire user authorization tokens**: オン（既定のまま）
+- **Expire user authorization tokens**: オン（既定のまま）。**オフにすると接続できなくなる**
+  （期限の無いトークンは、Function もブラウザも受け付けない）
 - **Request user authorization (OAuth) during installation**: **オフ**
   （アプリが自分で state と PKCE を付けて認可を始めるため。オンにすると GitHub 側から
   state の無い認可が始まる）
@@ -126,12 +127,32 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
 
 設定を誤ると OAuth 全体を止めるので、いきなり本番で制限を有効にしない。
 
-1. 同じ条件（`/api/` の前方一致）で、Then を **Log** にしたルールを Publish する
-2. 本番で正規の接続を1回行い、Firewall のログでその交換が1件だけ一致していることを確かめる
-   （ほかの経路を巻き込んでいないこと）
-3. Preview（固定した検証用の URL）で Rate Limit を有効にし、§5 の 9 の手順で 429 が返ることを確かめる
-4. 本番のルールを Rate Limit に切り替えて Publish する
-5. 本番で §5 の 9（3つのパスすべてで 429）を確かめる
+**Firewall のルールは、条件に環境を入れない限り Production と Preview の両方に効く。**
+上の表の条件は `/api/` の前方一致だけなので、同じルールの Then を Rate Limit に変えると、
+Preview で試すつもりでも本番に同時に効く。Preview で試すときは、環境で絞った**別のルール**を
+一時的に作る。
+
+| ルール | 条件 | Then | 役割 |
+| --- | --- | --- | --- |
+| A（本番用） | Request Path — Starts with — `/api/` | Log → 最後に Rate Limit | 本番の観測と、最終的な制限 |
+| B（検証用・一時） | Request Path — Starts with — `/api/` **かつ Environment — Equals — Preview** | Rate Limit | Preview で 429 を確かめるだけ |
+
+1. ルール A を Then **Log** で Publish する
+2. 本番で正規の接続を1回行い、Firewall のログで、その交換が A に1件だけ一致していることを
+   確かめる（ほかの経路を巻き込んでいないこと）
+3. ルール B を作って Publish し、Preview（固定した検証用の URL）に対して §5 の 9 の手順で
+   429 が返ることを確かめる。このあいだ本番は A（Log）のままなので、制限されない
+   - Preview は Vercel Authentication で保護されているので、ログイン済みのブラウザの cookie か、
+     保護を回避する共有リンクを付けて送る（付けないと 429 の前にログイン画面へ 302 で戻される）
+   - Preview には交換用の環境変数が無いので、Function まで届けば 503（`not_configured`）になる。
+     確かめるのは、それが 429 に変わること
+4. ルール B を**削除**して Publish する（残すと Preview の検証で自分が締め出される）
+5. ルール A の Then を Rate Limit に切り替えて Publish する
+6. 本番で §5 の 9（3つのパスすべてで 429）を確かめる
+
+画面やプランの都合で Environment の条件が選べないときは、B の条件を
+「Host — Equals — 固定した検証用 Preview のホスト名」にする。どちらも使えないときは、3 を省いて
+5 のあとの 6 で確かめる（その場合、6 の直後に正規の接続が通ることも確かめる）。
 
 ## 4. 配信時のヘッダ
 

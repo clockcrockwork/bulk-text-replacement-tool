@@ -120,10 +120,30 @@ describe('handleTokenExchange', () => {
     expect(new Headers(calls[0]?.init?.headers).get('x-github-api-version')).toBeNull();
   });
 
-  it('有効期限が返らなければ付けない', async () => {
-    const { fetchImpl } = upstream({ access_token: 'ghu_access' });
+  it.each([
+    [
+      '有効期限が無い（App のトークン期限切れ設定がオフ）',
+      { access_token: 'ghu_access', token_type: 'bearer' },
+    ],
+    ['有効期限が 0', { access_token: 'ghu_access', token_type: 'bearer', expires_in: 0 }],
+    ['有効期限が負', { access_token: 'ghu_access', token_type: 'bearer', expires_in: -1 }],
+    [
+      '有効期限が数でない',
+      { access_token: 'ghu_access', token_type: 'bearer', expires_in: '28800' },
+    ],
+    [
+      'token_type が bearer でない',
+      { access_token: 'ghu_access', token_type: 'mac', expires_in: 28800 },
+    ],
+    ['token_type が無い', { access_token: 'ghu_access', expires_in: 28800 }],
+  ])('%s トークンは渡さず 502（期限の無いトークンを配らない）', async (_, payload) => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { fetchImpl } = upstream(payload);
     const response = await handleTokenExchange(request(VALID), CONFIG, fetchImpl);
-    expect(await body(response)).toEqual({ access_token: 'ghu_access', token_type: 'bearer' });
+    expect(response.status).toBe(502);
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({ error: 'upstream_invalid' });
+    expect(text).not.toContain('ghu_access');
   });
 
   it('POST 以外は 405', async () => {
@@ -199,7 +219,11 @@ describe('handleTokenExchange', () => {
   });
 
   it('Content-Length の無い本文でも、上限以内なら交換する', async () => {
-    const { fetchImpl, calls } = upstream({ access_token: 'ghu_token', token_type: 'bearer' });
+    const { fetchImpl, calls } = upstream({
+      access_token: 'ghu_token',
+      token_type: 'bearer',
+      expires_in: 28800,
+    });
     const bytes = new TextEncoder().encode(JSON.stringify(VALID));
     const init: RequestInit & { duplex: 'half' } = {
       method: 'POST',
