@@ -43,6 +43,11 @@ test('GitHub の出自は書き出して読み戻しても残る', async ({ page
   await expect(page.locator('.input-card__source')).toContainText('octo/novel · chapters/ch1.md');
 
   await openBackup(page);
+  // 出自も書き出すこと（ファイルを渡すとリポジトリ名やパスも伝わること）を先に知らせる。
+  await expect(backupDialog(page)).toContainText(
+    '取り込み元（リポジトリ・ブランチ・パス・コミットの',
+  );
+  await expect(backupDialog(page)).toContainText('一緒に書き出します');
   const [download] = await Promise.all([
     page.waitForEvent('download'),
     page.getByRole('button', { name: '書き出す' }).click(),

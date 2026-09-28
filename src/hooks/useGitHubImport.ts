@@ -1,10 +1,24 @@
 import { useEffect, useReducer, useRef } from 'react';
-import { createGitHubClient, type GitHubClient, GitHubRequestError } from '../github/client';
 import {
+  createGitHubClient,
+  GitHubBlobTooLargeError,
+  type GitHubClient,
+  GitHubRequestError,
+} from '../github/client';
+import { createDeadline, createWatchdog, type Watchdog } from '../github/deadline';
+import { mapWithConcurrency } from '../lib/concurrency';
+import {
+  blobTooLargeMessage,
   buildCandidate,
+  compareCodePoints,
   describeGitHubError,
+  type GitHubCandidate,
+  type GitHubError,
+  type GitHubFetchStage,
   type NormalizedTree,
   orderBranches,
+  recoveryFor,
+  SLOW_NOTICE_MS,
 } from '../lib/githubApi';
 import {
   base64UrlEncode,
@@ -12,11 +26,16 @@ import {
   callbackUrl,
   codeChallengeS256,
   describeCallbackFailure,
+  describeTokenExchangeFailure,
+  describeTokenExchangeNetworkFailure,
+  describeTokenExchangeTimeout,
   type GitHubAppConfig,
   type GitHubToken,
   installationUrl,
   isTokenUsable,
+  nonCanonicalTarget,
   PENDING_AUTH_KEY,
+  parseExchangeErrorCode,
   parsePendingAuth,
   parseTokenResponse,
   readCallbackParams,
@@ -24,14 +43,31 @@ import {
   serializePendingAuth,
   stripCallbackParams,
   TOKEN_EXCHANGE_PATH,
+  TOKEN_EXCHANGE_TIMEOUT_MS,
   validateCallback,
 } from '../lib/githubAuth';
+import type { BatchChoices } from '../lib/githubBatchReview';
+import {
+  type GitHubTreeSelection,
+  hasAnySelection,
+  includedSelectionRoots,
+  isPathSelected,
+  selectionMayContainSelected,
+} from '../lib/githubSelection';
+import {
+  describeImportTotalTooLarge,
+  MAX_IMPORT_TOTAL_BYTES,
+  MAX_INPUT_BYTES,
+} from '../lib/inputLimits';
 import { shortSha } from '../lib/inputSource';
+import { revealUnsafeChars } from '../lib/revealText';
 import {
   currentStep,
   type GitHubImportState,
   githubImportReducer,
   initialGitHubImportState,
+  rateLimitWaitMs,
+  type SuspendedBatch,
   type TrailStep,
 } from '../state/githubImport';
 import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types';
@@ -41,10 +77,272 @@ const APP_CONFIG: GitHubAppConfig | null = readGitHubAppConfig(import.meta.env);
 
 const EXPIRED_NOTICE = 'GitHub との接続の有効期限が切れました。もう一度接続してください。';
 
+const BLOB_CONCURRENCY = 4;
+
+/**
+ * やり直しても結果が変わらない失敗（「再試行」を出さずに閉じてもらう）。一括の準備で
+ * 使い始めたが、1件の取得で上限を超えたときも同じ扱いにする。
+ */
+export class GitHubBatchPreparationError extends Error {}
+
+class GitHubBatchRequestError extends Error {
+  constructor(
+    readonly path: string,
+    readonly requestError: GitHubRequestError,
+  ) {
+    super(`${path}: ${requestError.message}`);
+  }
+}
+
+/** 一時的な失敗の種類。一括取り込みでは、再試行しても取れた分は取り直さない。 */
+const RESUMABLE_KINDS: ReadonlySet<GitHubError['kind']> = new Set([
+  'timeout',
+  'network',
+  'offline',
+]);
+
+/**
+ * GitHub への要求の失敗を、画面に出す文にする。要求の失敗でなければ null。
+ * 一括取り込みでは、どのファイルで失敗したかを添える。再試行は取れていた分を取り直さない
+ * （`blobCache`）ので、やり直しの手間を見積もれるよう、一時的な失敗ではそう添える。
+ */
+function describeRequestFailure(error: unknown): { detail: GitHubError; message: string } | null {
+  if (error instanceof GitHubBatchRequestError) {
+    const detail = error.requestError.detail;
+    const resumable = RESUMABLE_KINDS.has(detail.kind)
+      ? '取得済みのファイルは、再試行で取り直しません。'
+      : '';
+    return {
+      detail,
+      message: `${revealUnsafeChars(error.path)}: ${describeGitHubError(detail)}${resumable}`,
+    };
+  }
+  if (error instanceof GitHubRequestError) {
+    return { detail: error.detail, message: describeGitHubError(error.detail) };
+  }
+  return null;
+}
+
+async function loadBatchTree(
+  api: GitHubClient,
+  snapshot: GitHubSnapshot,
+  step: { path: string; treeSha: string },
+  signal: AbortSignal,
+  recursive: boolean,
+): Promise<NormalizedTree> {
+  try {
+    return recursive
+      ? await api.getTreeRecursive(snapshot, step.treeSha, step.path, signal)
+      : await api.getTree(snapshot, step.treeSha, step.path, signal);
+  } catch (error) {
+    if (error instanceof GitHubRequestError) {
+      throw new GitHubBatchRequestError(step.path || 'ルート', error);
+    }
+    throw error;
+  }
+}
+
+/** 選択範囲を列挙した結果。 */
+export interface SelectedEntries {
+  /** 取り込める（対応する）ファイル。パス順。 */
+  files: GitHubTreeEntry[];
+  /**
+   * 選択範囲にあったが取り込めない項目（非対応の形式・上限超え・シンボリックリンク・
+   * サブモジュール）。開かずにフォルダごと選ぶと一覧で見えないので、計画画面で件数を出す。
+   */
+  excluded: GitHubTreeEntry[];
+}
+
+export async function enumerateSelectedEntries(
+  api: GitHubClient,
+  snapshot: GitHubSnapshot,
+  selection: GitHubTreeSelection,
+  knownEntries: ReadonlyMap<string, GitHubTreeEntry>,
+  signal: AbortSignal,
+): Promise<SelectedEntries> {
+  const queue: Array<{ path: string; treeSha: string }> = [];
+  const files: GitHubTreeEntry[] = [];
+  const excluded: GitHubTreeEntry[] = [];
+  const seen = new Set<string>();
+
+  const collect = (entries: readonly GitHubTreeEntry[]): void => {
+    for (const entry of entries) {
+      if (entry.status === 'dir' || seen.has(entry.path)) continue;
+      if (!isPathSelected(selection, entry.path)) continue;
+      seen.add(entry.path);
+      (entry.status === 'importable' ? files : excluded).push(entry);
+    }
+  };
+
+  for (const path of includedSelectionRoots(selection)) {
+    if (path === '') {
+      queue.push({ path: '', treeSha: snapshot.treeSha });
+      continue;
+    }
+    // 規則は画面に出たチェックボックスからしか作られないので、項目は読み込み済みのはず。
+    // 無ければ想定外の状態。黙って落とすのも、ルートから全体を辿り直して GitHub の
+    // 利用上限を使うのも避け、はっきり止める。
+    const entry = knownEntries.get(path);
+    if (!entry) {
+      throw new GitHubBatchPreparationError(
+        `${revealUnsafeChars(path)} の場所を確認できませんでした。フォルダを開き直して選び直してください。`,
+      );
+    }
+    if (entry.status === 'dir') {
+      queue.push({ path: entry.path, treeSha: entry.sha });
+    } else {
+      collect([entry]);
+    }
+  }
+
+  while (queue.length > 0) {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    const step = queue.shift();
+    if (!step) break;
+
+    // まず recursive API で subtree を1回で列挙する。partial response は絶対に使わない。
+    const recursiveTree = await loadBatchTree(api, snapshot, step, signal, true);
+    if (!recursiveTree.truncated) {
+      collect(recursiveTree.entries);
+      continue;
+    }
+
+    // GitHub が recursive 応答を打ち切ったら、その partial list は捨てる。
+    // 非再帰で1階層を取り直し、必要な子 tree だけを queue に積んで完全列挙する。
+    const directTree = await loadBatchTree(api, snapshot, step, signal, false);
+    if (directTree.truncated) {
+      throw new GitHubBatchPreparationError(
+        `${step.path ? revealUnsafeChars(step.path) : 'ルート'} の一覧が途中で打ち切られたため、安全に一括取り込みできません。`,
+      );
+    }
+    collect(directTree.entries);
+    for (const entry of directTree.entries) {
+      if (entry.status === 'dir' && selectionMayContainSelected(selection, entry.path)) {
+        queue.push({ path: entry.path, treeSha: entry.sha });
+      }
+    }
+  }
+
+  files.sort((a, b) => compareCodePoints(a.path, b.path));
+  excluded.sort((a, b) => compareCodePoints(a.path, b.path));
+  return { files, excluded };
+}
+
+/**
+ * 1件の blob を上限付きで取る。上限を超えたら「再試行」の無い失敗にする（何度取っても
+ * 大きさは変わらない）。1件の上限ならどのファイルかを添え、操作全体の予算（`take`）なら
+ * 合計が超えたと伝える。
+ */
+async function getBlobWithinLimit(
+  api: GitHubClient,
+  snapshot: GitHubSnapshot,
+  entry: GitHubTreeEntry,
+  signal: AbortSignal,
+  take?: (bytes: number) => boolean,
+): Promise<ArrayBuffer> {
+  try {
+    return await api.getBlob(snapshot, entry.sha, signal, {
+      maxBytes: MAX_INPUT_BYTES,
+      ...(take ? { take } : {}),
+    });
+  } catch (error) {
+    if (error instanceof GitHubBlobTooLargeError) {
+      throw new GitHubBatchPreparationError(
+        error.scope === 'file' ? blobTooLargeMessage(entry.path) : describeImportTotalTooLarge(),
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * 計画した全件の blob を取り、候補にする。1件でも失敗したら全体を失敗にする。
+ *
+ * 1回の取り込みの合計（`MAX_IMPORT_TOTAL_BYTES`）は、並行するすべての取得で共有する予算に
+ * して、届いた分ずつ差し引く。大きさの分かる分は計画の画面で断っているが、tree が大きさを
+ * 返さない項目は取ってみるまで分からない。読み終えてから合計を足すと、超えたと分かるまでに
+ * 並行する取得がそれぞれ上限近くまで読めてしまう。
+ *
+ * `cache` は取り直しを避けるための控え（キーはリポジトリと blob SHA）。
+ * - 控えから使った分も予算に数える（今回の取り込みで扱う量なので）。
+ * - 始める時点で、今回の計画に無い控えは捨てる。選び直しを繰り返しても、控えが1回の
+ *   取り込みの量を超えて積み上がらないように。
+ * - 控えるのは読み切れた blob だけ（予算の内側で読めたもの）。やり直しても変わらない失敗
+ *   （上限超え・LFS など）で終わったら、今回足した控えも捨てる。通信の失敗なら残し、
+ *   再試行で取れていた分まで取り直さない。
+ */
+export async function fetchBatchCandidates(
+  api: GitHubClient,
+  snapshot: GitHubSnapshot,
+  entries: readonly GitHubTreeEntry[],
+  cache: Map<string, ArrayBuffer>,
+  signal: AbortSignal,
+  onProgress: (done: number, total: number) => void,
+): Promise<GitHubCandidate[]> {
+  const keyOf = (entry: GitHubTreeEntry): string =>
+    JSON.stringify([snapshot.repository.id, entry.sha]);
+  const planned = new Set(entries.map(keyOf));
+  for (const key of [...cache.keys()]) {
+    if (!planned.has(key)) cache.delete(key);
+  }
+
+  let used = 0;
+  const take = (bytes: number): boolean => {
+    used += bytes;
+    return used <= MAX_IMPORT_TOTAL_BYTES;
+  };
+  const added: string[] = [];
+  let done = 0;
+  try {
+    return await mapWithConcurrency(
+      entries,
+      BLOB_CONCURRENCY,
+      signal,
+      async (entry, requestSignal) => {
+        const key = keyOf(entry);
+        let buffer = cache.get(key);
+        if (buffer) {
+          if (!take(buffer.byteLength)) {
+            throw new GitHubBatchPreparationError(describeImportTotalTooLarge());
+          }
+        } else {
+          try {
+            buffer = await getBlobWithinLimit(api, snapshot, entry, requestSignal, take);
+          } catch (error) {
+            if (error instanceof GitHubRequestError) {
+              throw new GitHubBatchRequestError(entry.path, error);
+            }
+            throw error;
+          }
+          cache.set(key, buffer);
+          added.push(key);
+        }
+        const result = buildCandidate(snapshot, entry, buffer);
+        if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
+        done += 1;
+        if (!requestSignal.aborted) onProgress(done, entries.length);
+        return result.candidate;
+      },
+    );
+  } catch (error) {
+    if (error instanceof GitHubBatchPreparationError) {
+      for (const key of added) cache.delete(key);
+    }
+    throw error;
+  }
+}
+
+const CANCELLED_NOTICE = 'GitHub への接続を取り消しました。';
+
 export interface GitHubImport {
   config: GitHubAppConfig | null;
   /** App のインストール・権限設定の画面。 */
   installUrl: string | null;
+  /**
+   * 正規でないオリジンで開かれているとき、正規のオリジンの URL。接続は始めさせない。
+   * 正規のオリジン（または固定していない配信）なら null。
+   */
+  canonicalUrl: string | null;
   state: GitHubImportState;
   open: () => void;
   close: () => void;
@@ -56,6 +354,11 @@ export interface GitHubImport {
   reloadRepositories: () => void;
   selectRepository: (repository: GitHubRepository) => void;
   clearRepository: () => void;
+  /**
+   * リポジトリの一覧を取り直して選び直す。リポジトリが消えた・見えなくなった・空だった
+   * ときの次の手（手元の一覧は古いので、選び直す前に取り直す）。
+   */
+  reselectRepository: () => void;
   showBranches: () => void;
   hideBranches: () => void;
   selectBranch: (ref: string) => void;
@@ -64,9 +367,24 @@ export interface GitHubImport {
   enterDirectory: (entry: GitHubTreeEntry) => void;
   goTo: (index: number) => void;
   selectFile: (entry: GitHubTreeEntry) => void;
+  setSelected: (path: string, selected: boolean) => void;
   clearCandidate: () => void;
-  /** 取り込みを確定したあとに呼ぶ。ダイアログを閉じる。 */
+  /** 選択を列挙し、取得の前に件数・容量を確かめる画面へ進む。 */
+  prepareSelection: () => void;
+  /** 確かめた計画の全件を取得・検証する。 */
+  fetchBatch: () => void;
+  /** 確認画面で決めた取り込み方法を覚える。ダイアログを閉じても残る。 */
+  chooseBatch: (choices: BatchChoices) => void;
+  clearBatch: () => void;
+  /** 1件の取り込みを確定したあとに呼ぶ。ダイアログを閉じ、複数選択は残す。 */
   finish: () => void;
+  /** 一括取り込みを確定したあとに呼ぶ。選択を片付けてダイアログを閉じる。 */
+  finishBatch: () => void;
+  /**
+   * 確定した一括取り込みを「元に戻す」で取り消したとき、確認画面を決めた内容ごと開き直す。
+   * 取得済みの候補を使うので、GitHub へは要求しない。
+   */
+  restoreBatch: () => void;
 }
 
 /** 暗号学的な乱数を base64url にする。32 バイトで verifier は 43 文字になる。 */
@@ -92,6 +410,16 @@ function readPendingAuth(): string | null {
   }
 }
 
+export interface GitHubImportOptions {
+  /**
+   * 認可のために GitHub の画面へ移る直前に呼ぶ。false を返したら移らない。
+   *
+   * 移ると今のページは破棄され、戻ってきたときは保存済みの内容から始まる。
+   * 保存できていない作業があるまま離れさせないために、App が保存の書き出しを渡す。
+   */
+  beforeNavigate?: () => boolean;
+}
+
 /**
  * 「GitHubから追加」の通信と状態をまとめる。
  *
@@ -101,18 +429,61 @@ function readPendingAuth(): string | null {
  *   戻ってきたら、検証の成否にかかわらず読んだ時点で消す。
  * - 取得した内容はワークスペースへ直接入れない。候補として返し、確定は App が行う。
  */
-export function useGitHubImport(): GitHubImport {
+export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport {
   const [state, dispatch] = useReducer(githubImportReducer, initialGitHubImportState);
+
+  // 一括取り込みの途中の内容（計画・取得した本文・決めた取り込み方法）はメモリにだけある。
+  // ダイアログを閉じても残すようにしたので、次に起きやすい取り違えは再読み込みやタブを閉じること。
+  // 対応するブラウザでは離れる前に確かめる（スマホでは出ないことがあるので、画面にも書いてある）。
+  const batchInProgress = state.batchPlan !== null || state.batchCandidates !== null;
+  useEffect(() => {
+    if (!batchInProgress) return;
+    const warn = (event: BeforeUnloadEvent): void => {
+      event.preventDefault();
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [batchInProgress]);
   const tokenRef = useRef<GitHubToken | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /**
+   * 走っている取得の「時間がかかっています」の見張り。利用者に見える進み（一括取り込みの
+   * 件数）があったときに数え直す。通信の受信（blob のチャンク）では数え直さない。通信は
+   * 少しずつ進んでいても、画面が変わらなければ利用者には固まって見えるため。
+   */
+  const slowRef = useRef<Watchdog | null>(null);
   /**
    * tree は SHA で内容が決まるので、一度取ったものは使い回す（戻る操作で取り直さない）。
    * キーはリポジトリ・tree SHA・パスの組（`loadListing` を参照）。
    */
   const treeCache = useRef(new Map<string, NormalizedTree>());
+  /**
+   * 一括取り込みで取れた blob（キーはリポジトリと blob SHA）。blob は内容で決まる SHA で
+   * 取るので中身は変わらない。1件の失敗や1件の選び直し、通信切れの再試行で、取れていた分まで
+   * 取り直して利用上限を使わないように持つ。固定し直し・切断・一括の確定で捨てる。
+   */
+  const blobCache = useRef(new Map<string, ArrayBuffer>());
   /** 直前に失敗した操作。「再試行」で同じことをやり直す。 */
   const lastTask = useRef<(() => void) | null>(null);
+  /** 直前に確定した一括取り込みの控え。「元に戻す」で確認画面へ戻すのに使う。 */
+  const suspendedBatch = useRef<SuspendedBatch | null>(null);
   const handledCallback = useRef(false);
+  /**
+   * ページを離れた（bfcache に入った）回数。トークン交換は中断口を共有しないので、
+   * 離れる前に始めた交換が戻ったあとに返ってきても、その結果でトークンを持ち直さない。
+   */
+  const pageLeft = useRef(0);
+  /**
+   * 接続の手続き（認可の画面へ移る準備と、戻ったあとのトークン交換）の世代。
+   * 途中で「閉じる」と進め、それより前に始めた手続きの結果を捨てる。
+   * 交換はコードが1回しか使えないので fetch 自体は止めないが、閉じたあとに返った
+   * トークンは持たない（閉じたのに裏で接続が完了し、一覧を取りに行く、を起こさない）。
+   *
+   * `pageLeft` とは契機が別（こちらは閉じる、あちらは bfcache）なので、交換の結果は
+   * 両方の世代が変わっていないときだけ採用する。
+   */
+  const attempt = useRef(0);
+  const canonicalUrl = APP_CONFIG ? nonCanonicalTarget(APP_CONFIG, window.location.origin) : null;
 
   /** 進行中の取得を止めて、新しい取得の中断口を作る。 */
   const begin = (): AbortController => {
@@ -127,6 +498,7 @@ export function useGitHubImport(): GitHubImport {
     abortRef.current = null;
     tokenRef.current = null;
     treeCache.current.clear();
+    blobCache.current.clear();
     lastTask.current = null;
     dispatch({ type: 'disconnect', notice });
   };
@@ -146,34 +518,73 @@ export function useGitHubImport(): GitHubImport {
    * 新しい取得を始めると前の取得は中断する（遅れて返った古い応答で画面を戻さない）。
    */
   const run = <T>(
+    stage: GitHubFetchStage,
     label: string,
     task: (api: GitHubClient, signal: AbortSignal) => Promise<T>,
     onDone: (value: T) => void,
+    /** 選んでいたブランチが見つからないとき、ブランチの一覧へ戻す（`recoveryFor`）。 */
+    chooseBranch?: () => void,
   ): void => {
     const api = client();
     if (!api) return;
-    const again = (): void => run(label, task, onDone);
+    const again = (): void => run(stage, label, task, onDone, chooseBranch);
     lastTask.current = again;
+    // rate limit が解けるまでは、どの操作から来ても GitHub へ要求しない。止めるのが
+    // 「再試行」ボタンだけだと、計画画面の「取得」や開き直しから解除前に要求できてしまう。
+    const until = state.rateLimitedUntil;
+    if (until !== null && rateLimitWaitMs(until, Date.now()) > 0) {
+      dispatch({
+        type: 'fail',
+        error: {
+          message: describeGitHubError({ kind: 'rateLimited', status: null, resetAt: until }),
+          recover: 'retry',
+        },
+      });
+      return;
+    }
     const controller = begin();
     dispatch({ type: 'busy', label });
+    // 時間切れは1リクエストごとに `client.ts` が子の中断口で表す。この中断口（`controller`）は
+    // 閉じる・置き換わるときだけ中断する。時間切れで中断すると、下の catch が黙って捨てて、
+    // 読み込み中でもエラーでもない画面に残ってしまう。
+    const slow = createWatchdog(SLOW_NOTICE_MS, () => {
+      if (!controller.signal.aborted) dispatch({ type: 'busy/slow' });
+    });
+    slowRef.current = slow;
+    controller.signal.addEventListener('abort', () => slow.dispose(), { once: true });
     task(api, controller.signal)
       .then((value) => {
         if (!controller.signal.aborted) onDone(value);
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
-        if (error instanceof GitHubRequestError) {
-          if (error.detail.kind === 'unauthorized') {
-            dropConnection(describeGitHubError(error.detail));
+        if (error instanceof GitHubBatchPreparationError) {
+          dispatch({ type: 'fail', error: { message: error.message, recover: 'dismiss' } });
+          return;
+        }
+        const requestFailure = describeRequestFailure(error);
+        if (requestFailure) {
+          const { detail, message } = requestFailure;
+          if (detail.kind === 'unauthorized') {
+            dropConnection(message);
+            return;
+          }
+          // やり直しても変わらない失敗に「再試行」を出さない（段階ごとに戻る先を決める）。
+          const recovery = recoveryFor(detail, stage);
+          if (recovery === 'chooseBranch' && chooseBranch) {
+            chooseBranch();
             return;
           }
           dispatch({
             type: 'fail',
             error: {
-              message: describeGitHubError(error.detail),
-              // 一覧が長すぎるのは、やり直しても同じ結果で rate limit を食うだけなので再試行させない。
-              recover: error.detail.kind === 'listTooLong' ? 'dismiss' : 'retry',
+              message,
+              recover: recovery === 'chooseBranch' ? 'retry' : recovery,
             },
+            // rate limit は解除時刻まで GitHub への要求そのものを止める（表示している時刻と一致させる）。
+            ...(detail.kind === 'rateLimited' && detail.resetAt !== null
+              ? { rateLimitedUntil: detail.resetAt }
+              : {}),
           });
           return;
         }
@@ -184,12 +595,88 @@ export function useGitHubImport(): GitHubImport {
         });
       })
       .finally(() => {
+        slow.dispose();
+        if (slowRef.current === slow) slowRef.current = null;
         if (abortRef.current === controller) abortRef.current = null;
       });
   };
 
+  const prepareSelection = (): void => {
+    const snapshot = state.snapshot;
+    const selection = state.selection;
+    if (!snapshot || !hasAnySelection(selection)) {
+      dispatch({
+        type: 'fail',
+        error: { message: '取り込むファイルまたはフォルダを選んでください。', recover: 'dismiss' },
+      });
+      return;
+    }
+    const knownEntries = state.knownEntries;
+
+    run(
+      'tree',
+      '選択範囲を確認しています（ファイルの本文はまだ取得していません）',
+      async (api, signal) => {
+        const found = await enumerateSelectedEntries(
+          api,
+          snapshot,
+          selection,
+          knownEntries,
+          signal,
+        );
+        if (found.files.length === 0) {
+          throw new GitHubBatchPreparationError(
+            found.excluded.length > 0
+              ? `選択範囲に取り込めるファイルがありません（対象外 ${found.excluded.length}件）。`
+              : '選択範囲に取り込めるファイルがありません。',
+          );
+        }
+        return found;
+      },
+      ({ files, excluded }) =>
+        dispatch({
+          type: 'batch/planned',
+          commitSha: snapshot.commitSha,
+          selection,
+          entries: files,
+          excluded,
+        }),
+    );
+  };
+
+  const fetchBatch = (): void => {
+    const snapshot = state.snapshot;
+    const plan = state.batchPlan;
+    if (!snapshot || !plan) return;
+
+    run(
+      'blob',
+      '選択したファイルを取得しています',
+      (api, signal) =>
+        fetchBatchCandidates(
+          api,
+          snapshot,
+          plan.entries,
+          blobCache.current,
+          signal,
+          // 件数が多いと長くかかるので、進んでいることを見せる。変わらない表示のままだと
+          // 固まったと思って閉じたりやり直したりしやすい。中断したあとは表示を戻さない。
+          (done, total) => {
+            dispatch({
+              type: 'busy',
+              label: `選択したファイルを取得しています（${done} / ${total}）`,
+            });
+            // 件数が進んだのは画面で分かる進みなので、「時間がかかっています」を数え直す。
+            slowRef.current?.restart();
+          },
+        ),
+      (candidates) => dispatch({ type: 'batch/set', selection: plan.selection, candidates }),
+    );
+  };
+
   const loadRepositories = (): void => {
     run(
+      'repositories',
       'リポジトリを読み込んでいます',
       (api, signal) => api.listRepositories(signal),
       (repositories) => dispatch({ type: 'repositories/loaded', repositories }),
@@ -218,6 +705,7 @@ export function useGitHubImport(): GitHubImport {
       return;
     }
     run(
+      'tree',
       'フォルダを読み込んでいます',
       (api, signal) => api.getTree(snapshot, step.treeSha, step.path, signal),
       (tree) => {
@@ -227,44 +715,92 @@ export function useGitHubImport(): GitHubImport {
     );
   };
 
-  /** ブランチの HEAD を解決して固定し、ルートを開く。 */
-  const pin = (repository: GitHubRepository, ref: string, previous?: GitHubSnapshot): void => {
+  /**
+   * ブランチの HEAD を解決して固定し、ルートを開く。
+   *
+   * 固定し直すと選択は捨てる（古いコミットで選んだものを新しいコミットへ持ち越さない）ので、
+   * 捨てる選択があったときはそれも知らせる。黙って消えると、選び直しが要ることに気づけない。
+   *
+   * `resume` は「最新に更新」で先頭が変わっていなかったときに開き直す場所。確認を始めた
+   * 時点で一覧の取得が終わっていなかったなら、その取得は確認のために中断している
+   * （`run` は前の取得を止める）。「最新です」とだけ言って戻ると、一覧の無い画面に残る。
+   */
+  const pin = (
+    repository: GitHubRepository,
+    ref: string,
+    options: {
+      previous?: GitHubSnapshot;
+      hadSelection?: boolean;
+      resume?: TrailStep | undefined;
+    } = {},
+  ): void => {
+    const { previous, hadSelection = false, resume } = options;
     run(
+      'snapshot',
       `${ref} の最新コミットを確認しています`,
       (api, signal) => api.resolveSnapshot(repository, ref, signal),
       (snapshot) => {
         if (previous && previous.commitSha === snapshot.commitSha) {
-          dispatch({ type: 'info', message: `最新です（${shortSha(snapshot.commitSha)} のまま）` });
+          const message = `最新です（${shortSha(snapshot.commitSha)} のまま）`;
+          if (resume) loadListing(previous, resume, message);
+          else dispatch({ type: 'info', message });
           return;
         }
+        blobCache.current.clear();
         dispatch({ type: 'snapshot/pinned', snapshot });
+        const notes = [
+          previous ? `${shortSha(snapshot.commitSha)} に更新しました` : null,
+          hadSelection ? '選択は解除しました' : null,
+        ].filter((note) => note !== null);
         loadListing(
           snapshot,
           { path: '', treeSha: snapshot.treeSha },
-          previous ? `${shortSha(snapshot.commitSha)} に更新しました` : undefined,
+          notes.length > 0 ? notes.join('。') : undefined,
         );
       },
+      // 一覧を取ったあとで既定ブランチが改名・削除されると、同じ ref は何度解決しても 404。
+      // 再試行を押させ続けず、今あるブランチから選び直してもらう。
+      () =>
+        loadBranches(
+          repository,
+          `ブランチ ${revealUnsafeChars(ref)} が見つかりませんでした（名前が変わったか、削除された可能性があります）。ブランチを選んでください。`,
+        ),
     );
   };
 
-  const loadBranches = (repository: GitHubRepository): void => {
+  /** ブランチの一覧を開く。`notice` は一覧が出たあとに添える知らせ（ここへ戻された理由）。 */
+  const loadBranches = (repository: GitHubRepository, notice?: string): void => {
     dispatch({ type: 'branches/show' });
     run(
+      'branches',
       'ブランチを読み込んでいます',
       (api, signal) => api.listBranches(repository, signal),
-      (names) =>
+      (names) => {
         dispatch({
           type: 'branches/loaded',
           repositoryId: repository.id,
           branches: orderBranches(names, repository.defaultBranch),
-        }),
+        });
+        if (notice) dispatch({ type: 'info', message: notice });
+      },
     );
   };
 
   const exchangeCode = async (code: string, verifier: string): Promise<void> => {
     dispatch({ type: 'connect/start' });
+    const startedPage = pageLeft.current;
+    const started = attempt.current;
+    /** 交換を始めてから、閉じられたか bfcache に入ったか。どちらでも結果は捨てる。 */
+    const superseded = (): boolean =>
+      pageLeft.current !== startedPage || attempt.current !== started;
     // 交換は中断口を共有しない。コードは1回しか使えないので、他の操作や
     // （開発時の Strict Mode による）effect の片付けで止めると、やり直せなくなる。
+    // 止めるのは自前の上限（`TOKEN_EXCHANGE_TIMEOUT_MS`）だけ。時間切れは「諦める契機」
+    // （`superseded`）ではなく失敗の種類として扱い、同じコードでは再試行させない。
+    const deadline = createDeadline(new AbortController().signal, TOKEN_EXCHANGE_TIMEOUT_MS);
+    const slow = createWatchdog(SLOW_NOTICE_MS, () => {
+      if (!superseded()) dispatch({ type: 'busy/slow' });
+    });
     try {
       const response = await fetch(new URL(TOKEN_EXCHANGE_PATH, window.location.origin), {
         method: 'POST',
@@ -277,11 +813,27 @@ export function useGitHubImport(): GitHubImport {
         }),
         cache: 'no-store',
         credentials: 'same-origin',
+        signal: deadline.signal,
       });
-      const token = response.ok ? parseTokenResponse(await response.json(), Date.now()) : null;
+      // 失敗の本文は理由コードだけを読む（読めなくても状態コードで知らせる）。
+      const payload: unknown = await response.json().catch(() => null);
+      // 読み終えたら見張りを止める（このあとに上限が来ても、取れたトークンを捨てない）。
+      deadline.dispose();
+      const token = response.ok ? parseTokenResponse(payload, Date.now()) : null;
+      // 交換の途中でページを離れたか閉じられていたら、返ってきたトークンは捨てる
+      // （接続は解除・取り消し済み）。
+      if (superseded()) return;
+      // 本文を読んでいる途中で上限に達した（読めなかったのは時間切れのせい）。
+      if (!token && deadline.timedOut) {
+        dropConnection(describeTokenExchangeTimeout());
+        return;
+      }
       if (!token) {
         dropConnection(
-          `GitHub との接続に失敗しました（トークンの交換に失敗: ${response.status}）。もう一度接続してください。`,
+          describeTokenExchangeFailure(
+            response.status,
+            response.ok ? null : parseExchangeErrorCode(payload),
+          ),
         );
         return;
       }
@@ -289,10 +841,16 @@ export function useGitHubImport(): GitHubImport {
       dispatch({ type: 'connect/done' });
       loadRepositories();
     } catch (error) {
+      if (superseded()) return;
+      if (deadline.timedOut) {
+        dropConnection(describeTokenExchangeTimeout());
+        return;
+      }
       console.error('GitHub のトークン交換に失敗しました', error);
-      dropConnection(
-        'GitHub との接続に失敗しました。ネットワークを確認して、もう一度接続してください。',
-      );
+      dropConnection(describeTokenExchangeNetworkFailure(navigator.onLine));
+    } finally {
+      deadline.dispose();
+      slow.dispose();
     }
   };
 
@@ -329,21 +887,47 @@ export function useGitHubImport(): GitHubImport {
 
   // GitHub の画面からブラウザの「戻る」で帰ってくると、bfcache から「接続中」のまま
   // 復元される（ボタンが押せないまま残る）。引き返した認可として片付ける。
+  //
+  // 接続済みのまま bfcache に入ったページも、戻るとトークンごと復元される（JS のヒープが
+  // そのまま戻る）。共用の端末で次の人が「戻る」を押すと、前の利用者の権限でリポジトリを
+  // 読めてしまうので、bfcache に入る時点（persisted な pagehide）でトークンを捨てる。
+  // 戻ったとき（persisted な pageshow）にも念のため同じ片付けをする。
+  // タブの切り替え（visibilitychange）では切らない。ページはそのまま残っているため。
   useEffect(() => {
+    const releaseToken = (): void => {
+      pageLeft.current += 1;
+      abortRef.current?.abort();
+      abortRef.current = null;
+      tokenRef.current = null;
+      treeCache.current.clear();
+      lastTask.current = null;
+      dispatch({ type: 'page/persisted' });
+    };
+    const onPageHide = (event: PageTransitionEvent): void => {
+      if (!event.persisted) return;
+      // 認可の画面へ移るとき（接続中）もここを通る。戻り先で使う state と verifier は
+      // 消さない（新しいページの読み込みで使う）。
+      releaseToken();
+    };
     const onPageShow = (event: PageTransitionEvent): void => {
       if (!event.persisted) return;
       removePendingAuth();
       dispatch({ type: 'connect/abandon' });
+      releaseToken();
     };
+    window.addEventListener('pagehide', onPageHide);
     window.addEventListener('pageshow', onPageShow);
-    return () => window.removeEventListener('pageshow', onPageShow);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', onPageShow);
+    };
   }, []);
 
   // 画面を離れるときに取得中の通信を止める。
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const connect = async (): Promise<void> => {
-    if (!APP_CONFIG || state.connection !== 'disconnected') return;
+    if (!APP_CONFIG || canonicalUrl || state.connection !== 'disconnected') return;
     // 押した時点で「接続中」にしてボタンを止める。二重に押すと認可が2本走り、
     // 保存した state と戻ってきた state が食い違う。
     dispatch({ type: 'connect/start' });
@@ -354,14 +938,29 @@ export function useGitHubImport(): GitHubImport {
       });
       return;
     }
+    const started = attempt.current;
     const pending = { state: randomToken(), verifier: randomToken(), createdAt: Date.now() };
     const codeChallenge = await codeChallengeS256(pending.verifier, crypto.subtle);
+    // 準備の間に閉じられていたら、認可の画面へは移らない。
+    if (attempt.current !== started) return;
     try {
       sessionStorage.setItem(PENDING_AUTH_KEY, serializePendingAuth(pending));
     } catch {
       dispatch({
         type: 'disconnect',
         notice: 'このブラウザの設定では接続の一時情報を保存できないため、接続できません。',
+      });
+      return;
+    }
+    // 保存はデバウンスしているので、押す直前の編集はまだ書かれていないことがある。
+    // 表示中の「保存に失敗している」は最後に実行済みの保存の結果でしかないため、
+    // 離れる直前にその場で書き出し、書けなければ移らない。
+    if (options.beforeNavigate && !options.beforeNavigate()) {
+      removePendingAuth();
+      dispatch({
+        type: 'disconnect',
+        // 書き出しの案内は、同時に出る保存失敗の警告（saveFailed）に任せる。
+        notice: 'ブラウザへの保存に失敗したため、GitHub への接続を中止しました。',
       });
       return;
     }
@@ -378,6 +977,7 @@ export function useGitHubImport(): GitHubImport {
   return {
     config: APP_CONFIG,
     installUrl: APP_CONFIG ? installationUrl(APP_CONFIG) : null,
+    canonicalUrl,
     state,
     open: () => {
       dispatch({ type: 'open' });
@@ -399,11 +999,22 @@ export function useGitHubImport(): GitHubImport {
     close: () => {
       abortRef.current?.abort();
       abortRef.current = null;
+      // 接続の途中で閉じたら、手続きを取り消す（裏で接続を完了させない）。
+      // 閉じたら終わり、という見た目どおりの意味にする。
+      if (state.connection === 'connecting') {
+        attempt.current += 1;
+        removePendingAuth();
+        dispatch({ type: 'disconnect', notice: CANCELLED_NOTICE });
+      }
       dispatch({ type: 'close' });
     },
     connect,
     disconnect: () => dropConnection(null),
-    retry: () => lastTask.current?.(),
+    retry: () => {
+      // ボタンは解除時刻まで押せないが、手続きの側でも解除前の再試行を通さない。
+      if (rateLimitWaitMs(state.rateLimitedUntil, Date.now()) > 0) return;
+      lastTask.current?.();
+    },
     dismissError: () => dispatch({ type: 'error/dismiss' }),
     reloadRepositories: loadRepositories,
     selectRepository: (repository) => {
@@ -419,19 +1030,37 @@ export function useGitHubImport(): GitHubImport {
       abortRef.current?.abort();
       dispatch({ type: 'repository/clear' });
     },
+    reselectRepository: () => {
+      abortRef.current?.abort();
+      dispatch({ type: 'repository/clear' });
+      loadRepositories();
+    },
     showBranches: () => {
       if (state.repository) loadBranches(state.repository);
     },
     hideBranches: () => {
       abortRef.current?.abort();
       dispatch({ type: 'branches/hide' });
+      // ブランチの一覧を開いた時点で、元の一覧の取得を中断していることがある
+      // （一覧を待たずに「ブランチを変更」を押した）。戻る先に一覧が無ければ取り直す。
+      const step = currentStep(state);
+      if (state.snapshot && state.listing === null && step) loadListing(state.snapshot, step);
     },
     selectBranch: (ref) => {
-      if (state.repository) pin(state.repository, ref);
+      if (state.repository) {
+        pin(state.repository, ref, { hadSelection: hasAnySelection(state.selection) });
+      }
     },
     refreshSnapshot: () => {
       const snapshot = state.snapshot;
-      if (snapshot) pin(snapshot.repository, snapshot.ref, snapshot);
+      if (!snapshot) return;
+      // 一覧を待っている途中で押されたら、先頭が変わっていなくても今の場所を開き直す。
+      const resume = state.listing === null ? currentStep(state) : undefined;
+      pin(snapshot.repository, snapshot.ref, {
+        previous: snapshot,
+        hadSelection: hasAnySelection(state.selection),
+        resume,
+      });
     },
     enterDirectory: (entry) => {
       const snapshot = state.snapshot;
@@ -447,12 +1076,14 @@ export function useGitHubImport(): GitHubImport {
       dispatch({ type: 'dir/goTo', index });
       loadListing(snapshot, step);
     },
+    setSelected: (path, selected) => dispatch({ type: 'selection/set', path, selected }),
     selectFile: (entry) => {
       const snapshot = state.snapshot;
       if (!snapshot || entry.status !== 'importable') return;
       run(
+        'blob',
         `${entry.name} を取得しています`,
-        (api, signal) => api.getBlob(snapshot, entry.sha, signal),
+        (api, signal) => getBlobWithinLimit(api, snapshot, entry, signal),
         (buffer) => {
           const result = buildCandidate(snapshot, entry, buffer);
           if (result.kind === 'error') {
@@ -464,9 +1095,43 @@ export function useGitHubImport(): GitHubImport {
       );
     },
     clearCandidate: () => dispatch({ type: 'candidate/clear' }),
+    prepareSelection,
+    fetchBatch,
+    chooseBatch: (choices) => dispatch({ type: 'batch/choose', choices }),
+    clearBatch: () => {
+      // 取得の途中で戻ったら、残りの取得も止める（GitHub の利用上限を使い続けない）。
+      abortRef.current?.abort();
+      abortRef.current = null;
+      dispatch({ type: 'batch/clear' });
+    },
     finish: () => {
+      // 1件だけ確かめて取り込む操作は、複数選択を組んでいる途中でも自然に行う。
+      // 組んだ選択は黙って捨てず、開き直せば続けられるように残す。
       dispatch({ type: 'candidate/clear' });
       dispatch({ type: 'close' });
+    },
+    finishBatch: () => {
+      // 取り消されたら確認画面へ戻せるよう、候補と決めた内容を控えておく（取り直させない）。
+      suspendedBatch.current = state.batchCandidates
+        ? {
+            selection: state.selection,
+            candidates: state.batchCandidates,
+            choices: state.batchChoices,
+          }
+        : null;
+      // 一括で取り込んだ選択は役目を終えたので片付ける。取り消しで戻る確認画面は控えた候補を
+      // 使うので、blob の控えはもう要らない。
+      blobCache.current.clear();
+      dispatch({ type: 'batch/clear' });
+      dispatch({ type: 'selection/clear' });
+      dispatch({ type: 'close' });
+    },
+    restoreBatch: () => {
+      const batch = suspendedBatch.current;
+      suspendedBatch.current = null;
+      if (!batch) return;
+      dispatch({ type: 'batch/restore', batch });
+      dispatch({ type: 'open' });
     },
   };
 }

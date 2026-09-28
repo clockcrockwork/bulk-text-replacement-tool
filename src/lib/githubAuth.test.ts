@@ -5,16 +5,24 @@ import {
   callbackUrl,
   codeChallengeS256,
   describeCallbackFailure,
+  describeTokenExchangeFailure,
+  describeTokenExchangeNetworkFailure,
+  describeTokenExchangeTimeout,
   installationUrl,
   isTokenUsable,
+  MAX_TOKEN_LIFETIME_SECONDS,
+  nonCanonicalTarget,
+  normalizeCanonicalOrigin,
   PENDING_AUTH_TTL_MS,
   type PendingAuth,
+  parseExchangeErrorCode,
   parsePendingAuth,
   parseTokenResponse,
   readCallbackParams,
   readGitHubAppConfig,
   serializePendingAuth,
   stripCallbackParams,
+  TOKEN_EXCHANGE_TIMEOUT_MS,
   TOKEN_EXPIRY_MARGIN_MS,
   validateCallback,
 } from './githubAuth';
@@ -29,7 +37,37 @@ describe('readGitHubAppConfig', () => {
         VITE_GITHUB_APP_CLIENT_ID: ' Iv23abc ',
         VITE_GITHUB_APP_SLUG: 'bulk-replace',
       }),
-    ).toEqual({ clientId: 'Iv23abc', slug: 'bulk-replace' });
+    ).toEqual({ clientId: 'Iv23abc', slug: 'bulk-replace', canonicalOrigin: null });
+  });
+
+  it('正規のオリジンがあれば、オリジンの形に揃えて持つ', () => {
+    expect(
+      readGitHubAppConfig({
+        VITE_GITHUB_APP_CLIENT_ID: 'x',
+        VITE_GITHUB_APP_SLUG: 'a',
+        VITE_GITHUB_APP_ORIGIN: ' https://Bulk.Example.com/ ',
+      }),
+    ).toEqual({ clientId: 'x', slug: 'a', canonicalOrigin: 'https://bulk.example.com' });
+    // 空は「固定しない」（未設定と同じ）。
+    expect(
+      readGitHubAppConfig({
+        VITE_GITHUB_APP_CLIENT_ID: 'x',
+        VITE_GITHUB_APP_SLUG: 'a',
+        VITE_GITHUB_APP_ORIGIN: '  ',
+      })?.canonicalOrigin,
+    ).toBeNull();
+  });
+
+  it('正規のオリジンが読めない値なら、連携ごと無効にする', () => {
+    for (const origin of ['bulk.example.com', 'https://bulk.example.com/app', 'ftp://x']) {
+      expect(
+        readGitHubAppConfig({
+          VITE_GITHUB_APP_CLIENT_ID: 'x',
+          VITE_GITHUB_APP_SLUG: 'a',
+          VITE_GITHUB_APP_ORIGIN: origin,
+        }),
+      ).toBeNull();
+    }
   });
 
   it('どちらかが無い・空なら連携を無効にする', () => {
@@ -49,9 +87,43 @@ describe('readGitHubAppConfig', () => {
 
 describe('URL', () => {
   it('インストール画面は App の slug から作る', () => {
-    expect(installationUrl({ clientId: 'x', slug: 'bulk-replace' })).toBe(
+    expect(installationUrl({ clientId: 'x', slug: 'bulk-replace', canonicalOrigin: null })).toBe(
       'https://github.com/apps/bulk-replace/installations/new',
     );
+  });
+
+  it('正規のオリジンはオリジンそのものだけを受け付ける', () => {
+    expect(normalizeCanonicalOrigin('https://bulk.example.com')).toBe('https://bulk.example.com');
+    expect(normalizeCanonicalOrigin('https://bulk.example.com/')).toBe('https://bulk.example.com');
+    expect(normalizeCanonicalOrigin('https://bulk.example.com:8443')).toBe(
+      'https://bulk.example.com:8443',
+    );
+    // ローカルで確かめるための loopback だけ http を許す。
+    expect(normalizeCanonicalOrigin('http://127.0.0.1:4173')).toBe('http://127.0.0.1:4173');
+    expect(normalizeCanonicalOrigin('http://localhost:5173/')).toBe('http://localhost:5173');
+    for (const value of [
+      'http://bulk.example.com',
+      'https://bulk.example.com/sub/',
+      'https://bulk.example.com/?x=1',
+      'https://bulk.example.com/?',
+      'https://bulk.example.com/#top',
+      'https://user:pass@bulk.example.com',
+      'bulk.example.com',
+      'javascript:alert(1)',
+      '',
+    ]) {
+      expect(normalizeCanonicalOrigin(value), value).toBeNull();
+    }
+  });
+
+  it('正規でないオリジンでは、正規のオリジンの URL を返す', () => {
+    const config = { clientId: 'x', slug: 'a', canonicalOrigin: 'https://bulk.example.com' };
+    expect(nonCanonicalTarget(config, 'https://bulk.example.com')).toBeNull();
+    expect(nonCanonicalTarget(config, 'https://bulk-git-main-team.vercel.app')).toBe(
+      'https://bulk.example.com/',
+    );
+    // 固定していなければ、どのオリジンでも始められる。
+    expect(nonCanonicalTarget({ ...config, canonicalOrigin: null }, 'http://x.test')).toBeNull();
   });
 
   it('コールバックはオリジン直下', () => {
@@ -207,23 +279,85 @@ describe('コールバック', () => {
   });
 });
 
+describe('トークン交換の失敗の知らせ', () => {
+  it('理由コードは公開の識別子の形だけを読む', () => {
+    expect(parseExchangeErrorCode({ error: 'origin_not_allowed' })).toBe('origin_not_allowed');
+    expect(parseExchangeErrorCode({ error: '<script>' })).toBeNull();
+    expect(parseExchangeErrorCode({ error: 'x'.repeat(41) })).toBeNull();
+    expect(parseExchangeErrorCode({ error: 1 })).toBeNull();
+    expect(parseExchangeErrorCode(null)).toBeNull();
+  });
+
+  it('状態コードに理由コードを添える（利用者から運用者へそのまま伝えられる）', () => {
+    expect(describeTokenExchangeFailure(403, 'origin_not_allowed')).toContain(
+      '403 origin_not_allowed',
+    );
+    expect(describeTokenExchangeFailure(502)).toContain('（トークンの交換に失敗: 502）');
+  });
+
+  it('429 は一時的な制限として、待ってから接続し直すよう伝える', () => {
+    const message = describeTokenExchangeFailure(429, 'rate_limited');
+    expect(message).toContain('一時的に制限');
+    expect(message).toContain('作業データはそのまま残っています');
+  });
+
+  it('時間切れは、同じコードで再試行させず、認可からやり直すと伝える', () => {
+    const message = describeTokenExchangeTimeout();
+    expect(message).toContain('もう一度接続すると、認可の画面からやり直します');
+    expect(message).not.toContain('再試行');
+  });
+
+  it('オフラインは navigator.onLine が false のときだけ伝える', () => {
+    expect(describeTokenExchangeNetworkFailure(false)).toContain('オフライン');
+    expect(describeTokenExchangeNetworkFailure(true)).not.toContain('オフライン');
+    expect(describeTokenExchangeNetworkFailure(undefined)).not.toContain('オフライン');
+  });
+
+  it('ブラウザ側の上限は、Function の上限（10 秒）より十分長い', () => {
+    expect(TOKEN_EXCHANGE_TIMEOUT_MS).toBeGreaterThanOrEqual(2 * 10_000);
+  });
+});
+
 describe('トークン', () => {
+  const VALID_TOKEN = { access_token: 'ghu_x', token_type: 'bearer', expires_in: 28800 };
+
   it('access_token と有効期限を読む', () => {
-    expect(parseTokenResponse({ access_token: 'ghu_x', expires_in: 28800 }, 1000)).toEqual({
+    expect(parseTokenResponse(VALID_TOKEN, 1000)).toEqual({
       accessToken: 'ghu_x',
       expiresAt: 1000 + 28_800_000,
     });
+    // token_type の大文字小文字は問わない。上限ちょうどの期限は受け付ける。
+    expect(parseTokenResponse({ ...VALID_TOKEN, token_type: 'Bearer' }, 0)).not.toBeNull();
+    expect(
+      parseTokenResponse({ ...VALID_TOKEN, expires_in: MAX_TOKEN_LIFETIME_SECONDS }, 0),
+    ).not.toBeNull();
   });
 
-  it('有効期限が無ければ null のまま', () => {
-    expect(parseTokenResponse({ access_token: 'ghu_x' }, 0)).toEqual({
-      accessToken: 'ghu_x',
-      expiresAt: null,
-    });
+  it.each([
+    ['期限が無い', { expires_in: undefined }],
+    ['期限が 0', { expires_in: 0 }],
+    ['期限が負', { expires_in: -60 }],
+    ['期限が文字列', { expires_in: '28800' }],
+    ['期限が NaN', { expires_in: Number.NaN }],
+    ['期限が Infinity', { expires_in: Number.POSITIVE_INFINITY }],
+    ['期限が整数でない', { expires_in: 28800.5 }],
+    ['期限が上限を超える', { expires_in: MAX_TOKEN_LIFETIME_SECONDS + 1 }],
+    // 有限だが、ミリ秒に直すと Infinity になる値。通すと実質無期限になる。
+    ['期限が有限だが巨大（Number.MAX_VALUE）', { expires_in: Number.MAX_VALUE }],
+    ['期限が有限だが巨大（1e308）', { expires_in: 1e308 }],
+    ['token_type が無い', { token_type: undefined }],
+    ['token_type が bearer でない', { token_type: 'mac' }],
+  ])('%s トークンは受け付けない（期限なし・想定外の応答として扱う）', (_, override) => {
+    expect(parseTokenResponse({ ...VALID_TOKEN, ...override }, 0)).toBeNull();
+  });
+
+  it('計算した失効時刻が有限でなければ受け付けない', () => {
+    expect(parseTokenResponse(VALID_TOKEN, Number.POSITIVE_INFINITY)).toBeNull();
   });
 
   it('refresh token が紛れ込んでも読まない', () => {
-    const token = parseTokenResponse({ access_token: 'ghu_x', refresh_token: 'ghr_y' }, 0);
+    const token = parseTokenResponse({ ...VALID_TOKEN, refresh_token: 'ghr_y' }, 0);
+    expect(token).not.toBeNull();
     expect(JSON.stringify(token)).not.toContain('ghr_y');
   });
 
@@ -237,8 +371,22 @@ describe('トークン', () => {
     const token = { accessToken: 'x', expiresAt: 100_000 };
     expect(isTokenUsable(token, 100_000 - TOKEN_EXPIRY_MARGIN_MS - 1)).toBe(true);
     expect(isTokenUsable(token, 100_000 - TOKEN_EXPIRY_MARGIN_MS)).toBe(false);
-    expect(isTokenUsable({ accessToken: 'x', expiresAt: null }, Number.MAX_SAFE_INTEGER)).toBe(
-      true,
+  });
+});
+
+describe('describeTokenExchangeFailure', () => {
+  it('429（Firewall のレート制限）は、待ってから接続し直せばよいと伝える', () => {
+    const message = describeTokenExchangeFailure(429);
+    expect(message).toContain('少し時間をおいてから');
+    // 窓の長さは Firewall のルールで決まるので、画面には具体的な時間を書かない。
+    expect(message).not.toMatch(/\d+\s*(?:秒|分)/);
+    expect(message).toContain('もう一度接続');
+    expect(message).not.toContain('429');
+  });
+
+  it('それ以外は状態コードを添えて失敗を伝える', () => {
+    expect(describeTokenExchangeFailure(403)).toBe(
+      'GitHub との接続に失敗しました（トークンの交換に失敗: 403）。もう一度接続してください。',
     );
   });
 });

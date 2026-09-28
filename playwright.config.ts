@@ -52,6 +52,9 @@ export default defineConfig({
     env: {
       VITE_GITHUB_APP_CLIENT_ID: 'Iv23-e2e-client',
       VITE_GITHUB_APP_SLUG: 'bulk-replace-e2e',
+      // 正規のオリジンを配信元に固定する。別のホスト名で開いたときの振る舞いは
+      // github.spec.ts が、同じビルドを別名のオリジンへ中継して確かめる。
+      VITE_GITHUB_APP_ORIGIN: ORIGIN,
     },
   },
 });

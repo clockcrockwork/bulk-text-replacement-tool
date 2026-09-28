@@ -1,4 +1,5 @@
 import { type ChangeEvent, type JSX, type RefObject, useEffect, useRef } from 'react';
+import { useBackdropClose } from '../hooks/useBackdropClose';
 import type { BackupSummary } from '../lib/backup';
 import { Icon } from './Icon';
 
@@ -40,6 +41,7 @@ export function BackupDialog({
   onClose,
 }: BackupDialogProps): JSX.Element {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const backdrop = useBackdropClose(dialogRef, () => onClose());
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -48,7 +50,7 @@ export function BackupDialog({
   }, []);
 
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: キーボードでの閉じる操作は <dialog> 標準の Escape（onCancel）が担う
+    // 背景のクリックで閉じる（useBackdropClose）。キーボードでは <dialog> 標準の Escape（onCancel）で閉じる
     <dialog
       ref={dialogRef}
       className="dialog"
@@ -57,9 +59,7 @@ export function BackupDialog({
         event.preventDefault();
         onClose();
       }}
-      onClick={(event) => {
-        if (event.target === dialogRef.current) onClose();
-      }}
+      {...backdrop}
     >
       <div className="dialog__inner">
         <h2 className="dialog__title">作業データ</h2>
@@ -67,6 +67,10 @@ export function BackupDialog({
           原稿・グループ・ルールをまとめた JSON です。このアプリはブラウザの中にしか保存しないので、
           サイトデータの削除や、Safari で数日開かなかったときに消えることがあります。
           大事な原稿は書き出して手元に置いてください。
+        </p>
+        <p className="dialog__lead">
+          GitHub から取り込んだ入力は、取り込み元（リポジトリ・ブランチ・パス・コミットの
+          SHA）も一緒に書き出します。 ファイルを人に渡すと、これらも伝わります。
         </p>
 
         <div className="dialog__row">

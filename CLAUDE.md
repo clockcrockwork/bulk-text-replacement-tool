@@ -21,6 +21,7 @@ npm run test -- <path> # 単一テストファイルの実行
 npm run coverage       # カバレッジ（閾値つき。ロジック層のみ計測）
 npm run test:e2e       # Playwright（初回は npx playwright install chromium webkit）
 npm run lint:text      # 不可視文字・双方向制御文字・CRLF の全ファイル走査（lint に含まれる）
+npm run lint:actions   # ワークフローの Action が SHA で固定されているか（lint に含まれる）
 ```
 
 E2E をブラウザ1つに絞るときは `npx playwright test --project=chromium`。
@@ -90,6 +91,22 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   反映すると、壊れたファイルを選んだだけで今のデータが消え、復旧手段そのものが
   新しいデータ消失の経路になる。検証は `storage.ts` の `normalizeWorkspace` を共有する
   （取り込み側で緩めると、保存データ経由では防いだ壊れ方をファイル経由で作れる）。
+- **取り込む大きさの上限**（`src/lib/inputLimits.ts`、根拠は `docs/resource-policy.md`）:
+  1ファイル 5MiB と1回の取り込みの合計 5MiB は **hard cap**。ローカルと GitHub で同じ定数を使い、
+  decode する前のバイト数で判定する（`planFileImport` は読む前に `File.size` で外す。GitHub は
+  一覧の `size`、`size === null` なら `getBlob` が読みながら数えて `reader.cancel()` で打ち切る）。
+  一括の合計は並行する取得で**共有する予算を届いた分ずつ差し引く**（`BlobReadLimit.take`）。読み終えて
+  から足すと、超えたと分かるまでに並行する取得がそれぞれ上限近くまで読めてしまう。blob の控えは
+  読み切れたものだけで、計画に無い分は取得の開始時に、やり直しても変わらない失敗なら今回の分も捨てる。
+  表記は `formatLimit` の MiB（境界が 1024 倍なので「5MB」と書かない）。
+  続行の確認で突破できる上限にしない（確認のあとで取り込むとタブが止まる・落ちる）。
+  上限超えはやり直しても変わらないので「再試行」を出さない。
+  これとは別に、反映後のワークスペースの保存する長さが `STORAGE_CONFIRM_CODE_UNITS` を超えそうなら
+  **取り込む前に確認**する（`confirmStorage`。action を先に reducer へ当てて `mayExceedStorage` で見る。
+  文字数とバイト数を足すような単位の混ぜ方をしない）。確認は目安で、最終判定は `saveWorkspace` の成否。
+  作業データ（バックアップ）の読み込みには 5MiB を掛けない（書き出した正当なデータを読み戻せなく
+  なる。別の上限を足すなら round-trip の条件と一緒に決める）。上限を上げるのは、表示・変換の軽量化と
+  iOS の実測のあと。
 - **保存の失敗**は握り潰さない。`saveWorkspace` は成否を返し、失敗は消えるトーストでは
   なく出したままの警告にする（見落としたときに失う設計にしない）。
 - **永続化**（`src/lib/storage.ts`）: キーは `bt-bulk-replace-v1`。読み込み時に各要素を検証・
@@ -112,8 +129,12 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   値が変わる状態になる）。列数が見出しと食い違う表は `findRaggedRows` で検出し、
   確定する前に見せる。
 - **出力ファイル名**（`src/lib/fileName.ts`）: タイトルは名前であってパスではないので
-  `/` は潰す。保証する拡張子は `ACCEPTED_EXTENSIONS`（取り込みと共有）で、それ以外は
-  消さずに `.txt` を足す（`title.html` → `title.html.txt`）。**変えるのは名前だけで、
+  `/` は潰す。制御文字（C0 / C1）・双方向制御文字・幅を持たない書式文字も `sanitizeName` が
+  `_` にする（改行が ZIP のエントリ名に入る・`U+202E` で拡張子を偽装できる・見た目が同じ別名が
+  できる）。ZWJ / ZWNJ は残す。重複の判定（`dedupeNames`）は大文字小文字と Unicode の正規化形を
+  揃えたキーで行う（名前そのものは正規化しない）。
+  保証する拡張子は `ACCEPTED_EXTENSIONS`（取り込みと共有）で、それ以外は消さずに `.txt` を足す
+  （`title.html` → `title.html.txt`）。**変えるのは名前だけで、
   本文・ルール・変換結果の文字列には触らない。**
 - **グループ名**は出力先の識別子。追加・取り込み・作業データの読み込みでは
   `uniqueName` で一意にし、変換時はタブ名も ZIP のディレクトリ名と同じ値を使う
@@ -141,10 +162,36 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   - アクセストークンは `useGitHubImport` の ref（メモリ）にだけ持つ。localStorage /
     sessionStorage / ワークスペース / 作業データに書かない。sessionStorage に置いてよいのは
     リダイレクトを跨ぐ state と PKCE verifier だけで、戻った時点で消す。
+  - bfcache に入るとき（`persisted` な pagehide）と戻ったときに、トークンを捨てて切断する
+    （`page/persisted`）。戻るとヒープごと復元され、メモリのトークンも生き返るため
+    （共用の端末で次の人が「戻る」で前の利用者の権限を使える）。交換の途中で離れた場合も、
+    あとから返った交換の結果で接続し直さない（`pageLeft`）。タブの切り替えでは切らない。
+  - トークンは**期限付きだけ**を使う。`expires_in` は正の整数で 1 日（`MAX_TOKEN_LIFETIME_SECONDS`）
+    以内、`token_type` は bearer であること。外れた応答は Function が 502 にし、ブラウザ
+    （`parseTokenResponse`）も受け付けない。GitHub App の期限切れ設定がオフにされると
+    `expires_in` が返らなくなり、「期限なし」として使い続けてしまうため。巨大な値もミリ秒に
+    直すと `Infinity` になり実質無期限になるので、上限で断る。
+  - 接続の途中（`connecting`）で閉じたら取り消す（`attempt` の世代を進める）。トークン交換の
+    fetch はコードが1回しか使えないので止めないが、閉じたあとに返った結果は捨てる。
+    **`attempt`（閉じる）と `pageLeft`（bfcache）は契機が別なので、交換の結果は両方を見て捨てる**
+    （統合するときに片方を落とすと、どちらかの修正が戻る）。
   - 認可は毎回アプリが state と PKCE（S256）を付けて始める。GitHub の「インストール時に
     OAuth を要求」には頼らない。callback はオリジン直下（`base: './'` なので下位パス不可）。
+  - 正規のオリジンは `VITE_GITHUB_APP_ORIGIN`（`readGitHubAppConfig`）。それ以外のオリジン
+    （Production の別名など）では接続を始めさせず、正規の URL へのリンクを出すだけにする。
+    **自動で移動させない**（verifier も作業データもオリジンごとの保存先にあり、移ると失われる）。
+  - 認可で GitHub の画面へ移る直前に、保留中の編集も含めて保存を書き出す
+    （`usePersistedWorkspace` の `flush` を `beforeNavigate` として渡す）。書けなければ移らない。
+    表示中の `saveFailed` は最後に実行済みの保存の結果でしかなく、デバウンス中の編集は含まない。
+    `flush` はそのレンダーの値を書く（effect で更新する ref は、次の操作より先に更新済みとは限らない）。
+    離れるとき（pagehide / visibilitychange）の保険が読む ref も、`useLayoutEffect` で更新する。
+  - Function の許可リスト（`GITHUB_OAUTH_ALLOWED_ORIGINS` は `/` 無し、`GITHUB_OAUTH_REDIRECT_URIS`
+    は `/` 付き）は `readExchangeConfig` で形まで確かめ、崩れていれば 503 にしてどの変数かを
+    ログに出す（取り違えると全員が黙って 403 / 400 になる）。失敗の画面には状態コードと理由コード
+    （`origin_not_allowed` など）を出す。切り分けの表は `docs/github-app-setup.md` §2。
   - バックエンドは原稿・ルール・リポジトリの内容を受け取らない。本文はブラウザから
-    api.github.com へ直接取りに行く。
+    api.github.com へ直接取りに行く。Function も交換に要る3項目以外のキーがあれば 400 にし、
+    本文は読みながら数えて 4KB を超えた時点で打ち切る（Content-Length が無くても読み切らない）。
   - api.github.com へのリクエストは **GitHub の CORS 方針**に従う。送る要求ヘッダは
     `githubRequestHeaders`（`Accept` と `Authorization`）だけで、`X-GitHub-Api-Version` など
     許可リスト（`GITHUB_CORS_ALLOWED_REQUEST_HEADERS`）に無いものは付けない（preflight で止まる）。
@@ -154,6 +201,15 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
     サーバー）で確かめる。
   - ブランチを選んだ時点でコミットを固定し、tree も blob もそこから読む。遅れて返った
     古い応答は reducer が捨てる。新しいコミットへは「最新に更新」でだけ移る。
+  - 新しい取得は前の取得を中断する（`run`）。中断したあとに**戻る先の一覧が無い**経路
+    （一覧を待たずに「最新に更新」して先頭が同じだった／「ブランチを変更」→「変えずに戻る」）では、
+    今の場所を取り直す。中断だけして戻ると、読み込み中でもエラーでもない空の画面に残る。
+  - 失敗のあとの次の手は `recoveryFor`（取得の段階 × 失敗の種類）で決める。**やり直しても
+    変わらない失敗に「再試行」を出さない**。既定ブランチが改名・削除されて ref が 404 なら
+    ブランチの一覧へ戻し、ブランチ一覧・tree・blob の 404 と空のリポジトリはリポジトリの一覧を
+    取り直して選び直してもらう（手元の一覧は古い）。
+  - 保存に失敗している間は接続を始めさせない代わりに、ダイアログの中から作業データを
+    書き出せるようにする（書き出しは既存の `exportBackup` と同じ処理）。
   - tree の一覧は項目にパスを焼き込んでいる。中身が同じディレクトリは別の場所でも同じ
     tree SHA になるので、一覧のキャッシュや照合は **SHA とパスの組**で行う（SHA だけだと
     別のフォルダのパスで取り込み、出自と同一性が別ファイルに結び付く）。
@@ -161,7 +217,40 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
     返さずに失敗させる（「無い」と「上限で見えていない」を取り違えさせない）。
   - 取り込み元の同一性は `repositoryId + ref + path`（`sourceIdentity`）。タイトルでは判定しない。
     同じ取り込み元が複数あるときに更新先を推測しない。
-  - 対応拡張子は `ACCEPTED_EXTENSIONS`、文字コードは `decodeText` をローカルと共有する。
+  - 対応拡張子は `ACCEPTED_EXTENSIONS`、文字コードは `decodeText`、大きさの上限は
+    `MAX_INPUT_BYTES` / `MAX_IMPORT_TOTAL_BYTES` をローカルと共有する（GitHub の blob API の
+    100MB を上限にしない）。
+  - GitHub から来た名前（ファイル名・パス・ブランチ名）と入力のタイトルは、画面に出すときに
+    `revealUnsafeChars`（`src/lib/revealText.ts`）を通す。双方向制御文字などを `⟨U+202E⟩` の
+    形で見せ、一覧の偽装を防ぐ（`<bdi>` では中の RLO が効いたまま）。**変えるのは表示だけ**で、
+    保存・比較・出力名には元の文字列を使う。文字の集合は `sanitizeName` と共有している。
+    編集欄（`<input>`）は値を変えられないので、入力カードに見える形の名前を別に添える。
+  - トークン交換の 429 は Vercel Firewall のレート制限。`describeTokenExchangeFailure` で
+    「待ってから接続し直す」と伝える。
+  - **通信が止まったとき**（issue #20。詳細は `docs/github-import-v2.md` の Network stalls and
+    timeouts）: 期限は操作ではなく**1リクエスト**に掛ける（一覧 30 秒・再帰 tree 60 秒・blob は
+    受信が 30 秒止まったら・交換 25 秒）。期限は本文を読み終えるまで効かせる（ヘッダで解除しない）。エラー応答の本文が止まったら、
+    状態コードとヘッダだけで決まる失敗（401・rate limit のヘッダ付き 403 など）はそのまま分類し、
+    本文が要る 403（secondary rate limit / SAML の見分け）は時間切れにする
+    （`errorClassificationNeedsBody`。読めないまま一般の 403 と推測しない）。
+    **時間切れで `run` の中断口を abort しない**（`run` は自分の中断を黙って捨てるので、失敗が
+    出ないまま待ちの画面に残る）。時間切れは `src/github/deadline.ts` の子の中断口で表す。
+    交換の時間切れは失敗の種類であって `superseded()` ではない。**同じ code で再試行させず**
+    「もう一度接続」（認可から）だけを出す。8 秒進みが無ければ「時間がかかっています。閉じると
+    中断できます」を添える（数え直すのは画面で見える進みだけ）。`document.hidden` の間は数えない。
+    Function 側の上限（`UPSTREAM_TIMEOUT_MS` 10 秒）を変えたら、ブラウザ側の 25 秒も見直す。
+- **配信時のヘッダ**は `vercel.json` の `headers`（`frame-ancestors 'none'`・`X-Frame-Options`・
+  `nosniff`・`Referrer-Policy: strict-origin`・`Cross-Origin-Opener-Policy: same-origin`・
+  `Permissions-Policy`）。COOP の下でも OAuth の往復で sessionStorage が残ることは E2E が
+  見るが、実機の Safari は手で確かめる（docs §5）。`vite preview` も同じ値を返すので、E2E は
+  このヘッダの下で走る（共有するのは値だけで、`/api/` を除くパス条件は Preview で確かめる）。
+  `Referrer-Policy` は `strict-origin` から動かさない。既定の `strict-origin-when-cross-origin`
+  は同一オリジンの要求に URL 全体を送るので、認可から戻った直後の `/assets/*.js` の Referer に
+  code / state が載る。`no-referrer` は Origin ヘッダにも効き、`null` になる経路がある
+  （Origin を照合するトークン交換が 403 で止まる）。`strict-origin` が防ぐのは code / state が
+  その後の要求へ伝わることまでで、戻りの `GET /?code=…` 自体は配信基盤に届く（そう書き広げない）。
+  トークン交換の回数制限は Vercel Firewall（`/api/` の前方一致）で行い、Function にメモリ上の
+  カウンタを置かない（`docs/github-app-setup.md`）。
 - **配信物とユーザーのテキストは別のレイヤー**として扱う。アプリの HTML / CSS / JS は
   不要物を落として軽くしてよい（`index.html` に開発者向けコメントを残さない、
   sourcemap を配らない、JS/CSS の minify は Vite 既定に任せる）。一方、
@@ -187,9 +276,9 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
 - **正規表現は常に `u` 付き**（`src/lib/regex.ts`）。`u` 無しへ退避させない。
   退避すると同じ `.` がルールによって1文字にも2文字にもなり、仕様が1つに定まらない。
   `u` で不正な書き方はエラーとして見せる。
-- **文字数は表示しない**（`src/lib/format.ts` のコメント参照）。入力に上限が無く、
-  数え方（コードポイント／書記素）で値が変わるだけで判断材料にならないため外した。
-  足し直すなら、まず「何のために数えるか」を決めること。
+- **文字数は表示しない**（`src/lib/format.ts` のコメント参照）。取り込む大きさの上限は
+  decode 前のバイト数で決めており、数え方（コードポイント／書記素）で値が変わる文字数は
+  判断材料にならないため外した。足し直すなら、まず「何のために数えるか」を決めること。
 
 ## テスト
 
@@ -246,3 +335,18 @@ Vercel は `main`、ロリポップは `release/lolipop-v1` の build artifact �
 `.github/workflows/ci.yml` の2ジョブ（`Lint / Types / Unit tests / Build` と `E2E (Playwright)`）。
 `push` は `main` のみ、他は `pull_request` で走る（同じコミットに同名チェックが2系統
 報告されると required status checks が不安定になるため）。失敗時だけレポートを回収する。
+
+Action は**コミット SHA（40 桁）で固定**し、後ろに `# v7.0.1` のように版を書く。
+検査は `scripts/checkActionsPinned.mjs`（`npm run lint` に含まれる）で、判定は
+`scripts/lib/actionsPin.js`（テストあり）。ワークフローと `.github/actions` 以下の
+composite action を YAML として読み、Action を参照する位置（`jobs.<id>.steps[*].uses`・
+`jobs.<id>.uses`・`runs.steps[*].uses`）だけを見る（行の正規表現に戻さない。引用したキーを
+すり抜けさせ、`run: |` の本文を Action と取り違える。位置で絞らないと `with.uses` などの
+入力まで落とす）。別名で差したジョブ・ステップは解決して見て、1 行に収まらない書き方・
+値やキーの別名・マージキー（`<<`）・読めない YAML は通さずに落とす。
+タグは付け替えられるので、Action 側が乗っ取られると `@v7` のまま中身が変わる。
+更新は Dependabot（`github-actions`）が SHA と注記を一緒に書き換える PR で受け取る。
+ただし `directory: /` が追従するのは `.github/workflows` だけなので、composite action を
+足したら `dependabot.yml` にそのディレクトリも足す。Action を足すときは
+`git ls-remote --tags https://github.com/<owner>/<repo>.git` でタグの指す SHA を確かめる
+（注釈付きタグなら `^{}` の行がコミット）。

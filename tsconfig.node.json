@@ -8,5 +8,5 @@
     "allowJs": true,
     "checkJs": true
   },
-  "include": ["e2e", "testing", "api", "vite.config.ts", "playwright.config.ts"]
+  "include": ["e2e", "testing", "api", "scripts/lib", "vite.config.ts", "playwright.config.ts"]
 }

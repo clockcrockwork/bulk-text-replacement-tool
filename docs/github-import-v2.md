@@ -1,6 +1,6 @@
 # GitHub import V2 specification
 
-Status: Slice 1 production-smoke complete / Slice 2 implementation-ready  
+Status: proposed / implementation-ready  
 Applies to: `main` only  
 Tracking issue: #12
 
@@ -134,6 +134,8 @@ Do not store it in:
 
 Reload, tab close, or expiry ends the GitHub connection. Reconnect instead of implementing refresh-token persistence in V2.
 
+The in-app disconnect button is labelled **このタブの接続を解除**. It only discards the in-memory token and the cached listings of this tab. It does not revoke the user's authorization or uninstall the GitHub App on GitHub; the dialog says that access granted to the App is changed from the GitHub settings, so a local disconnect is not mistaken for a revocation.
+
 ## 4. Repository and branch selection
 
 One picker session works with one repository and one branch.
@@ -152,6 +154,10 @@ If the branch changes while the picker is open, do not silently move to the new 
 
 Provide a **最新に更新** action that explicitly resolves and pins a new snapshot.
 
+Selection belongs to the pinned snapshot. When a new snapshot is pinned (最新に更新 finds a new commit, or a branch is chosen), the selection is cleared and the status message says so. If 最新に更新 finds the same commit, nothing changes and the selection is kept.
+
+Committing a single-file import (clicking a file name and adding/updating it) keeps the checkbox selection, so the user can check one file while building a multi-file selection. Committing a multi-file import clears the selection it used.
+
 ## 5. Tree picker
 
 Use Git Trees API as the tree source.
@@ -166,49 +172,53 @@ Normal browsing:
 - when that directory is later expanded, children inherit the ancestor selection
 - deselecting a descendant makes the parent indeterminate
 - search/filter changes visibility only and must not change selection
+- filter matching compares Unicode NFC forms (file names committed on macOS may be NFD); displayed names and paths are never rewritten
+- while a filter is active, the current-folder checkbox is labelled 「このフォルダ全体を選択（絞り込みで隠れている項目も含む）」. Checking it selects the whole folder, including entries the filter hides; without that wording it reads as "select what is shown"
+- selection rules are keyed by repository path in a `Map`, never as plain-object keys, so names such as `__proto__` behave like any other path
+- while an enumeration or fetch is running, checkboxes are disabled; a result is accepted only if the selection is still the one it was computed from
 
-Show:
+Before enumeration, show:
 
-- selected supported-file count
-- known selected byte total
+- explicitly/known selected supported-file count
+- selected directory count that still requires enumeration
+- known selected byte total from loaded file entries
 - source path
 - branch and pinned commit identifier
+
+All summary counts are based on deduplicated repository paths; nested visible selections must not double-count a file already selected through an ancestor directory. After enumeration, the plan step replaces the provisional summary with the exact supported-file list/count and the known-size byte total plus unknown-size count before any blob fetch.
 
 Accessibility requirements:
 
 - keyboard operable
-- screen-reader state for checkbox / mixed state
+- screen-reader state for checkbox / mixed state (native `indeterminate`, not `aria-checked` on a native checkbox)
+- visible checkbox text is inside its `<label>`, so tapping the text toggles it and the accessible name matches the visible text
 - usable on mobile and Safari
 
-### Slice 2 selection model
+### Selection rule contract
 
 Selection is stored independently from which directories have already been expanded.
 
-Use **path rules** with two states:
+Use path rules with two states:
 
 - `include`
 - `exclude`
 
-The default for the repository is `exclude`. For any path, the longest matching ancestor/exact rule wins.
-
-Ancestor matching is **path-segment aware**, never raw string-prefix matching. For example, rule `docs → include` applies to `docs/ch1.md` but not to `docs2/ch1.md`. Root may be represented as an explicit empty-path rule if the whole repository is selectable.
+The repository default is `exclude`. For any path, the longest matching ancestor or exact rule wins. Ancestor matching is path-segment aware, never raw string-prefix matching: `docs → include` applies to `docs/ch1.md` but not to `docs2/ch1.md`. Root may be represented as an explicit empty-path rule.
 
 Examples:
 
 - selecting unopened directory `docs` adds `docs → include`
-- later expanding `docs` makes its supported children selected without another network-dependent state change
+- later expanding `docs` makes supported children selected without another network-dependent selection change
 - deselecting `docs/draft.md` adds `docs/draft.md → exclude`, so `docs` becomes mixed
 - selecting a child below an excluded directory adds a more-specific `include` rule
 
-When a file or directory is explicitly selected/deselected:
+When a file or directory is explicitly selected or deselected:
 
 1. remove every more-specific descendant rule under that path
 2. compare the requested state with the state inherited from the nearest remaining ancestor rule
 3. keep an exact rule only when it differs from the inherited state
 
-This keeps the rule set canonical. In particular, clicking a **mixed** directory to select it means “select this whole directory”: descendant exclusions are cleared and the directory becomes checked. Unchecking a checked/mixed directory similarly clears descendant overrides and excludes the whole directory.
-
-The pure selection helpers live outside the React component and are unit-tested.
+This keeps the rule set canonical. Clicking a mixed directory to select it means “select this whole directory”: descendant exclusions are cleared and the directory becomes checked. Unchecking a checked or mixed directory similarly clears descendant overrides and excludes the whole directory.
 
 Directory checkbox state:
 
@@ -216,43 +226,7 @@ Directory checkbox state:
 - **unchecked**: the path is effectively excluded and no descendant include makes it partial
 - **mixed**: a descendant rule differs from the directory's effective state
 
-A directory does not need to be expanded to be selected.
-
-Selection lifecycle:
-
-- changing repository clears selection, prepared candidates, and conflict decisions
-- changing branch clears selection, prepared candidates, and conflict decisions
-- **最新に更新** on the same repository/ref may preserve path rules, but it must discard every prepared/enumerated candidate and revalidate the rules against the new pinned commit before import
-- after a successful batch commit, clear selection/preparation while keeping the GitHub connection, repository/branch, and explorer location where still valid
-
-Use a native checkbox where possible. Directory navigation and directory selection are separate controls: the checkbox changes selection; the directory name/button opens it. Do not make mobile users depend on a small disclosure arrow or hover target.
-
-The explorer header also exposes a checkbox for **the current directory itself**. This is how the repository root can be selected without inventing a fake parent row. Its checked/mixed state follows the same selection rules as every other directory.
-
-### Search / filter
-
-Slice 2 search is a **filter of the currently loaded directory**, not a repository-wide code search and not a reason to recursively enumerate the repository.
-
-- match the visible entry name/path case-insensitively
-- filtering changes visibility only
-- selection rules are never deleted or rewritten by filtering
-- clearing the filter restores the same checkbox states
-
-Repository-wide search can be designed separately if real usage shows it is needed.
-
-### Selection summary before enumeration
-
-An unopened selected directory has an unknown number of supported descendants until enumeration. Do not fake an exact file count.
-
-Before enumeration, show:
-
-- explicitly/known selected file count
-- selected directory count that still requires enumeration
-- known selected bytes from loaded file entries
-
-All summary counts are based on deduplicated repository paths; nested visible selections must not double-count a file already selected through an ancestor directory.
-
-After enumeration and before blob download, replace that with the exact supported-file count and exact total bytes from tree entries.
+A directory does not need to be expanded to be selected. The current-directory checkbox uses the same rule semantics, including at repository root.
 
 ### Supported entries
 
@@ -293,11 +267,7 @@ For each effective include root:
 4. if `truncated === true`, discard that partial recursive result and traverse the directory non-recursively until complete
 5. deduplicate final files by repository path before blob fetch
 
-Never merge a truncated recursive result with fallback results and call it complete.
-
-The fallback traversal may use bounded concurrency, but it shares the same global GitHub-request concurrency budget as blob fetching. Start at **4 or fewer concurrent requests**.
-
-If a selected directory contains a more-specific exclusion, the exclusion is applied after enumeration. A more-specific include below an excluded ancestor is also honored by the longest-path-rule semantics.
+Never merge a truncated recursive result with fallback results and call it complete. The fallback traversal may use bounded concurrency, but it shares the same global GitHub-request concurrency budget as blob fetching and starts at 4 or fewer concurrent requests. More-specific exclusions and re-inclusions are applied after enumeration according to the longest-path-rule semantics.
 
 Paginated listings (installations, repositories, branches) follow `Link: rel="next"` up to a safety cap. If the cap is reached while a next page still exists, the listing fails explicitly instead of returning a partial list, so "does not exist" is never confused with "not loaded".
 
@@ -305,7 +275,23 @@ Git trees are content-addressed: identical directories at different paths share 
 
 Blob fetch concurrency starts at 4 or fewer concurrent requests.
 
+Blobs fetched for a multi-file import are kept in memory, keyed by repository id and blob SHA, until another snapshot is pinned, the tab disconnects, or a batch is committed. A blob SHA names its content, so the cache cannot serve stale text. Retrying after a network failure, or going back to uncheck one file and fetching again, then only requests the blobs that are still missing.
+
 Respect rate-limit signals the browser can actually read: `x-ratelimit-remaining` / `x-ratelimit-reset` (exposed through CORS) and the error `message` in the response body. `retry-after` is **not** in GitHub's `Access-Control-Expose-Headers`, so browser code cannot read it; when a secondary rate limit is detected from the status and message, wait at least one minute as GitHub's rate-limit documentation advises. Do not retry continuously.
+
+The error message shows when a rate limit is expected to lift (`x-ratelimit-reset`, or at least one minute for a secondary limit). Until that time, **while the same page stays loaded, no request is sent to GitHub from any path**:
+
+- The deadline is kept in the picker state, separate from the error message. Dismissing the error, changing the selection, closing and reopening the dialog, or disconnecting in the tab does not clear it.
+- The guarantee ends with the document. Reloading the page, or reconnecting through the OAuth redirect (which reloads the app), starts without a deadline. The first request after that learns the limit again from GitHub's response and restores the wait, so at most one request leaks per page load. The deadline is not persisted: `sessionStorage` holds only the OAuth `state` and PKCE verifier across the redirect, and one extra request does not justify another stored value.
+- Every GitHub request goes through one entry point in the hook. Before the deadline, that entry point does not send the request; it shows the rate-limit message again instead.
+- The buttons that would send requests are disabled until the deadline: **再試行**, **選択したファイルを確認**, and the plan step's fetch button. When the error message is gone, a status line still says why they are disabled.
+
+A multi-file retry re-issues many requests, so the wait is enforced by behaviour, not only described.
+
+`x-ratelimit-reset` is a time on GitHub's clock. It is turned into a wait on this device's clock and kept between one minute and one hour (the primary rate-limit window):
+
+- If the device clock is behind, the reset looks far in the future. Without the upper bound the wait would grow, and beyond about 24.8 days the timer that re-enables the buttons would stop working.
+- If the device clock is ahead, the reset may look already past. The lower bound keeps the minimum wait.
 
 ### REST API version and CORS
 
@@ -333,13 +319,47 @@ GitHub import is a transaction from the workspace's point of view.
 Before changing workspace state:
 
 1. enumerate every selected supported path from the pinned snapshot
-2. fetch all required blobs
-3. decode all blobs with the existing `decodeText`
-4. validate all candidates
-5. detect duplicate/source conflicts
-6. show candidate summary
-7. require final confirmation when a decision is needed
-8. dispatch the workspace mutation only after all required candidates are ready
+2. show the plan: the exact file list and file count, the byte total of entries whose size the tree reports, the number of entries whose size is unknown, and any large-selection warnings (§10); no blob has been fetched yet
+3. fetch all required blobs only after the user confirms the plan
+4. decode all blobs with the existing `decodeText`
+5. validate all candidates
+6. detect duplicate/source conflicts
+7. show candidate summary
+8. require final confirmation when a decision is needed
+9. dispatch the workspace mutation only after all required candidates are ready
+
+The resolved multi-file plan is applied with **one workspace reducer action**, including untouched-sample cleanup when required. Preparation, incomplete conflict decisions, cancellation, and going back do not mutate the workspace.
+
+The plan step is always shown, even for a small selection. An unopened directory's contents are unknown until enumeration, so this is the first point where the real count and size can be shown, and fetching costs rate limit.
+
+What the plan step guarantees: **no file content (blob) is fetched in bulk before the user has seen the exact target count**. Enumeration itself reads tree metadata from GitHub and does use API requests before the plan is shown. That cannot be avoided, because the count and paths are only known after enumeration. The number of requests cannot be predicted in advance either: a successful recursive tree takes one request per selected root, and a truncated one falls back to one or two requests per directory. The status message while enumerating says that file contents have not been fetched yet.
+
+Neither list renders more than 100 rows at a time. There is no hard cap on the selection, so without this the screen that shows the warnings could itself become too large to render.
+
+- The plan says that only supported files (`.md` / `.txt` / `.tex`) in the selected range are imported, and counts the entries that were selected but cannot be imported, by kind (unsupported format, over the 5 MB input limit, symlink, submodule). A folder checked without being opened hides those entries, and "N files found" would otherwise read as "the whole folder was checked", so a chapter in an unsupported format could go missing from a successful import. Git LFS pointers are only known after the blob is read and still fail the batch atomically.
+- The plan list is paged in steps of 100 as well. Nothing is decided there, but it is the last point to audit the targets before blob requests are spent, so paths beyond the first 100 must be viewable too.
+- The confirmation list is paged in steps of 100, with previous/next controls. Same-source candidates must be decided row by row, so every row has to stay reachable; a list that showed only the first 100 would leave the 101st undecidable. It shows candidates that need a decision first, then candidates with a warning (same basename, Shift_JIS guess), then the rest. The order does not change as choices are made, so the row being edited never moves away.
+- Moving to another page scrolls the list back to its top (the pager sits below the list, so it is usually pressed after scrolling to the end) and moves focus to the range text (for example 「101〜120件目 / 全120件」), which is also a polite live region. The pressed button may become disabled at the first or last page, so focus must not stay on it.
+- A bulk action (§9) removes its own button once nothing is left for it to decide, so focus moves to the step heading.
+- The update-target `<select>` of one candidate lists at most 50 same-source inputs at a time (plus the chosen one when it lies outside that range). Same-source inputs have no upper bound (**add as another input** can be repeated), so without this a single row could hold thousands of options. When there are more, the row has its own previous/next controls, so every target can be chosen by its list number and title inside the modal (the input list behind the modal cannot be consulted). The row also accepts an input's list number directly, as a shortcut.
+
+The batch confirmation does not preview every file. A row guessed as Shift_JIS has a 「本文を確認」 toggle that shows the already-fetched text in place (no request; only opened rows render a text area). Pointing the user to **選択へ戻る** instead would make them discard the fetched batch just to check it.
+
+On the confirmation step the back button reads 「選択へ戻る（取得した内容を破棄）」, because it is the one action there that throws the fetched batch and the choices away.
+
+Next to the commit button, the confirmation step says what committing will do: 「追加 X件 · 本文の置き換え Y件」, and how many of the replacements have an unchanged GitHub file (§9). While candidates are undecided, the same place says how many remain and offers 「次の未決定へ」, which pages to the first undecided row and focuses its `<select>`. The commit button is described by this text (`aria-describedby`).
+
+**選択へ戻る** on the plan step also cancels a fetch that is in progress. The remaining blob requests are aborted and the busy state is cleared.
+
+Closing the dialog (the close button, Escape, or a click on the backdrop) does **not** discard a multi-file import in progress. The plan, the fetched and validated candidates, and the add/update choices made so far stay in memory, and reopening the dialog returns to the same step. Fetching again costs rate limit and choosing again costs manual work, and Escape or a backdrop click is easy to trigger by accident. A fetch that was running when the dialog closed is aborted; reopening shows the plan step so it can be started again without re-enumerating. Only **選択へ戻る**, changing the selection, pinning another snapshot, disconnecting, or committing the import discards the batch. Disconnecting while a batch is in progress asks for confirmation first (`ConfirmDialog`), because keeping the batch on close makes the disconnect button the one remaining easy way to lose it.
+
+A batch in progress lives in memory only (private repository contents are not persisted). The plan and confirmation steps say that a reload or closing the tab loses it, and while a plan or fetched candidates exist the page registers a `beforeunload` guard (browsers that honour it ask before leaving; mobile browsers may not, so the inline note is the guarantee).
+
+While blobs are being fetched, the status shows how many have completed (「選択したファイルを取得しています（37 / 500）」). A static message during a long fetch reads as a hang, and a user who closes or retries at that point throws the work away.
+
+If saving to the browser is already failing, the plan step's fetch button and the confirmation step's commit button are disabled, with a notice that offers 「作業データを書き出す」 inside the dialog. The app-level warning sits behind the modal and cannot be used from there, and an import applied while saving fails is lost on reload together with the earlier unsaved edits.
+
+The backdrop closes a dialog only when the pointer was also pressed on the backdrop. `click` fires on the common ancestor of the press and release targets, so selecting text inside the dialog and releasing outside would otherwise count as a backdrop click (`useBackdropClose`, shared by every dialog in the app). Choices are rechecked against the current workspace when shown: an update choice whose target input no longer has the same source is dropped and must be made again (never guessed).
 
 Any fetch/decode/validation failure leaves the workspace unchanged.
 
@@ -347,46 +367,18 @@ Show failed paths and allow the user to retry or go back.
 
 Use bounded concurrency and `AbortController` so cancellation stops pending work.
 
-### Batch preparation and commit
+### Untouched sample workspace
 
-Slice 2 uses two phases:
+If the workspace is still the untouched first-run sample (`isSample === true`), a GitHub import clears the sample inputs, groups, and rules in the same mutation that applies the imported inputs. An edited sample is the user's work and is never cleared automatically.
 
-**Prepare (no workspace mutation):**
+Both import paths offer **元に戻す** in the toast:
 
-1. enumerate selection rules into an exact, deduplicated file list
-2. calculate exact file count / total tree bytes
-3. fetch/decode candidates with bounded concurrency
-4. collect candidate-specific warnings/failures
-5. calculate source-identity conflicts and basename collisions
-6. build an explicit import plan
+- **Single-file import**: the same as the V1 local import. Undo restores the sample snapshot, which also drops the one imported file; that file is cheap to import again.
+- **Multi-file import**: undo restores the whole pre-import workspace (inputs, groups, rules, and the sample if it was cleared) **and reopens the batch confirmation with the same candidates and choices**. The candidates were fetched and validated over the network, so they are kept for this instead of being discarded; undo never costs a refetch. This makes the common mistakes one step to reverse: the wrong folder, pressing 「すべて別の入力として追加」 by mistake, or replacing text that had local edits. The batch is restored only while the same snapshot is pinned and no other batch or fetch is in progress; otherwise only the workspace is restored.
 
-**Commit (one workspace mutation):**
+An earlier revision of this spec gave the multi-file path no undo, because undo would have discarded every imported file. Keeping the candidates removes that cost.
 
-- apply the entire resolved plan with one workspace reducer action
-- the plan contains every add and every update target
-- do not dispatch a sequence of individual `inputs/update` / `inputs/add` actions as the batch commit
-- if the untouched first-run sample must be cleared, clear its sample inputs/rules/groups **inside that same reducer action**, then apply the GitHub plan; do not dispatch `sample/clear` first
-- App may capture the pre-commit workspace for the existing undo toast, but the visible workspace transition is still one reducer dispatch
-- if preparation fails, conflict choices are incomplete, or the user goes back, dispatch nothing to the workspace
-
-For same-source conflicts in a batch:
-
-- one existing match: require **update existing** or **add another**
-- multiple existing matches: choosing update also requires an explicit target
-- there is one global **cancel/back** action; do not silently skip a selected conflicting file
-- the final import button stays disabled while any conflict is unresolved
-
-Same-basename/different-source remains a warning only.
-
-A single-file import may continue using the same plan machinery with one candidate so Slice 1 and Slice 2 do not diverge semantically.
-
-### Failure handling during preparation
-
-- 401 / expired token: abort the whole preparation and reconnect
-- rate limit: abort the whole preparation and show the classified rate-limit state
-- file-specific fetch/decode/validation failures: workspace remains unchanged; show the affected repository paths
-- cancel: abort outstanding work and leave workspace unchanged
-- retry starts a new preparation against the **same pinned commit** unless the user explicitly chooses **最新に更新**
+The toast still says that the sample was cleared, so the removal is never silent.
 
 ## 8. Input provenance
 
@@ -437,6 +429,25 @@ Offer:
 
 If multiple existing inputs share the same source identity, never guess which one to update. Ask the user to select the target, add another, or cancel.
 
+In a multi-file import, **cancel** means going back to the selection (**選択へ戻る**) and changing which files are checked. Choosing the files belongs to the tree picker. The confirmation step only decides add vs. update for candidates whose source already exists, and skipping a single candidate there is out of scope for Slice 2. It would need a second exclusion state beside the selection and would complicate the atomic batch.
+
+Because a batch can contain many same-source candidates, the confirmation step offers two bulk actions that never guess:
+
+- update every undecided candidate that has exactly one same-source input
+- add every undecided candidate as a new input
+
+Candidates with two or more same-source inputs still need an explicit choice, unless the user adds them all. Bulk actions never overwrite a choice that has already been made.
+
+An update replaces the input's whole text. When the candidate's blob SHA equals the blob SHA stored in the target input's provenance, the GitHub file has not changed since that input was imported, so updating it gains nothing and only loses local edits. Such candidates:
+
+- say so on the row (and in the `<option>` of that target), with a warning once the unchanged target is chosen
+- are left out of 「更新先が1件の…をすべて更新」; they can still be updated one by one
+- are counted separately in the outcome text next to the commit button
+
+Skipping a single candidate is still out of scope; the user adds it, updates it knowingly, or goes back and unchecks it.
+
+A multi-file import adds and updates only; it is not a sync. Inputs whose GitHub file was deleted or moved since they were imported are left untouched. The confirmation step says so, because re-importing a folder easily reads as "update to what GitHub has now". Detecting such stale inputs is a possible later addition; they are never removed automatically.
+
 ### Same basename but different GitHub source
 
 Treat them as distinct inputs.
@@ -444,6 +455,8 @@ Treat them as distinct inputs.
 Do not show an overwrite prompt only because basenames match.
 
 Candidate summary should warn about filename collisions and show full source paths.
+
+The collision warning uses the same rules as the output file names (`outputFileName` and the case-insensitive key of `dedupeNames`), not raw title equality. `A.md` / `a.md`, or `a?.md` / `a*.md`, become the same output name and one of them gets ` (2)`, so they are warned about as well. Inputs of an untouched sample are left out of the comparison, because the same import clears them (§7 **Untouched sample workspace**).
 
 Final output filename collision continues to use the existing output filename dedupe logic.
 
@@ -457,13 +470,24 @@ GitHub provenance is.
 
 Existing V1 workspace data has no `source`; normalize it as `source: undefined`.
 
-The current workspace still stores full imported text in localStorage, so browser storage capacity is likely to become a practical constraint before GitHub's 100 MB blob limit.
+The current workspace still stores full imported text in localStorage, so browser storage capacity is a practical constraint long before GitHub's 100 MB blob limit.
+
+Input size limits are an app-wide resource policy shared with local files (issue #19, `docs/resource-policy.md`, values in `src/lib/inputLimits.ts`). GitHub's 100 MB per-blob API limit is not used as the app's limit.
 
 V2 behavior:
 
 - show selected file count and known bytes before fetch
-- reject blobs over 100 MB before fetch
-- warn for unusually large selections that browser persistence may fail
+- hard cap of 5 MiB per file (bytes before decoding)
+  - entries whose tree `size` is over the cap are listed as not importable and are never fetched
+  - entries with an unknown size (`size === null`) are read as a stream and counted; the read is cancelled as soon as the cap is exceeded. A `Content-Length` over the cap rejects before reading, but a smaller one is not trusted
+  - an over-cap file is a non-retryable failure (it fails the whole batch; inputs stay unchanged)
+- hard cap of 5 MiB for one import operation (single file or batch)
+  - the plan step (§7) blocks fetching when the known total is over the cap
+  - while fetching, all concurrent blob streams share one byte budget that is consumed chunk by chunk (cached blobs count too); once it is exceeded, every stream is cancelled, so the bytes received by the whole operation stay within the budget plus one in-flight chunk per stream
+  - the blob cache keeps only fully read blobs; entries outside the current plan are dropped when a fetch starts, and entries added by a failed attempt are dropped when the failure is not retryable (over the cap, LFS, …)
+- warn in the plan step when the selection has more than 200 files (each blob is one more request against the usual 5,000 requests/hour; the warning counts only these blob requests, because the tree requests of the enumeration have already been spent when the plan is shown)
+- warn whenever some entries have an unknown size. The shown total is then only a lower bound, and the batch may stop during fetching, so this case is never shown as "no warning"
+- before applying (add, update, or batch commit), estimate the serialized length of the resulting workspace; if it may exceed browser storage, ask for confirmation. This is a pre-warning only; `saveWorkspace()` success remains the final signal
 - keep the existing persistent save-failure warning and backup path
 - do not make an IndexedDB migration a prerequisite for GitHub import
 
@@ -530,7 +554,8 @@ Handle at least:
 - rate limit
 - network error
 - unsupported file
-- file over 100 MB
+- file over the input limit (5 MiB), including one found only while reading an unknown-size blob
+- batch total over the input limit (5 MiB)
 - Git LFS pointer detected
 - decode failure
 - Shift_JIS fallback
@@ -538,6 +563,53 @@ Handle at least:
 - same-source ambiguity
 
 Rate-limit errors must be distinguishable from generic network failures.
+
+### Network stalls and timeouts
+
+Decided in issue #20. No request may leave the user looking at a busy state indefinitely, but a slow network must not cut off normal use. The token exchange and the GitHub REST API are handled **differently on purpose**: the OAuth code is one-time, while every REST call is an idempotent GET against a pinned commit.
+
+The values are conservative initial policy values (`src/lib/githubApi.ts`, `src/lib/githubAuth.ts`). They are not derived from averages of normal requests. Real-device and Vercel measurements are used afterwards to check that normal use is not being cut off, not as a gate before implementing.
+
+| Request | What is measured | Abort after |
+| --- | --- | --- |
+| Token exchange (`POST /api/github/token`) | whole request, including the response body | 25 s |
+| Installations, repositories, and branches (per page), ref, commit, non-recursive tree | whole request, including the response body | 30 s |
+| Recursive tree | whole request, including the response body | 60 s |
+| Blob | time without receiving any byte (stall), including the wait for headers | 30 s without data |
+
+- Every limit applies to **one request**, not to one user action. Pagination is limited per page, and multi-file import per blob, so long lists and large selections are not cut off.
+- The limit lasts until the response body has been read, not only until the headers arrive. A body that stalls after the headers must hit the same limit. The Function's upstream limit (10 s, `UPSTREAM_TIMEOUT_MS`) already covers the body, because a fetch signal also aborts body reads.
+- Error responses (4xx / 5xx) are read under the same limit, so a stalled error body never hangs either. What happens next depends on whether the body is needed to classify the error (`errorClassificationNeedsBody`):
+  - The status and readable headers alone decide 401, 404, 409, 429, 5xx, and a 403 with `x-ratelimit-remaining: 0`. These keep their classification even if the body stalls. A 401 still disconnects (it is not turned into a retryable timeout), and a primary rate limit still blocks requests until the reset time.
+  - Any other 403 needs the body `message` to tell a secondary rate limit, SAML SSO, and a plain 403 apart. If that body stalls, the response is not classified and becomes a `timeout` (or `network` / `offline` if the body read fails for another reason). Guessing "plain 403" would hide a rate limit or an SSO requirement.
+- The blob limit is a transport policy: it looks at stalls, not total time, because the normal duration depends on the file size. How large a file the app accepts is a separate resource policy (issue #19). The stall timer shares the reader that already counts received bytes against those limits (`GitHubBlobTooLargeError`, no retry). A response without a body stream falls back to `arrayBuffer()`, where the stall limit acts as a total limit.
+- **Slow notice**: when nothing visible to the user has changed for 8 s, the busy line gets "時間がかかっています。閉じると中断できます（作業データはそのまま残ります）。" The notice does not assume the user knows that closing cancels. Only progress the user can see (the `n / total` counter in multi-file import) restarts the 8 s. Blob chunks restart only the transport stall timer, so a download that trickles but looks frozen still gets the notice.
+- **Hidden pages**: while `document.hidden` is true, the user cannot watch the wait, so that time does not count towards any limit. When the page becomes visible again, counting starts over. This is product policy. It does not depend on how a browser throttles background timers or networking.
+- `AbortSignal.timeout` and `AbortSignal.any` are not used. `AbortSignal.any` needs Safari 17.4. `AbortSignal.timeout` would be available, but the stall reset, the slow notice, and the hidden-page rule need our own timer. Controllers are chained by hand (`src/github/deadline.ts`).
+- A timeout aborts a **per-request child controller**, never the controller of `run` in `useGitHubImport`. `run` silently drops results when its own controller is aborted (the dialog was closed or a newer fetch replaced it). Aborting it on timeout would leave a screen that is neither loading nor showing an error.
+
+After a timeout:
+
+| Situation | Next step |
+| --- | --- |
+| GitHub REST API timeout (`timeout`) | **Retry** at every stage. Retrying is safe because the request is a GET on a pinned commit. In multi-file import, blobs that were already fetched are not fetched again. |
+| Token exchange timeout | **Reconnect only**: authorization starts again with a new state, verifier, and code. The same code is never sent again, and nothing is retried automatically. |
+| Close | Aborts the running fetch. For the exchange, the result is discarded (`superseded()`: `attempt` and `pageLeft`). |
+
+After the browser gives up on the exchange, the exchange may still succeed at the Function and at GitHub. The code is then consumed, and an expiring token remains that nobody received. It is not revoked. It never reached the browser and is not logged, and it expires on its own (8 h). Revoking it would need a second GitHub call made with the client secret, triggered by a disconnect that Vercel does not reliably pass to the Function. It would also widen the "the backend only exchanges" boundary.
+
+How failures are shown:
+
+| Kind | Detected by | Next step |
+| --- | --- | --- |
+| offline | fetch rejects and `navigator.onLine === false` (only `false` is trusted) | retry / reconnect |
+| network | fetch rejects otherwise | retry / reconnect |
+| timeout | our own limits above | retry (REST) / reconnect (exchange) |
+| server | 5xx | retry |
+| rate limit | `x-ratelimit-*` or the body `message` | retry after the reset time |
+| too large | received bytes over the input limits (`src/lib/inputLimits.ts`) | close only |
+
+The Function reports its own upstream timeout as `504 upstream_timeout`, whether the stall happens before the headers or in the middle of the body. This keeps it apart from `502 upstream_invalid` (a broken response) and `502 upstream_unreachable`.
 
 ## 13. Test requirements
 
@@ -562,6 +634,8 @@ Rate-limit errors must be distinguishable from generic network failures.
 - tree truncation fallback
 - partial failure leaves workspace unchanged
 - storage migration with missing `source`
+- timeouts: per-request limit separate from the caller's abort, a body stall after the headers, a blob stall that resets on every chunk, the byte cap on a streamed blob, hidden-page pause, and `recoveryFor(timeout) = retry`
+- the Function times out with `504 upstream_timeout` both before the headers and in the middle of the body (real Node fetch)
 - backup v1 → v2 migration
 - backup v2 round-trip
 
@@ -581,7 +655,7 @@ Cover:
 - current-directory filter hides/restores rows without changing selection
 - recursive tree fast path
 - truncated recursive tree falls back and does not omit files
-- exact batch count/bytes appear after enumeration
+- exact batch count/bytes appear after enumeration and before blob fetch
 - one blob failure leaves the whole workspace unchanged
 - unresolved same-source batch conflict disables final import
 - batch commit applies adds/updates in one visible workspace transition
@@ -601,10 +675,15 @@ Cover:
 - manuscript/rule sentinels never leave allowed boundaries
 - GitHub-fetched content is not POSTed to the Vercel backend
 - keyboard and mobile behavior
+- a held token exchange shows the slow notice and then times out to reconnect: the code is not resent, and a late response does not connect
+- a held list shows the slow notice, times out, and recovers with retry. Closing while slow aborts the request without showing an error
+- offline is distinguished from a generic network failure
 
 ### Manual smoke test
 
-On Vercel preview/production with a real GitHub App:
+Only on the Production deployment, or on a fixed verification origin that is registered in advance. The GitHub App callback and the token-exchange allowlist are exact origins, and the GitHub env variables are configured for Production only (`docs/github-app-setup.md`), so PR Preview deployments cannot complete real OAuth. The release order is: CI with mocked E2E → merge → Production deploy → this smoke test.
+
+With a real GitHub App:
 
 - install/authorize App
 - choose an authorized repository
@@ -645,7 +724,7 @@ On Vercel preview/production with a real GitHub App:
 - [ ] rate limits, pagination, and truncation are handled
 - [ ] `npm run check` passes
 - [ ] GitHub import E2E passes
-- [ ] real GitHub App OAuth smoke test passes on an exact callback URL
+- [ ] real GitHub App OAuth smoke test passes on an exact callback URL (run on Production after merge; this is the release gate, see §13 **Manual smoke test**)
 - [ ] `release/lolipop-v1` remains unchanged
 
 ## 15. Implementation status
@@ -667,12 +746,51 @@ Implemented:
 Implementation decisions:
 
 - callback URL is the origin root (`https://<origin>/`) because the build uses relative asset paths (`base: './'`)
-- Client ID and App slug are build-time public values (`VITE_GITHUB_APP_CLIENT_ID`, `VITE_GITHUB_APP_SLUG`); without them the button is disabled. No runtime config endpoint. See `docs/github-app-setup.md`
+- Client ID and App slug are build-time public values (`VITE_GITHUB_APP_CLIENT_ID`, `VITE_GITHUB_APP_SLUG`); without them the button is disabled. The canonical origin (`VITE_GITHUB_APP_ORIGIN`, optional) pins the origin that matches the registered callback: on any other origin "GitHubに接続" is disabled and a link to the canonical URL is shown (no automatic redirect, because the PKCE verifier and the workspace live in origin-scoped storage). No runtime config endpoint. See `docs/github-app-setup.md`
 - directory listings are cached and matched by repository id + tree SHA + path (identical subtrees share a SHA)
 - pagination fails with an explicit error when the page cap is reached with pages remaining
 - the Vercel Function is written in JavaScript with JSDoc types (TypeScript 7 has no JS transpile API for the Vercel builder to use)
 - browser requests do not send `X-GitHub-Api-Version` because GitHub's documented CORS policy does not allow it (§6 **REST API version and CORS**); rate limits are classified from exposed `x-ratelimit-*` headers and the response `message`
 
-### Slice 2 (planned)
+### Slice 2 (multi-file import)
 
-Checkbox tree picker (tri-state, unopened-directory inheritance, search that does not mutate selection), multi-file atomic import with bounded blob concurrency, recursive-tree fast path with truncation fallback, candidate summary for multiple files.
+Implemented:
+
+- directory/file checkbox picker with segment-aware include/exclude rules
+- tri-state directories, unopened-directory inheritance, descendant exclusion, and explicit re-inclusion
+- current-directory filter that changes visibility only and preserves selection
+- known selected file/directory count and byte summary before enumeration
+- a plan step after enumeration and before any blob fetch: exact file list and count, known-size byte total and unknown-size count, with warnings above 200 files or 2 MB and whenever a size is unknown
+- plan list shows the first 100 rows plus a count; the confirmation list is paged by 100 (decision-needed and warned candidates first) so every candidate stays reachable
+- 選択へ戻る during a fetch aborts the remaining blob requests and clears the busy state
+- bulk same-source decisions (update single-target candidates / add all undecided) that never guess
+- paging resets the list scroll and moves focus to the range text (a live region); bulk actions move focus to the heading
+- a candidate's update-target list shows 50 options at a time with its own paging, plus selection by input number as a shortcut
+- candidates whose GitHub file is unchanged since the target was imported are marked and excluded from the bulk update; the commit area shows added / replaced counts and the next undecided row
+- multi-file undo restores the workspace and reopens the confirmation with the same candidates and choices (no refetch)
+- Shift_JIS rows can show the fetched text in place; the plan list is paged by 100
+- fetched blobs are reused within a snapshot, so retries and re-selection only request missing blobs
+- disconnecting with a batch in progress asks for confirmation; a backdrop click closes a dialog only when the press also started on the backdrop
+- the plan counts selected entries that cannot be imported, by kind; the confirmation says the import is not a sync
+- fetch progress is shown as completed / total; a batch in progress warns before unload and says it is memory-only
+- while browser saving fails, batch fetch and commit are disabled and the dialog offers a backup export
+- closing the dialog keeps the plan, fetched candidates, and choices; only 選択へ戻る (or a selection/snapshot change, disconnect, or commit) discards them
+- the rate-limit wait holds while the page stays loaded; a reload or OAuth round-trip re-learns it from the first response
+- the filename collision warning follows the output-name rules and ignores an untouched sample
+- a single-file import keeps the checkbox selection; a multi-file import clears it
+- during a rate limit no request is sent to GitHub from any path (the deadline lives in state, is checked at the single request entry point, and disables 再試行 / 確認 / 取得); the reset time is kept between 1 minute and 1 hour on the device clock
+- selection is locked while enumerating/fetching, and results computed from a different selection are discarded
+- pinning a new snapshot clears the selection and says so
+- recursive Git Trees fast path from the minimal selected roots
+- truncated recursive responses are discarded and retraversed with complete non-recursive subtree reads
+- final selected files are filtered by the selection rules and deduplicated by repository path
+- blob fetching is bounded to at most 4 concurrent requests and cancellation propagates to sibling requests
+- all blobs are fetched, decoded, and validated before the workspace is mutated
+- a failed path leaves the workspace unchanged and is shown in the error
+- batch same-source conflicts require an explicit update target; multiple matches are never guessed
+- same-basename/different-source collisions are warnings only
+- final batch application is one workspace reducer action, including untouched-sample cleanup (undo restores it and reopens the confirmation; see §7 **Untouched sample workspace**)
+- keyboard/mobile checkbox operation and screen-reader mixed state
+- filter matching is Unicode-normalization aware (NFC)
+
+The existing one-file preview/import path remains available alongside the checkbox flow. It continues to use the same pinned commit and provenance rules.

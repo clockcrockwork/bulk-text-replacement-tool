@@ -28,6 +28,10 @@ updates:
           - minor
           - patch
 
+  # ワークフローの Action はコミット SHA で固定している。固定したままだと更新が
+  # 止まるので、この設定で SHA と後ろの `# vX.Y.Z` を一緒に書き換える PR を受け取る。
+  # `directory: /` が見るのは .github/workflows だけ。.github/actions に composite action を
+  # 足したら、その中の Action も追従させるために、ここへ対象のディレクトリを足す。
   - package-ecosystem: github-actions
     directory: /
     schedule:

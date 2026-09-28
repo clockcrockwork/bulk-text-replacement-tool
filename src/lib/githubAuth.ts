@@ -27,14 +27,46 @@ export const PENDING_AUTH_KEY = 'bt-github-oauth-pending';
  */
 export const PENDING_AUTH_TTL_MS = 10 * 60 * 1000;
 
-/** ビルド時に埋め込む公開設定。どちらかが無ければ GitHub 連携は使えない。 */
+/** ビルド時に埋め込む公開設定。Client ID と slug のどちらかが無ければ GitHub 連携は使えない。 */
 export interface GitHubAppConfig {
   clientId: string;
   /** インストール画面（github.com/apps/<slug>）の URL に使う。 */
   slug: string;
+  /**
+   * GitHub App の Callback URL と、トークン交換の許可リストに登録した正規のオリジン。
+   * null なら固定しない（開いているオリジンをそのまま使う。ローカル開発向け）。
+   */
+  canonicalOrigin: string | null;
 }
 
-/** `import.meta.env` から公開設定を読む。値が無い・空なら null（連携を無効にする）。 */
+/**
+ * 正規のオリジンとして受け付ける値を、`URL#origin` の形に揃える。
+ *
+ * オリジンそのもの（末尾の `/` だけは許す）以外は受け付けない。パスやクエリが付いていると
+ * callback（オリジン直下に固定）と食い違う。平文の http は、ローカルで確かめるための
+ * loopback だけ許す（本番の callback を http にすると code が平文で流れる）。
+ */
+export function normalizeCanonicalOrigin(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.username || url.password || url.search || url.hash || url.pathname !== '/') return null;
+  if (value.includes('?') || value.includes('#')) return null;
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return null;
+  return url.origin;
+}
+
+/**
+ * `import.meta.env` から公開設定を読む。値が無い・空なら null（連携を無効にする）。
+ *
+ * `VITE_GITHUB_APP_ORIGIN` は任意。書いてあるのに読めない値なら、連携ごと無効にする。
+ * 読めない値を黙って「固定しない」として扱うと、正規でないオリジンから接続を始めさせ、
+ * 交換で必ず失敗する（GitHub での承認まで済ませたあとに）状態を作るため。
+ */
 export function readGitHubAppConfig(env: Record<string, unknown>): GitHubAppConfig | null {
   const clientId = env.VITE_GITHUB_APP_CLIENT_ID;
   const slug = env.VITE_GITHUB_APP_SLUG;
@@ -42,7 +74,29 @@ export function readGitHubAppConfig(env: Record<string, unknown>): GitHubAppConf
   const trimmedId = clientId.trim();
   const trimmedSlug = slug.trim();
   if (!trimmedId || !/^[a-z0-9-]+$/i.test(trimmedSlug)) return null;
-  return { clientId: trimmedId, slug: trimmedSlug };
+  const origin = env.VITE_GITHUB_APP_ORIGIN;
+  let canonicalOrigin: string | null = null;
+  if (typeof origin === 'string' && origin.trim() !== '') {
+    canonicalOrigin = normalizeCanonicalOrigin(origin.trim());
+    if (!canonicalOrigin) return null;
+  }
+  return { clientId: trimmedId, slug: trimmedSlug, canonicalOrigin };
+}
+
+/**
+ * 今のオリジンで接続を始められないとき、正規のオリジンの URL を返す。始められるなら null。
+ *
+ * Vercel の Production は別名（`*-<team>.vercel.app` や独自ドメイン）でも同じビルドが
+ * 開ける。そこから始めると redirect_uri が GitHub App の Callback URL と一致せず、
+ * GitHub の画面か交換の許可リストで必ず止まる。承認まで進ませてから失敗させないよう、
+ * 始める前に止める。
+ *
+ * 自動では移動させない。PKCE の verifier と作業データはどちらもオリジンごとの保存先
+ * （sessionStorage / localStorage）にあり、移った先には引き継がれない。
+ */
+export function nonCanonicalTarget(config: GitHubAppConfig, currentOrigin: string): string | null {
+  if (config.canonicalOrigin === null || config.canonicalOrigin === currentOrigin) return null;
+  return callbackUrl(config.canonicalOrigin);
 }
 
 /** App のインストール・リポジトリ権限の設定画面。 */
@@ -205,28 +259,108 @@ export function describeCallbackFailure(reason: CallbackFailure): string {
   }
 }
 
+/**
+ * 交換エンドポイントの失敗の本文から、理由コード（`origin_not_allowed` など）を読む。
+ * 公開の識別子だけを通し、形の違うものは読まない（画面にそのまま出すため）。
+ */
+export function parseExchangeErrorCode(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const { error } = value;
+  return typeof error === 'string' && /^[a-z_]{1,40}$/.test(error) ? error : null;
+}
+
+/**
+ * トークン交換の失敗を、利用者に出す文言にする。
+ *
+ * 理由コードを添えるのは、利用者から運用者へそのまま伝えてもらうため。状態コードだけだと、
+ * 403 が「許可リストの取り違え」なのか「別のサイトからの送信」なのか切り分けられない。
+ * 429 は Vercel Firewall のレート制限。作業データは消えていないことも伝える。
+ * 待つ時間は書かない。窓の長さはリポジトリの外（Firewall のルール）で決まり、プランによっては
+ * 60 秒を選べない。ここに数字を書くと、ルールを変えたときに画面だけ古い案内が残る。
+ */
+export function describeTokenExchangeFailure(status: number, reason: string | null = null): string {
+  if (status === 429) {
+    return 'GitHub への接続が短時間に続いたため、一時的に制限されています。少し時間をおいてから、もう一度接続してください（作業データはそのまま残っています）。';
+  }
+  const detail = reason ? `${status} ${reason}` : String(status);
+  return `GitHub との接続に失敗しました（トークンの交換に失敗: ${detail}）。もう一度接続してください。`;
+}
+
+/**
+ * ブラウザがトークン交換（`/api/github/token`）の応答を待つ上限。
+ *
+ * 平均の所要時間から逆算した値ではない。Function の中の GitHub への交換は、本文の読み取りまで
+ * 含めて 10 秒で必ず切れる（`api/_lib/githubTokenExchange.js` の `UPSTREAM_TIMEOUT_MS`）。
+ * Function の起動・往復・応答の返送が遅くても、その 10 秒の結果（504 upstream_timeout）の方が
+ * 先に届くだけの余裕を持たせる。ブラウザ側で切るのは「Function 自体が返ってこない」ときだけに
+ * したい。Function 側の上限を変えたら、ここも見直す。
+ */
+export const TOKEN_EXCHANGE_TIMEOUT_MS = 25_000;
+
+/**
+ * 交換の応答が上限までに返らなかったときの文言。
+ *
+ * 認可コードは1回しか使えない（交換が GitHub 側で成功している可能性もある）ので、同じコードでは
+ * やり直させない。次の手は「もう一度接続」（認可からやり直す）だけにする。
+ */
+export function describeTokenExchangeTimeout(): string {
+  return 'GitHub との接続を確認できませんでした（応答がありませんでした）。もう一度接続すると、認可の画面からやり直します（作業データはそのまま残っています）。';
+}
+
+/**
+ * 交換の送信そのものが失敗した（応答が無い）ときの文言。`navigator.onLine` は false の
+ * ときだけ信用する（`classifyFetchFailure` と同じ）。
+ */
+export function describeTokenExchangeNetworkFailure(online: boolean | undefined): string {
+  return online === false
+    ? '端末がオフラインのため、GitHub に接続できませんでした。接続が戻ったら、もう一度接続してください（作業データはそのまま残っています）。'
+    : 'GitHub との接続に失敗しました。ネットワークを確認して、もう一度接続してください。';
+}
+
 /** ブラウザがメモリにだけ持つアクセストークン。 */
 export interface GitHubToken {
   accessToken: string;
-  /** 失効時刻（ミリ秒）。GitHub が有効期限を返さなかった場合は null。 */
-  expiresAt: number | null;
+  /**
+   * 失効時刻（ミリ秒）。期限付きのトークンしか受け付けないので、必ずある
+   * （`parseTokenResponse` を参照）。
+   */
+  expiresAt: number;
 }
+
+/**
+ * 受け付けるトークンの有効期限（秒）の上限。Function（`MAX_TOKEN_LIFETIME_SECONDS`）と同じ値。
+ * GitHub App のユーザートークンは現在 8 時間固定で、変更に少し余裕を持たせて 1 日までにする。
+ * 巨大な値を通すとミリ秒に直した時点で `Infinity` になり、実質無期限になってしまう。
+ */
+export const MAX_TOKEN_LIFETIME_SECONDS = 24 * 60 * 60;
 
 /**
  * 交換エンドポイントの応答を検証する。
  *
  * refresh token は Function 側で捨てているので、ここでも読まない
  * （紛れ込んでもメモリにすら載せない）。
+ *
+ * 有効期限（`expires_in`）の無い応答は受け付けない。期限付きのユーザートークンを使うのが
+ * 前提で、GitHub App の設定でトークンの期限切れがオフにされると `expires_in` が返らなくなる。
+ * そのとき「期限なし」として使い続けると、設定の取り違えで安全側の前提が黙って外れる。
+ * Function でも同じ確認（bearer・期限の範囲）をしているが、ここでも重ねて確かめる。
  */
 export function parseTokenResponse(value: unknown, now: number): GitHubToken | null {
   if (!isRecord(value)) return null;
-  const { access_token: accessToken, expires_in: expiresIn } = value;
+  const { access_token: accessToken, expires_in: expiresIn, token_type: tokenType } = value;
   if (typeof accessToken !== 'string' || accessToken === '') return null;
-  const expiresAt =
-    typeof expiresIn === 'number' && Number.isFinite(expiresIn) && expiresIn > 0
-      ? now + expiresIn * 1000
-      : null;
-  return { accessToken, expiresAt };
+  // Function と同じ契約を重ねて確かめる（bearer・正の整数・上限以内の期限）。
+  if (typeof tokenType !== 'string' || tokenType.toLowerCase() !== 'bearer') return null;
+  if (
+    typeof expiresIn !== 'number' ||
+    !Number.isSafeInteger(expiresIn) ||
+    expiresIn <= 0 ||
+    expiresIn > MAX_TOKEN_LIFETIME_SECONDS
+  ) {
+    return null;
+  }
+  const expiresAt = now + expiresIn * 1000;
+  return Number.isFinite(expiresAt) ? { accessToken, expiresAt } : null;
 }
 
 /**
@@ -238,5 +372,5 @@ export function parseTokenResponse(value: unknown, now: number): GitHubToken | n
 export const TOKEN_EXPIRY_MARGIN_MS = 60 * 1000;
 
 export function isTokenUsable(token: GitHubToken, now: number): boolean {
-  return token.expiresAt === null || now < token.expiresAt - TOKEN_EXPIRY_MARGIN_MS;
+  return now < token.expiresAt - TOKEN_EXPIRY_MARGIN_MS;
 }

@@ -1,31 +1,43 @@
 import { describe, expect, it } from 'vitest';
 import type { GitHubSnapshot } from '../types';
 import {
+  BLOB_STALL_TIMEOUT_MS,
+  blobTooLargeMessage,
   buildCandidate,
   classifyErrorResponse,
+  classifyFetchFailure,
   classifyTreeEntry,
   describeEntryStatus,
   describeGitHubError,
   encodePath,
+  errorClassificationNeedsBody,
   formatBytes,
   GITHUB_CORS_ALLOWED_REQUEST_HEADERS,
   GITHUB_CORS_EXPOSED_RESPONSE_HEADERS,
   type GitHubErrorKind,
+  type GitHubFetchStage,
   githubRequestHeaders,
   isLfsPointer,
   joinPath,
-  MAX_BLOB_BYTES,
+  METADATA_TIMEOUT_MS,
   mergeRepositories,
   normalizeBranches,
   normalizeCommitTreeSha,
   normalizeInstallations,
+  normalizeRecursiveTree,
   normalizeRefCommitSha,
   normalizeRepositories,
   normalizeTree,
   orderBranches,
+  parseContentLength,
   parseNextLink,
+  RECURSIVE_TREE_TIMEOUT_MS,
   readErrorMessage,
+  recoveryFor,
+  SLOW_NOTICE_MS,
+  timeoutError,
 } from './githubApi';
+import { MAX_INPUT_BYTES } from './inputLimits';
 import { BOM } from './text';
 
 const SHA_A = 'a'.repeat(40);
@@ -143,6 +155,20 @@ describe('classifyErrorResponse', () => {
     ).toBe(now + 60_000);
   });
 
+  it('端末の時計がずれていても、待たせるのは1分から1時間の範囲に収める', () => {
+    const at = (resetSeconds: number) =>
+      classifyErrorResponse(
+        403,
+        headers({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(resetSeconds) }),
+        '',
+        now,
+      ).resetAt;
+    // 端末が遅れていて、解除が30日先に見える。
+    expect(at(now / 1000 + 30 * 24 * 60 * 60)).toBe(now + 60 * 60 * 1000);
+    // 端末が進んでいて、解除がもう過ぎたように見える。
+    expect(at(now / 1000 - 600)).toBe(now + 60_000);
+  });
+
   it('secondary rate limit は本文で見分け、最低1分待つよう案内する（retry-after は読めない）', () => {
     expect(
       classifyErrorResponse(403, headers({ 'x-ratelimit-remaining': '4999' }), SECONDARY, now),
@@ -180,6 +206,56 @@ describe('classifyErrorResponse', () => {
   });
 });
 
+describe('recoveryFor', () => {
+  const error = (kind: GitHubErrorKind) => ({ kind, status: null, resetAt: null });
+  const stages: GitHubFetchStage[] = ['repositories', 'branches', 'snapshot', 'tree', 'blob'];
+
+  it('選んでいたブランチが無いときは、再試行ではなくブランチの一覧へ戻す', () => {
+    expect(recoveryFor(error('notFound'), 'snapshot')).toBe('chooseBranch');
+  });
+
+  it('リポジトリ以下が無い（消えた・見えなくなった）ときは、リポジトリを選び直す', () => {
+    expect(recoveryFor(error('notFound'), 'branches')).toBe('reselect');
+    expect(recoveryFor(error('notFound'), 'tree')).toBe('reselect');
+    expect(recoveryFor(error('notFound'), 'blob')).toBe('reselect');
+  });
+
+  it('リポジトリの一覧そのものが 404 なら、再試行する', () => {
+    expect(recoveryFor(error('notFound'), 'repositories')).toBe('retry');
+  });
+
+  it('コミットの無いリポジトリは、やり直しても同じなので選び直す', () => {
+    for (const stage of stages)
+      expect(recoveryFor(error('emptyRepository'), stage)).toBe('reselect');
+  });
+
+  it('一覧が長すぎるのは、やり直しても同じなので閉じるだけ', () => {
+    for (const stage of stages) expect(recoveryFor(error('listTooLong'), stage)).toBe('dismiss');
+  });
+
+  it('時間切れは、どの段階でも同じ GET をやり直せる（コミットは固定済み）', () => {
+    for (const stage of stages) {
+      expect(recoveryFor(timeoutError(METADATA_TIMEOUT_MS, false), stage)).toBe('retry');
+      expect(recoveryFor(timeoutError(BLOB_STALL_TIMEOUT_MS, true), stage)).toBe('retry');
+    }
+  });
+
+  it('一時的な失敗は、どの段階でも再試行する', () => {
+    const kinds: GitHubErrorKind[] = [
+      'rateLimited',
+      'server',
+      'network',
+      'offline',
+      'invalidResponse',
+      'forbidden',
+      'sso',
+    ];
+    for (const kind of kinds) {
+      for (const stage of stages) expect(recoveryFor(error(kind), stage)).toBe('retry');
+    }
+  });
+});
+
 describe('describeGitHubError', () => {
   it('rate limit は一般のエラーと見分けられる文にする', () => {
     const reset = new Date(2026, 0, 1, 9, 5).getTime();
@@ -204,12 +280,68 @@ describe('describeGitHubError', () => {
       'emptyRepository',
       'server',
       'network',
+      'offline',
+      'timeout',
       'invalidResponse',
       'listTooLong',
     ];
     for (const kind of kinds) {
       expect(describeGitHubError({ kind, status: null, resetAt: null })).not.toBe('');
     }
+  });
+
+  it('時間切れは、待った秒数と、応答が無かったのか受信が止まったのかを伝える', () => {
+    expect(describeGitHubError(timeoutError(30_000, false))).toContain('30 秒応答がなかった');
+    expect(describeGitHubError(timeoutError(30_000, true))).toContain('受信が 30 秒止まった');
+  });
+
+  it('オフラインは、ネットワーク障害一般と区別して伝える', () => {
+    expect(describeGitHubError(classifyFetchFailure(false))).toContain('オフライン');
+    expect(describeGitHubError(classifyFetchFailure(true))).not.toContain('オフライン');
+  });
+});
+
+describe('errorClassificationNeedsBody', () => {
+  const headers = (remaining: string | null) => ({
+    get: (name: string) => (name === 'x-ratelimit-remaining' ? remaining : null),
+  });
+
+  it('本文が要るのは、rate limit のヘッダが無い 403 だけ', () => {
+    expect(errorClassificationNeedsBody(403, headers(null))).toBe(true);
+    expect(errorClassificationNeedsBody(403, headers('12'))).toBe(true);
+    expect(errorClassificationNeedsBody(403, headers('0'))).toBe(false);
+    for (const status of [401, 404, 409, 429, 500, 503]) {
+      expect(errorClassificationNeedsBody(status, headers(null))).toBe(false);
+    }
+  });
+
+  it('本文が要らないと言った応答は、本文が何であっても分類が変わらない（classifyErrorResponse と揃う）', () => {
+    const messages = ['', 'API rate limit exceeded', 'Resource protected by organization SAML'];
+    for (const status of [400, 401, 403, 404, 409, 422, 429, 500, 502]) {
+      for (const remaining of [null, '0', '5']) {
+        const h = headers(remaining);
+        const kinds = new Set(
+          messages.map((message) => classifyErrorResponse(status, h, message, 0).kind),
+        );
+        if (!errorClassificationNeedsBody(status, h)) expect(kinds.size).toBe(1);
+      }
+    }
+  });
+});
+
+describe('classifyFetchFailure', () => {
+  it('navigator.onLine が false のときだけオフラインとする（true や不明は信用しない）', () => {
+    expect(classifyFetchFailure(false).kind).toBe('offline');
+    expect(classifyFetchFailure(true).kind).toBe('network');
+    expect(classifyFetchFailure(undefined).kind).toBe('network');
+  });
+});
+
+describe('待ち時間の方針', () => {
+  it('案内は中断より先に出し、再帰の tree は一覧より長く待つ', () => {
+    expect(SLOW_NOTICE_MS).toBeLessThan(METADATA_TIMEOUT_MS);
+    expect(SLOW_NOTICE_MS).toBeLessThan(BLOB_STALL_TIMEOUT_MS);
+    expect(RECURSIVE_TREE_TIMEOUT_MS).toBeGreaterThan(METADATA_TIMEOUT_MS);
   });
 });
 
@@ -287,8 +419,9 @@ describe('tree の分類', () => {
     // 名前が対応拡張子でも、リンクとサブモジュールは中身がスナップショットの外にあり得る。
     expect(classifyTreeEntry('120000', 'blob', 'link.md', 10)).toBe('symlink');
     expect(classifyTreeEntry('160000', 'commit', 'sub.md', null)).toBe('submodule');
-    expect(classifyTreeEntry('100644', 'blob', 'huge.md', MAX_BLOB_BYTES + 1)).toBe('tooLarge');
-    expect(classifyTreeEntry('100644', 'blob', 'edge.md', MAX_BLOB_BYTES)).toBe('importable');
+    // 上限はローカルのファイルと同じ（GitHub の blob API の 100MB ではない）。
+    expect(classifyTreeEntry('100644', 'blob', 'huge.md', MAX_INPUT_BYTES + 1)).toBe('tooLarge');
+    expect(classifyTreeEntry('100644', 'blob', 'edge.md', MAX_INPUT_BYTES)).toBe('importable');
     expect(classifyTreeEntry('100644', 'weird', 'a.md', 1)).toBeNull();
   });
 
@@ -319,6 +452,32 @@ describe('tree の分類', () => {
     expect(normalizeTree({ tree: [], truncated: true }, '')?.truncated).toBe(true);
   });
 
+  it('recursive tree はネストした path を起点ディレクトリからの完全パスにする', () => {
+    const tree = normalizeRecursiveTree(
+      {
+        tree: [
+          { path: 'a', mode: '040000', type: 'tree', sha: SHA_A },
+          { path: 'a/ch1.md', mode: '100644', type: 'blob', sha: SHA_B, size: 12 },
+          { path: 'a/deep/ch2.txt', mode: '100644', type: 'blob', sha: SHA_C, size: 4 },
+          { path: '../escape.md', mode: '100644', type: 'blob', sha: SHA_A, size: 1 },
+        ],
+        truncated: false,
+      },
+      'chapters',
+    );
+
+    expect(tree?.entries.map((entry) => [entry.path, entry.status])).toEqual([
+      ['chapters/a', 'dir'],
+      ['chapters/a/ch1.md', 'importable'],
+      ['chapters/a/deep/ch2.txt', 'importable'],
+    ]);
+    expect(tree?.truncated).toBe(false);
+  });
+
+  it('recursive tree の truncated を保持する', () => {
+    expect(normalizeRecursiveTree({ tree: [], truncated: true }, '')?.truncated).toBe(true);
+  });
+
   it('形の違う項目は落とす', () => {
     const tree = normalizeTree(
       {
@@ -343,7 +502,7 @@ describe('tree の分類', () => {
     expect(describeEntryStatus('dir')).toBeNull();
     expect(describeEntryStatus('importable')).toBeNull();
     expect(describeEntryStatus('unsupported')).toBe('非対応の形式');
-    expect(describeEntryStatus('tooLarge')).toContain('100MB');
+    expect(describeEntryStatus('tooLarge')).toBe('5MiB を超えるため取り込めません');
     expect(describeEntryStatus('symlink')).toBe('シンボリックリンク');
     expect(describeEntryStatus('submodule')).toBe('サブモジュール');
   });
@@ -407,10 +566,29 @@ describe('buildCandidate', () => {
     expect(buildCandidate(SNAPSHOT, { ...entry, status: 'symlink' }, bytes('x')).kind).toBe(
       'error',
     );
-    const huge = { byteLength: MAX_BLOB_BYTES + 1 } as ArrayBuffer;
+    const huge = new ArrayBuffer(MAX_INPUT_BYTES + 1);
     expect(buildCandidate(SNAPSHOT, entry, huge)).toEqual({
       kind: 'error',
-      message: 'chapters/ch1.md は 100MB を超えるため取り込めません。',
+      message: 'chapters/ch1.md は 5MiB を超えるため取り込めません。',
     });
+    expect(buildCandidate(SNAPSHOT, entry, new ArrayBuffer(MAX_INPUT_BYTES)).kind).toBe('ok');
+  });
+});
+
+describe('上限を超える blob', () => {
+  it('文言は一覧・取得・候補で共通で、見えない文字は見える形にする', () => {
+    expect(blobTooLargeMessage('docs/a.md')).toBe('docs/a.md は 5MiB を超えるため取り込めません。');
+    expect(blobTooLargeMessage('a\u202egpj.md')).toContain('⟨U+202E⟩');
+  });
+
+  it('Content-Length は整数として読めるときだけ使う', () => {
+    expect(parseContentLength('5242881')).toBe(5242881);
+    expect(parseContentLength(' 12 ')).toBe(12);
+    expect(parseContentLength(null)).toBeNull();
+    expect(parseContentLength('')).toBeNull();
+    expect(parseContentLength('-1')).toBeNull();
+    expect(parseContentLength('1.5')).toBeNull();
+    expect(parseContentLength('12, 12')).toBeNull();
+    expect(parseContentLength('9'.repeat(20))).toBeNull();
   });
 });

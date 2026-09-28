@@ -494,6 +494,24 @@ a.btn {
   text-overflow: ellipsis;
 }
 
+/* 名前に双方向制御文字などが混じっているときだけ出す。見える形の名前は折り返して全部見せる
+   （省略すると、偽装に使われた部分がちょうど隠れ得る）。 */
+.input-card__reveal {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: 0;
+  padding: 6px 12px;
+  color: var(--color-accent-text);
+  font-size: 12px;
+  border-bottom: 1px solid var(--color-divider-soft);
+}
+
+.input-card__reveal-name {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
 .input-card__preview {
   width: 100%;
   height: 220px;
@@ -1177,6 +1195,20 @@ a.btn {
   border-left: 3px solid var(--color-accent);
 }
 
+/* 正規でないオリジンで開いたときの案内。段落を分けて、移る先のリンクを独立させる。 */
+.github__origin p {
+  margin: 0;
+}
+
+.github__origin p + p {
+  margin-top: 6px;
+}
+
+/* 保存に失敗しているときの警告。その場で書き出せるよう、文の下にボタンを置く。 */
+.github__save-failed-text {
+  margin: 0 0 8px;
+}
+
 .dialog__confirm {
   display: flex;
   flex-direction: column;
@@ -1304,6 +1336,12 @@ a.btn {
   font-size: 13px;
 }
 
+/* 待ちが長いときの案内は、ただの進行表示より目に留まるようにする（色だけに頼らず文でも伝える）。 */
+.github__status--slow {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
 .github__error {
   display: flex;
   flex-wrap: wrap;
@@ -1314,6 +1352,13 @@ a.btn {
 
 .github__disconnect {
   margin-right: auto;
+}
+
+.github__disconnect-note {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 /* リポジトリ・ブランチ・コミット。どの時点の内容を見ているかを常に出す。 */
@@ -1536,6 +1581,303 @@ button.github__entry:hover {
   gap: 8px;
 }
 
+/* ------------------------------------------------ GitHub：複数選択と一括取り込み */
+
+.github__picker-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.github__filter {
+  flex: 1 1 14rem;
+  max-width: 24rem;
+}
+
+.github__filter input {
+  width: 100%;
+  min-height: var(--control-height);
+  padding: 8px 10px;
+  color: var(--color-text);
+  font: 15px / 1.3 var(--font-body);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+}
+
+.github__selection-summary {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.github__current-selection {
+  border: 1px solid var(--color-divider-soft);
+}
+
+.github__select-row {
+  display: grid;
+  grid-template-columns: var(--control-height-touch) minmax(0, 1fr);
+  align-items: stretch;
+  border-bottom: 1px solid var(--color-divider-soft);
+}
+
+.github__select-row .github__entry {
+  border-bottom: 0;
+}
+
+/* 押せる範囲はチェックボックスそのものではなく、この label 全体（44px 四方以上）。 */
+.github__select-check {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--control-height-touch);
+  min-height: var(--control-height-touch);
+  cursor: pointer;
+}
+
+.github__current-selection .github__select-check {
+  justify-content: flex-start;
+  padding: 0 12px;
+}
+
+.github__select-check input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+.github__select-check:has(input:disabled) {
+  cursor: default;
+}
+
+.github__select-label {
+  color: var(--color-text);
+  font-size: 15px;
+}
+
+.github__selection-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.github__plan-warnings {
+  margin: 0;
+  padding: 10px 12px 10px 32px;
+  color: var(--color-text);
+  font-size: 13px;
+  line-height: 1.7;
+  background: var(--color-surface-strong);
+  border-left: 3px solid var(--color-accent);
+}
+
+.github__plan-list,
+.github__batch-list {
+  display: grid;
+  max-height: min(46vh, 28rem);
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+  border: 1px solid var(--color-divider-soft);
+}
+
+.github__plan-list li {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 6px 12px;
+  color: var(--color-muted);
+  font-size: 13px;
+  border-bottom: 1px solid var(--color-divider-soft);
+}
+
+.github__plan-list li:last-child,
+.github__batch-item:last-child {
+  border-bottom: 0;
+}
+
+.github__plan-path {
+  min-width: 0;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+.github__list-more {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.github__list-pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.github__batch-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.github__batch-item {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-divider-soft);
+}
+
+.github__batch-file {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.github__batch-file strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.github__batch-file span,
+.github__batch-new {
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.github__batch-warning {
+  color: var(--color-accent-text);
+  font-size: 13px;
+}
+
+.github__batch-decision,
+.github__batch-decision-field,
+.github__batch-target-field {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.github__batch-decision {
+  gap: 8px;
+}
+
+/* 保存に失敗している間の警告。書き出しへのボタンを添える。 */
+.github__save-failed {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.github__save-failed-text {
+  flex: 1 1 16rem;
+  margin: 0;
+}
+
+/* GitHub 側が変わっていない更新先の補足。警告ほど強くはしない。 */
+.github__batch-note {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+/* 取得済みの本文をその場で開く（Shift_JIS の確認）。 */
+.github__batch-preview {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.github__batch-preview .github__preview {
+  width: 100%;
+}
+
+/* 確定すると何が起きるか、押せないならなぜかを、確定ボタンの上に出す。 */
+.github__batch-outcome {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.github__batch-outcome-text {
+  margin: 0;
+}
+
+/* 更新先が選択欄に並べきれないときのページ送り。 */
+.github__batch-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* 更新先が選択欄に並べきれないとき、入力の番号で指定する欄。 */
+.github__batch-target {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+  margin: 0;
+}
+
+.github__batch-target-field {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.github__batch-target .github__batch-warning {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.github__batch-target input,
+.github__batch-decision select {
+  width: 100%;
+  min-height: var(--control-height);
+  padding: 6px 8px;
+  color: var(--color-text);
+  font: 15px / 1.3 var(--font-body);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+}
+
+@media (max-width: 640px) {
+  .github__filter {
+    flex-basis: 100%;
+    max-width: none;
+  }
+
+  .github__batch-file {
+    display: grid;
+  }
+
+  .github__selection-actions .btn {
+    width: 100%;
+  }
+
+  /*
+   * .btn は折り返さない（white-space: nowrap）。件数入りの長い文言が狭い画面で
+   * ダイアログの幅を超えないよう、ここでは1行に1つ並べて折り返しを許す。
+   */
+  .github__batch-bulk .btn,
+  .github__batch-targets .btn,
+  .github__batch-outcome .btn,
+  .github__list-pager .btn {
+    flex: 1 1 100%;
+    width: 100%;
+    padding-block: 8px;
+    line-height: 1.4;
+    white-space: normal;
+  }
+}
+
 /* ============================================================ タッチ環境の調整 */
 
 /*
@@ -1551,7 +1893,10 @@ button.github__entry:hover {
   .input-card__preview,
   .editor__textarea,
   .dialog__textarea,
-  .file-card__plain {
+  .file-card__plain,
+  .github__filter input,
+  .github__batch-target input,
+  .github__batch-decision select {
     font-size: 16px;
   }
 }

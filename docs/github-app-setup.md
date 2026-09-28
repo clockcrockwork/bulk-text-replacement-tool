@@ -26,7 +26,8 @@ GitHub → Settings → Developer settings → GitHub Apps → New GitHub App
 - **GitHub App name**: 任意。ここで決まる slug（URL の `github.com/apps/<slug>`）を控える
 - **Homepage URL**: `https://bulk-text-replacement-tool.vercel.app/`
 - **Callback URL**: `https://bulk-text-replacement-tool.vercel.app/` を1つだけ
-- **Expire user authorization tokens**: オン（既定のまま）
+- **Expire user authorization tokens**: オン（既定のまま）。**オフにすると接続できなくなる**
+  （期限の無いトークンは、Function もブラウザも受け付けない）
 - **Request user authorization (OAuth) during installation**: **オフ**
   （アプリが自分で state と PKCE を付けて認可を始めるため。オンにすると GitHub 側から
   state の無い認可が始まる）
@@ -53,19 +54,197 @@ Environment は **Production** にだけ設定する（Preview の URL は callb
 | --- | --- | --- |
 | `VITE_GITHUB_APP_CLIENT_ID` | App の Client ID | ブラウザ（ビルド時に埋め込み）と Function |
 | `VITE_GITHUB_APP_SLUG` | App の slug | ブラウザ（インストール画面への案内） |
+| `VITE_GITHUB_APP_ORIGIN` | `https://bulk-text-replacement-tool.vercel.app` | ブラウザ（正規のオリジンの判定） |
 | `GITHUB_APP_CLIENT_SECRET` | App の client secret（**Sensitive** にする） | Function だけ |
 | `GITHUB_OAUTH_ALLOWED_ORIGINS` | `https://bulk-text-replacement-tool.vercel.app` | Function だけ |
 | `GITHUB_OAUTH_REDIRECT_URIS` | `https://bulk-text-replacement-tool.vercel.app/` | Function だけ |
 
-- `VITE_` で始まる2つは公開値で、ビルドに埋め込まれる。**設定したら再デプロイが必要**。
-  未設定のビルドでは「GitHubから追加」ボタンが無効になる
+- `VITE_` で始まる3つは公開値で、ビルドに埋め込まれる。Client ID と slug が未設定のビルドでは
+  「GitHubから追加」ボタンが無効になる
+- **どの変数も、変えたら再デプロイが必要**（`VITE_` だけでなく、secret と許可リストも）。
+  Vercel の環境変数は新しいデプロイにしか反映されない。再デプロイを忘れると、本番の
+  Function は古い値のまま動く
+- `VITE_GITHUB_APP_ORIGIN` は、GitHub App の Callback URL と `GITHUB_OAUTH_ALLOWED_ORIGINS` に
+  登録した**正規のオリジン**（パスを付けない。末尾の `/` は付けても付けなくてもよい）。
+  - Production のビルドは、別名（`bulk-text-replacement-tool-<team>.vercel.app` などの
+    エイリアスや、追加した独自ドメイン）でも開ける。そこから接続を始めると
+    `redirect_uri` が Callback URL と一致せず、GitHub の画面かトークン交換で必ず失敗する
+  - 設定したビルドは、正規でないオリジンでは「GitHubに接続」を押せなくし、正規の URL への
+    リンクを出す（新しいタブで開く）。自動では移動させない。PKCE の verifier（sessionStorage）と
+    作業データ（localStorage）はオリジンごとに分かれていて、移った先には引き継がれないため
+  - 未設定なら固定しない（開いているオリジンをそのまま使う。ローカル開発向け）。
+    書いてあるのにオリジンとして読めない値（パス付き・`http://` の公開ホストなど）なら、
+    GitHub 連携ごと無効になる。平文の `http://` は `localhost` / `127.0.0.1` だけ受け付ける
+  - 独自ドメインへ正規のオリジンを移すときは、この値・2つの許可リスト・Callback URL を
+    同時に変える
 - 許可リストはカンマ区切りで複数書ける。独自ドメインを足すときは両方に足し、
   GitHub App の Callback URL にも同じ URL を追加する
+- **2つの許可リストは末尾の `/` の要否が逆**。取り違えやすいので、形が崩れていると
+  Function は設定なし（503 `not_configured`）として断り、どの変数が崩れているかを
+  Function のログに出す
+  - `GITHUB_OAUTH_ALLOWED_ORIGINS`：オリジンそのもの。**`/` を付けない**（`https://example.com`）
+  - `GITHUB_OAUTH_REDIRECT_URIS`：オリジン直下の callback。**`/` を付ける**（`https://example.com/`）。
+    オリジンは `GITHUB_OAUTH_ALLOWED_ORIGINS` のどれかと同じであること
+
+### client secret を差し替える
+
+古い secret を先に消すと、差し替えが本番に届くまでのあいだ全員の接続が失敗する
+（GitHub は `incorrect_client_credentials` を返し、画面には「交換に失敗: 400 exchange_rejected」と出る）。
+次の順で行う。
+
+1. GitHub App の設定で **新しい secret を作る**（古い secret はまだ消さない。App は secret を同時に複数持てる）
+2. Vercel の `GITHUB_APP_CLIENT_SECRET` を新しい値に変える
+3. **Production を再デプロイする**
+4. §5 の 1〜3 で接続できることを確かめる
+5. GitHub App の設定で **古い secret を削除する**
+
+### 「接続できない」と言われたとき
+
+画面の「トークンの交換に失敗: <状態コード> <理由コード>」と、Function のログで切り分ける。
+
+| 画面に出るもの | 主な原因 | 直し方 |
+| --- | --- | --- |
+| `503 not_configured` | 環境変数が無い・形が崩れている・変えたあと再デプロイしていない | Function のログに出る変数名を見て直し、再デプロイする |
+| `403 origin_not_allowed` | 許可していないオリジン（Production の別名など）から開いている | 正規の URL で開く。独自ドメインなら両方の許可リストに足す |
+| `400 redirect_uri_not_allowed` | 開いたオリジンの callback が許可リストに無い | `GITHUB_OAUTH_REDIRECT_URIS` に `https://<そのオリジン>/` を足す |
+| `400 exchange_rejected` | コードの期限切れ・使い回し、または secret の不一致 | もう一度接続する。全員が失敗するなら secret と再デプロイを確かめる |
+| `502 upstream_invalid` | GitHub App の「Expire user authorization tokens」がオフ（期限の無いトークンは受け付けない） | App の設定でオンに戻す |
+| `502 upstream_unreachable` / `upstream_error` | GitHub 側の障害・遅延 | 時間をおいて接続し直す |
+| `504 upstream_timeout` | GitHub が 10 秒以内に応答を返し終えなかった（ヘッダ待ちでも本文の途中でも同じ） | 時間をおいて接続し直す。続くなら GitHub の障害を確かめる |
+| 「応答がありませんでした」（状態コードなし） | ブラウザが 25 秒待っても Function から返らなかった（Function に届かない・起動しない） | もう一度接続する（認可からやり直す）。続くなら Function のログと Vercel の障害を確かめる |
+| `429`（一時的に制限） | Firewall のレート制限（§3） | 1 分ほど待つ。同じ IP の利用者が続けて試していないかも確かめる |
 - client secret は `VITE_` を付けない（付けるとブラウザに配られる）
 
-## 3. 確認（実 GitHub での smoke test）
+ブラウザが交換を諦めたあと（「応答がありませんでした」）も、Function と GitHub の側では交換が
+済んでいることがある。そのときコードは使い済みになり、期限付きのトークンが誰にも渡らないまま
+GitHub 上に残る。ブラウザにもログにも出ていないので使われることはなく、期限（8 時間）で失効する。
+取り消す仕組みは置いていない（理由は `docs/github-import-v2.md` の Network stalls and timeouts）。
 
-本番にデプロイしたあと:
+## 3. トークン交換のレート制限（Vercel Firewall）
+
+`/api/github/token` は Origin を許可リストと照合しているが、Origin を偽れないのは
+ブラウザだけで、curl などからは任意の Origin で叩ける。正しい code と verifier が
+無ければ GitHub との交換は通らないが、大量に送られると Function の実行回数を消費し、
+GitHub 側で App の client_id ごと絞られるおそれがある。
+
+これは **Vercel Firewall のレート制限ルール**で止める。Function の中にメモリ上の
+カウンタを置く方式は使わない（サーバーレスではインスタンスが複数立ち、起動のたびに
+消えるので、数えた値がインスタンス間で共有されず、制限として機能しない）。
+
+Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule**（Custom Rule）:
+
+| 項目 | 値 |
+| --- | --- |
+| Name | `github-token-exchange-rate-limit` |
+| If | **Request Path** — **Starts with** — `/api/` |
+| Then | **Rate Limit** |
+| Algorithm | Fixed Window |
+| Window | 60 秒 |
+| Limit | 10 リクエスト |
+| Key | IP Address |
+| Action（超過時） | Too Many Requests（429） |
+
+- **完全一致（Equals `/api/github/token`）にしない。** 同じ Function には
+  `/api/github/token/`（末尾の `/`）や `/api/github/token.js`（拡張子付き）でも届き、
+  完全一致の条件はそれらを数えない（Preview で3つとも Function が応答することを確認した）。
+  `api/` にある Function はトークン交換だけなので、`/api/` の前方一致で巻き込むものは無く、
+  Function を足したときにも既定で制限が効く
+- メソッドでは絞らない（POST 以外も Function を起動する。405 を返すだけでも実行回数に数えられる）
+- 値の根拠: 正規の利用者が交換するのは「GitHubに接続」1回につき1回だけ。
+  接続のやり直しを何度か続けても 1 分に 10 回には届かない
+- 超過した利用者の画面には「一時的に制限されています。少し時間をおいてから、もう一度接続して
+  ください」と出る（`describeTokenExchangeFailure`）。作業データは失われない。
+  画面には待つ時間を書いていないので、窓の長さを変えてもコードは変えなくてよい
+- 作成後に **Review Changes → Publish** で反映する（保存しただけでは効かない）
+- プランによって使えるルール数・窓の長さ・キーの種類が異なる。上の値が選べないときは、
+  「IP ごとに 1 分あたり数回〜十数回」に最も近い設定にする
+- Function のコードは変えない。ルールはリクエストが Function に届く前に効く
+- **これはリポジトリの外の設定で、マージしただけでは有効にならない。** Publish して §5 の 9 を
+  確かめるまで、L5（トークン交換のレート制限）は対応済みとして扱わない
+- 回数は厳密な上限（セキュリティ上の不変条件）ではなく、**乱用を抑える歯止め**として扱う。
+  計数はエッジで分散して行われるので、「全体で 1 分に必ず 10 回まで」を保証するものではない。
+  交換そのものの安全性は、PKCE・state・Origin と redirect_uri の許可リストが受け持つ
+
+### 本番への入れ方（段階導入）
+
+設定を誤ると OAuth 全体を止めるので、いきなり本番で制限を有効にしない。
+
+**Rate Limit を本番で有効にするのは、429 の案内文（#18 の `describeTokenExchangeFailure`）が
+本番に入ってからにする。** それより前に有効にすると、制限に掛かった利用者には
+「トークンの交換に失敗: 429」とだけ出て、待てば直ることが伝わらない。
+
+**Firewall のルールは、条件に環境を入れない限り Production と Preview の両方に効く。**
+上の表の条件は `/api/` の前方一致だけなので、同じルールの Then を Rate Limit に変えると、
+Preview で試すつもりでも本番に同時に効く。Preview で試すときは、環境で絞った**別のルール**を
+一時的に作る。
+
+| ルール | 条件 | Then | 役割 |
+| --- | --- | --- | --- |
+| A（本番用） | Request Path — Starts with — `/api/` | Log → 最後に Rate Limit | 本番の観測と、最終的な制限 |
+| B（検証用・一時） | Request Path — Starts with — `/api/` **かつ Environment — Equals — Preview** | Rate Limit | Preview で 429 を確かめるだけ |
+
+1. ルール A を Then **Log** で Publish する
+2. 本番で正規の接続を1回行い、Firewall のログで、その交換が A に1件だけ一致していることを
+   確かめる（ほかの経路を巻き込んでいないこと）
+3. ルール B を作って Publish し、Preview（固定した検証用の URL）に対して §5 の 9 の手順で
+   429 が返ることを確かめる。このあいだ本番は A（Log）のままなので、制限されない
+   - Preview は Vercel Authentication で保護されているので、ログイン済みのブラウザの cookie か、
+     保護を回避する共有リンクを付けて送る（付けないと 429 の前にログイン画面へ 302 で戻される）
+   - Preview には交換用の環境変数が無いので、Function まで届けば 503（`not_configured`）になる。
+     確かめるのは、それが 429 に変わること
+4. ルール B を**削除**して Publish する（残すと Preview の検証で自分が締め出される）
+5. ルール A の Then を Rate Limit に切り替えて Publish する
+6. 本番で §5 の 9（3つのパスすべてで 429）を確かめる
+
+画面やプランの都合で Environment の条件が選べないときは、B の条件を
+「Host — Equals — 固定した検証用 Preview のホスト名」にする。どちらも使えないときは、3 を省いて
+5 のあとの 6 で確かめる（その場合、6 の直後に正規の接続が通ることも確かめる）。
+
+## 4. 配信時のヘッダ
+
+`vercel.json` の `headers` が、`/api/` 以外のすべての応答に次を付ける。
+
+| ヘッダ | 値 | 理由 |
+| --- | --- | --- |
+| `Content-Security-Policy` | `frame-ancestors 'none'` | 他サイトの iframe に埋め込ませない（クリックジャッキング）。meta の CSP では `frame-ancestors` を指定できないためヘッダで送る |
+| `X-Frame-Options` | `DENY` | `frame-ancestors` を解さない古いブラウザ向け |
+| `X-Content-Type-Options` | `nosniff` | 配信物を宣言と違う型として解釈させない |
+| `Cross-Origin-Opener-Policy` | `same-origin` | 他サイトが `window.open` でこのページを開いても、ウィンドウ参照（`opener`）を持たせない |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=(), usb=(), display-capture=()` | 使っていない強い機能を閉じる（多層防御）。クリップボードはコピーで使うので閉じない |
+| `Referrer-Policy` | `strict-origin` | Referer をオリジンまでに絞る。認可から戻った直後は `/?code=…&state=…` のまま HTML が開き、`history.replaceState` を走らせる JS 自体と Google Fonts はその前に読まれる。ブラウザ既定の `strict-origin-when-cross-origin` は**同一オリジンの要求には URL 全体を送る**ので、`/assets/*.js` の Referer に code と state が載り、配信側のログに残り得る |
+
+- 本体の CSP（`connect-src` など）は `index.html` の meta にあり、ヘッダの CSP はそれに
+  `frame-ancestors` を足すだけ。両方があると、ブラウザは両方を満たすものだけを許す
+- `Referrer-Policy` を `no-referrer` にしないのは、トークン交換の Function が Origin を
+  照合しているため。Referrer-Policy は Origin ヘッダにも効き、`no-referrer` の下では
+  cors 以外のモードの POST が `Origin: null` になる（Fetch 仕様）。いまの交換は
+  `fetch`（cors モード）なので送られるが、実装差や呼び出し方の変更で Origin が消えると
+  交換が 403 で止まる。`strict-origin` なら HTTPS のページからの要求には常に Origin が付く
+  （E2E が、交換に Origin が付くことと、戻り直後の要求の Referer に code / state が無いことを
+  確かめている）
+- COOP を `same-origin` にすると、github.com へ移って戻る OAuth の往復で
+  ブラウジングコンテキストグループが切り替わる。state と PKCE の verifier は sessionStorage に
+  あるので、切り替えのあとも残っている必要がある。E2E（`e2e/github.spec.ts`）はこのヘッダの下で
+  Chromium と WebKit の往復を通しているが、Playwright の WebKit は Safari そのものではないので、
+  **実機の Safari（macOS と iOS）では §5 の 10 で確かめる**。インストール画面は
+  `rel="noreferrer"`（`noopener` を含む）の新しいタブで開くので、COOP で壊れる参照は無い
+- ヘッダを無視する配信先のために、`index.html` にも `<meta name="referrer">` で同じ方針を書いている
+- `strict-origin` が防ぐのは、戻り URL の code / state が**その後の要求**（同一オリジンの JS・CSS、
+  Google Fonts、画面遷移）の Referer に**伝わること**まで。GitHub から戻る最初の要求
+  （`GET /?code=…&state=…`）そのものは、静的な SPA で query の callback を受ける以上、
+  Vercel の配信基盤に届く。「code が配信側のどのログにも残らない」とは言えない
+  （code は PKCE 付きの使い捨てで、単体ではトークンに交換できない）。§5 の 7 で見るのは
+  Function のログだけで、エッジやアクセスログの保持・表示範囲は別に確かめる
+- `/api/` の応答は Function が自前でヘッダを付ける（`Referrer-Policy: no-referrer` など）ので対象外にしている
+- `vite preview`（E2E の配信元）も `vercel.json` から**ヘッダの値**を読んで返す（`vite.config.ts`）。
+  共有しているのは値だけで、`source` のパス条件（`/api/` の除外）は再現していない
+  （preview には `/api/` が無く、E2E のトークン交換は Playwright の route で応答している）。
+  パス条件は Preview / 本番で §5 の 8 で確かめる。ヘッダを変えたら `e2e/dist.spec.ts` を合わせる
+
+## 5. 確認（実 GitHub での smoke test）
+
+本番にデプロイしたあと（1 の前に、GitHub App の設定で **Expire user authorization tokens が
+オン**であることを見る。オフだと 1 で `502 upstream_invalid` になる）:
 
 1. 「GitHubから追加」→ 同意画面 →「GitHubに接続」
 2. 初回は「アクセスできるリポジトリがありません」になるので、
@@ -77,3 +256,45 @@ Environment は **Production** にだけ設定する（Preview の URL は callb
 5. App の権限画面に write 権限が無いこと
 6. 再読み込みすると、もう一度接続が必要になること
 7. Vercel の Function ログ（`/api/github/token`）に、本文・コード・トークンが出ていないこと
+8. `curl -sI https://bulk-text-replacement-tool.vercel.app/` で §4 のヘッダが返ること。
+   `curl -sI https://bulk-text-replacement-tool.vercel.app/api/github/token` には §4 の
+   `frame-ancestors` が付かず、Function 自身の `Referrer-Policy: no-referrer` が返ること
+9. Firewall のルールが Publish 済みで、次の3つがすべて 429 になること。
+   Origin を付けていないので、制限に掛かるまでは 403（`.js` と末尾 `/` も同じ Function）が返る
+
+   ```sh
+   BASE=https://bulk-text-replacement-tool.vercel.app
+   for i in $(seq 11); do curl -s -o /dev/null -w '%{http_code}\n' -X POST "$BASE/api/github/token"; done
+   for p in /api/github/token /api/github/token/ /api/github/token.js; do
+     curl -s -o /dev/null -w "$p %{http_code}\n" -X POST "$BASE$p"
+   done
+   ```
+
+   確かめたあとは窓（60 秒）が明けるまで、同じ IP からは接続できない。この間に接続すると、
+   画面に「少し時間をおいてから」の案内が出ること。
+   **利用者と同じ回線（社内の NAT・同じ Wi-Fi）から実行しない**。同じ IP の利用者全員が
+   60 秒間接続できなくなる。携帯のテザリングなど別の回線から、利用の少ない時間に行う
+10. **実機の Safari（macOS と iOS）**で 1〜4 を通すこと。COOP（§4）によるブラウジング
+    コンテキストグループの切り替えのあとも、戻った画面で「接続の確認に失敗しました」
+    「この画面で始めた接続ではない」が出ずにリポジトリの一覧まで進めば、sessionStorage は残っている
+11. 正規でないオリジン（例: Vercel の Deployment 画面にある Production の別名）で開くと、
+    「GitHubに接続」が押せず、正規の URL へのリンクが出ること。
+    `VITE_GITHUB_APP_ORIGIN` は未設定でもビルドが通り、そのときは黙って「固定しない」動きになる
+    （ローカル開発のため。§2）。設定漏れはこの確認でしか見つからないので、**Production の
+    環境変数を変えたとき・デプロイ先のプロジェクトを作り直したときは必ずここを通す**
+12. **実機の Safari（macOS と iOS）と Chrome**で、接続してリポジトリの一覧を出したあと、同じタブで
+    別のサイト（例: `https://example.com/`）へ移動し、「戻る」で戻ると、同意画面に
+    「ページを離れたため、GitHub との接続を解除しました」が出て、一覧は出ないこと
+    （bfcache から戻ったページでトークンが生き返らない）。E2E は Playwright の Chromium が
+    bfcache を無効にして起動するため、`persisted` 付きの pagehide / pageshow を合成して
+    確かめているだけで、本物の「戻る」はここで確かめる
+13. 待ち時間（issue #20）の見直しの材料。**実装や配信を止める確認ではない**。25 / 30 / 60 秒
+    を平均に寄せるためではなく、正常な利用を誤って切っていないかを見る
+    - Function の固定の遅れ: `vercel httpstat /api/github/token` を 3 回程度。GET は 405 で終わり、
+      コードを使わず GitHub も呼ばない。1回目は cold の**可能性がある**だけなので断定しない。
+      Firewall（§3）は IP ごとに 60 秒で 10 回までなので連打しない。429 は Function に届いて
+      いないので、比べるのは 405 の結果だけ
+    - 実際の交換: 普段の接続のついでに、ブラウザの Network で `POST /api/github/token` の
+      所要時間を見る（測るためにコードを送り直さない）
+    - iOS Safari・モバイル回線: 接続・一覧・取得、背面へ回して戻る、「時間がかかっています」、
+      時間切れのあとの再試行 / もう一度接続が、操作として破綻しないこと

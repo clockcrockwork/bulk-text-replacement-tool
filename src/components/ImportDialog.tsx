@@ -1,4 +1,5 @@
 import { type ChangeEvent, type JSX, type RefObject, useEffect, useRef } from 'react';
+import { useBackdropClose } from '../hooks/useBackdropClose';
 import { findRaggedRows, OPTION_HEADERS, type ParsedTable, TABLE_KIND_LABEL } from '../lib/table';
 import type { ImportMode } from '../types';
 import { Icon } from './Icon';
@@ -53,6 +54,7 @@ export function ImportDialog({
   onApply,
 }: ImportDialogProps): JSX.Element {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const backdrop = useBackdropClose(dialogRef, () => onClose());
   const ragged = findRaggedRows(parsed.rows);
 
   useEffect(() => {
@@ -62,7 +64,7 @@ export function ImportDialog({
   }, []);
 
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: キーボードでの閉じる操作は <dialog> 標準の Escape（onCancel）が担う
+    // 背景のクリックで閉じる（useBackdropClose）。キーボードでは <dialog> 標準の Escape（onCancel）で閉じる
     <dialog
       ref={dialogRef}
       className="dialog"
@@ -72,9 +74,7 @@ export function ImportDialog({
         onClose();
       }}
       // 背景（::backdrop）のクリックでも閉じる。中身のクリックは子要素が target になる。
-      onClick={(event) => {
-        if (event.target === dialogRef.current) onClose();
-      }}
+      {...backdrop}
     >
       <div className="dialog__inner">
         <h2 className="dialog__title">表から読み込み</h2>

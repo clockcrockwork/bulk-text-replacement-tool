@@ -6,7 +6,9 @@ import type {
   GitHubTreeEntry,
 } from '../types';
 import { isAcceptedFile } from './inputFiles';
-import { baseName, isGitSha } from './inputSource';
+import { formatLimit, MAX_INPUT_BYTES } from './inputLimits';
+import { baseName, isGitSha, isRepositoryPath } from './inputSource';
+import { revealUnsafeChars } from './revealText';
 import { type DecodedText, decodeText } from './text';
 
 /**
@@ -82,8 +84,30 @@ export const GITHUB_FETCH_INIT = {
   referrerPolicy: 'no-referrer',
 } as const satisfies RequestInit;
 
-/** Git blob API が扱える上限。これを超えるファイルは取得を試みない。 */
-export const MAX_BLOB_BYTES = 100 * 1024 * 1024;
+// ---- 待ち時間の方針（issue #20） ------------------------------------------------
+//
+// どれも「利用者の操作1回」ではなく「1リクエスト」に掛ける。ページ送りは1ページずつ、
+// 一括取り込みは blob 1件ずつなので、一覧が長い・件数が多いといった正常に長い操作は切らない。
+// 値は保守的な初期値で、実機で正常な利用を切っていると分かったら調整する。
+
+/** 利用者に見える進みがこの時間なければ「時間がかかっています」と添える。 */
+export const SLOW_NOTICE_MS = 8_000;
+
+/**
+ * 一覧・ref・commit・非再帰の tree の1リクエスト（ヘッダと本文の合計）。
+ * 応答が小さく、大きさで時間が伸びないもの。
+ */
+export const METADATA_TIMEOUT_MS = 30_000;
+
+/** 再帰の tree の1リクエスト。GitHub 側の生成に時間がかかり、応答も数 MB になり得る。 */
+export const RECURSIVE_TREE_TIMEOUT_MS = 60_000;
+
+/**
+ * blob を1バイトも受け取れていない時間（ヘッダ待ちを含む）。blob は大きさで正常な所要時間が
+ * 変わるので、合計ではなく「受信が止まっている時間」で見る。何 MB まで受け入れるかは
+ * 別の方針（`src/lib/inputLimits.ts`・issue #19）で、ここでは決めない。
+ */
+export const BLOB_STALL_TIMEOUT_MS = 30_000;
 
 /** 1回で取れる件数の上限。ページ数を減らして rate limit を節約する。 */
 export const PER_PAGE = 100;
@@ -142,6 +166,10 @@ export type GitHubErrorKind =
   | 'emptyRepository'
   | 'server'
   | 'network'
+  /** 端末がオフライン（`navigator.onLine` が false）。 */
+  | 'offline'
+  /** 決めた時間のあいだ応答がない、または受信が止まった。 */
+  | 'timeout'
   /** 期待した形の応答ではない。 */
   | 'invalidResponse'
   /** 一覧が長すぎて、辿れる上限までに終わらなかった（途中までの一覧は使わない）。 */
@@ -152,6 +180,26 @@ export interface GitHubError {
   status: number | null;
   /** rate limit が解ける時刻（ミリ秒）。分からなければ null。 */
   resetAt: number | null;
+  /**
+   * `timeout` のとき、待った時間と、何を待っていたか。`stall` は blob の受信が止まった
+   * （合計時間ではなく、データが途切れている時間で切った）。
+   */
+  timeout?: { ms: number; stall: boolean };
+}
+
+/**
+ * fetch 自体が失敗した（応答が無い）ときの分類。
+ *
+ * `navigator.onLine` は false のときだけ信用する（true でも通じていないことはよくある）。
+ * 失敗した時点で1回読むだけにし、`online` イベントで自動の再試行はしない。
+ */
+export function classifyFetchFailure(online: boolean | undefined): GitHubError {
+  return { kind: online === false ? 'offline' : 'network', status: null, resetAt: null };
+}
+
+/** 時間切れの失敗。`stall` は受信が止まったこと（blob）を表す。 */
+export function timeoutError(ms: number, stall: boolean): GitHubError {
+  return { kind: 'timeout', status: null, resetAt: null, timeout: { ms, stall } };
 }
 
 interface HeaderReader {
@@ -160,6 +208,22 @@ interface HeaderReader {
 
 /** secondary rate limit を待つ目安。解除時刻が分からないときは最低1分待つよう案内されている。 */
 const SECONDARY_RATE_LIMIT_WAIT_MS = 60 * 1000;
+
+/** primary rate limit の窓。解除は長くてもこの長さの先に来る。 */
+const PRIMARY_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * `x-ratelimit-reset`（サーバーの時計での時刻）を、この端末の時計での待ち時間に直す。
+ *
+ * 端末の時計がずれていると、そのまま使った解除時刻もずれる。遅れていれば待ちが不当に
+ * 伸び（数十日ずれると、待ちを測るタイマーそのものが働かなくなる）、進んでいれば
+ * 解除前に再試行させてしまう。GitHub の窓の長さを超えて待たせず、解除時刻が過去に
+ * 見えても最低限（secondary と同じ1分）は待たせる。
+ */
+function rateLimitResetAt(resetSeconds: number, now: number): number {
+  const wait = resetSeconds * 1000 - now;
+  return now + Math.min(Math.max(wait, SECONDARY_RATE_LIMIT_WAIT_MS), PRIMARY_RATE_LIMIT_WINDOW_MS);
+}
 
 /** 失敗した応答の本文から `message` を取り出す。読めなければ空文字。 */
 export function readErrorMessage(body: string): string {
@@ -195,7 +259,7 @@ export function classifyErrorResponse(
       const reset = Number(headers.get('x-ratelimit-reset'));
       const resetAt =
         headers.get('x-ratelimit-reset') !== null && Number.isFinite(reset) && reset > 0
-          ? reset * 1000
+          ? rateLimitResetAt(reset, now)
           : now + SECONDARY_RATE_LIMIT_WAIT_MS;
       return { kind: 'rateLimited', status, resetAt };
     }
@@ -211,9 +275,60 @@ export function classifyErrorResponse(
   return { ...base, kind: 'invalidResponse' };
 }
 
+/**
+ * 失敗した応答の分類に、本文（`message`）が要るか。
+ *
+ * 401・404・409・429・5xx と、`x-ratelimit-remaining: 0` の 403 は、状態コードとヘッダだけで
+ * 決まる。それ以外の 403 は、secondary rate limit・SAML SSO・一般の 403 を本文でしか
+ * 見分けられない。本文が途中で止まったとき、これが true なら分類せずに時間切れ（または
+ * 通信の失敗）として扱う（`classifyErrorResponse` と条件を揃える）。
+ */
+export function errorClassificationNeedsBody(status: number, headers: HeaderReader): boolean {
+  return status === 403 && headers.get('x-ratelimit-remaining') !== '0';
+}
+
 function formatClock(ms: number): string {
   const date = new Date(ms);
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+/** どの取得で失敗したか。同じ失敗でも、利用者が取れる次の手は段階で変わる。 */
+export type GitHubFetchStage = 'repositories' | 'branches' | 'snapshot' | 'tree' | 'blob';
+
+/**
+ * 失敗のあとに利用者へ出す次の手。
+ *
+ * - `retry`: 同じ取得をやり直す（一時的な失敗）
+ * - `dismiss`: やり直しても同じ結果になる。知らせを閉じるだけ
+ * - `reselect`: リポジトリの一覧を取り直して選び直す（リポジトリが消えた・見えなくなった・空）
+ * - `chooseBranch`: ブランチの一覧へ戻す（選んでいたブランチが消えた・名前が変わった）
+ */
+export type GitHubRecovery = 'retry' | 'dismiss' | 'reselect' | 'chooseBranch';
+
+/**
+ * 失敗の種類と段階から、次の手を決める。
+ *
+ * 再試行は「やり直せば変わるかもしれない」失敗にだけ出す。リポジトリ一覧を取ったあとで
+ * 既定ブランチが改名・削除されると、同じ ref の解決を何度やり直しても 404 のままで、
+ * 利用者は再試行を押し続けるしかなくなる。404 は段階ごとに、変わり得る場所まで戻す。
+ */
+export function recoveryFor(error: GitHubError, stage: GitHubFetchStage): GitHubRecovery {
+  switch (error.kind) {
+    case 'listTooLong':
+      // やり直しても同じ結果で、rate limit を食うだけ。
+      return 'dismiss';
+    case 'emptyRepository':
+      // コミットが増えるまで何度やっても同じ。別のリポジトリを選んでもらう。
+      return 'reselect';
+    case 'notFound':
+      if (stage === 'snapshot') return 'chooseBranch';
+      // ブランチ一覧や、固定したコミットの tree / blob が無いのは、リポジトリごと消えたか
+      // App のアクセス対象から外れたとき。リポジトリの一覧から選び直す。
+      if (stage !== 'repositories') return 'reselect';
+      return 'retry';
+    default:
+      return 'retry';
+  }
 }
 
 /** 失敗を利用者向けの文にする。 */
@@ -237,6 +352,14 @@ export function describeGitHubError(error: GitHubError): string {
       return 'GitHub 側でエラーが起きました。しばらくしてから再試行してください。';
     case 'network':
       return 'GitHub に接続できませんでした。ネットワークを確認して再試行してください。';
+    case 'offline':
+      return '端末がオフラインのため、GitHub に接続できませんでした。接続が戻ったら再試行してください。';
+    case 'timeout': {
+      const seconds = Math.round((error.timeout?.ms ?? 0) / 1000);
+      return error.timeout?.stall
+        ? `GitHub からの受信が ${seconds} 秒止まったため中断しました。通信状況を確認して再試行してください。`
+        : `GitHub から ${seconds} 秒応答がなかったため中断しました。通信状況を確認して再試行してください。`;
+    }
     case 'invalidResponse':
       return 'GitHub から想定外の応答が返りました。再試行してください。';
     case 'listTooLong':
@@ -323,7 +446,7 @@ export function normalizeCommitTreeSha(value: unknown): string | null {
 }
 
 /** 名前順。ロケールに依らず毎回同じ並びにするため、コードポイントで比べる。 */
-function compareCodePoints(a: string, b: string): number {
+export function compareCodePoints(a: string, b: string): number {
   if (a === b) return 0;
   return a < b ? -1 : 1;
 }
@@ -350,7 +473,9 @@ export function classifyTreeEntry(
   if (type === 'tree') return 'dir';
   if (type !== 'blob') return null;
   if (!isAcceptedFile(name)) return 'unsupported';
-  if (size !== null && size > MAX_BLOB_BYTES) return 'tooLarge';
+  // 上限はローカルのファイルと共有する（経路で扱いを分けない）。GitHub の blob API の
+  // 境界（100MB）はそれより大きいので、ここでは見なくてよい。
+  if (size !== null && size > MAX_INPUT_BYTES) return 'tooLarge';
   return 'importable';
 }
 
@@ -372,30 +497,51 @@ export interface NormalizedTree {
   truncated: boolean;
 }
 
+function normalizeTreeResponse(
+  value: unknown,
+  dir: string,
+  recursive: boolean,
+): NormalizedTree | null {
+  if (!isRecord(value) || !Array.isArray(value.tree)) return null;
+  const entries = value.tree.flatMap((item): GitHubTreeEntry[] => {
+    if (!isRecord(item)) return [];
+    const { path: relativePath, mode, type, sha } = item;
+    if (!nonEmptyString(relativePath) || !isGitSha(sha)) return [];
+    if (!recursive && relativePath.includes('/')) return [];
+    if (recursive && !isRepositoryPath(relativePath)) return [];
+    if (typeof mode !== 'string' || typeof type !== 'string') return [];
+    const size =
+      typeof item.size === 'number' && Number.isSafeInteger(item.size) && item.size >= 0
+        ? item.size
+        : null;
+    const name = baseName(relativePath);
+    const status = classifyTreeEntry(mode, type, name, size);
+    if (!status) return [];
+    return [{ name, path: joinPath(dir, relativePath), sha, status, size }];
+  });
+  entries.sort(
+    (a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || compareCodePoints(a.path, b.path),
+  );
+  return { entries, truncated: value.truncated === true };
+}
+
 /**
  * `GET /repos/{owner}/{repo}/git/trees/{sha}`（非再帰）を1階層分の一覧にする。
  *
  * `dir` はこの tree が置かれているディレクトリのパス（ルートなら空文字）。
  */
 export function normalizeTree(value: unknown, dir: string): NormalizedTree | null {
-  if (!isRecord(value) || !Array.isArray(value.tree)) return null;
-  const entries = value.tree.flatMap((item): GitHubTreeEntry[] => {
-    if (!isRecord(item)) return [];
-    const { path: name, mode, type, sha } = item;
-    if (!nonEmptyString(name) || name.includes('/') || !isGitSha(sha)) return [];
-    if (typeof mode !== 'string' || typeof type !== 'string') return [];
-    const size =
-      typeof item.size === 'number' && Number.isSafeInteger(item.size) && item.size >= 0
-        ? item.size
-        : null;
-    const status = classifyTreeEntry(mode, type, name, size);
-    if (!status) return [];
-    return [{ name, path: joinPath(dir, name), sha, status, size }];
-  });
-  entries.sort(
-    (a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || compareCodePoints(a.name, b.name),
-  );
-  return { entries, truncated: value.truncated === true };
+  return normalizeTreeResponse(value, dir, false);
+}
+
+/**
+ * `GET /repos/{owner}/{repo}/git/trees/{sha}?recursive=1` を、同じ path 形式へ正規化する。
+ *
+ * GitHub の recursive 応答内の path は起点 tree からの相対パスなので、`dir` を前置きする。
+ * `truncated` が true の応答は呼び出し側で部分結果を捨て、非再帰 traversal へ fallback する。
+ */
+export function normalizeRecursiveTree(value: unknown, dir: string): NormalizedTree | null {
+  return normalizeTreeResponse(value, dir, true);
 }
 
 /** 選べない項目の理由。一覧に並べるときに添える。 */
@@ -407,12 +553,30 @@ export function describeEntryStatus(status: GitHubEntryStatus): string | null {
     case 'unsupported':
       return '非対応の形式';
     case 'tooLarge':
-      return '100MB を超えるため取得できません';
+      return `${formatLimit(MAX_INPUT_BYTES)} を超えるため取り込めません`;
     case 'symlink':
       return 'シンボリックリンク';
     case 'submodule':
       return 'サブモジュール';
   }
+}
+
+/** 1ファイルの上限を超えたときの文言。一覧・取得・候補のどこで分かっても同じにする。 */
+export function blobTooLargeMessage(path: string): string {
+  return `${revealUnsafeChars(path)} は ${formatLimit(MAX_INPUT_BYTES)} を超えるため取り込めません。`;
+}
+
+/**
+ * `Content-Length` を読む。整数として読めなければ null。
+ *
+ * 応答が圧縮されていると、これは展開前の長さになる。上限を超えていれば読む前に
+ * 断ってよいが、上限内でも本文が上限内とは限らないので、通す根拠には使わない
+ * （最終的な判定は読みながら数えた長さ）。
+ */
+export function parseContentLength(value: string | null): number | null {
+  if (value === null || !/^\d+$/.test(value.trim())) return null;
+  const length = Number(value.trim());
+  return Number.isSafeInteger(length) ? length : null;
 }
 
 /** バイト数を読みやすくする。 */
@@ -462,15 +626,19 @@ export function buildCandidate(
   buffer: ArrayBuffer,
 ): CandidateResult {
   if (entry.status !== 'importable') {
-    return { kind: 'error', message: `${entry.path} は取り込めない種類のファイルです。` };
+    return {
+      kind: 'error',
+      message: `${revealUnsafeChars(entry.path)} は取り込めない種類のファイルです。`,
+    };
   }
-  if (buffer.byteLength > MAX_BLOB_BYTES) {
-    return { kind: 'error', message: `${entry.path} は 100MB を超えるため取り込めません。` };
+  // 取得の側（`getBlob`）で読みながら打ち切っているが、候補にする入口でも確かめる。
+  if (buffer.byteLength > MAX_INPUT_BYTES) {
+    return { kind: 'error', message: blobTooLargeMessage(entry.path) };
   }
   if (isLfsPointer(new Uint8Array(buffer))) {
     return {
       kind: 'error',
-      message: `${entry.path} は Git LFS のポインタです。本文は LFS 側にあり、この画面からは取り込めません。`,
+      message: `${revealUnsafeChars(entry.path)} は Git LFS のポインタです。本文は LFS 側にあり、この画面からは取り込めません。`,
     };
   }
   const { text, encoding } = decodeText(buffer);
