@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { expect, type Page, test } from '@playwright/test';
 import { PENDING_AUTH_KEY } from '../src/lib/githubAuth';
 import { STORAGE_KEY } from '../src/lib/storage';
@@ -492,6 +493,65 @@ test('一覧を待っている途中に「ブランチを変更」→「変え�
   await expect(entry(page, 'ch1.md')).toBeVisible();
 });
 
+test('既定ブランチが改名・削除されていたら、再試行ではなくブランチの一覧から選び直してもらう', async ({
+  page,
+}) => {
+  // リポジトリの一覧は既定ブランチを main と返すが、main はもう無い（trunk に改名された）。
+  const mock = new GitHubMock([
+    novelRepository({
+      defaultBranch: 'main',
+      branches: { trunk: [{ path: 'ch1.md', content: '改名後のブランチの原稿\n' }] },
+    }),
+  ]);
+  await start(page, mock);
+  await connect(page);
+  await dialog(page).getByRole('button', { name: 'octo/novel' }).click();
+
+  // 同じ ref を何度解決しても 404 なので、「再試行」は出さずにブランチの一覧へ戻す。
+  await expect(dialog(page).getByRole('heading', { name: 'ブランチを選ぶ' })).toBeVisible();
+  await expect(dialog(page).getByRole('status')).toContainText(
+    'ブランチ main が見つかりませんでした',
+  );
+  await expect(dialog(page).getByRole('button', { name: '再試行' })).toHaveCount(0);
+
+  await dialog(page)
+    .getByRole('button', { name: /^trunk/ })
+    .click();
+  await expect(dialog(page).getByRole('heading', { name: 'ファイルを選ぶ' })).toBeVisible();
+  await expect(entry(page, 'ch1.md')).toBeVisible();
+});
+
+test('リポジトリが消えた・見えなくなったら、リポジトリの一覧を取り直して選び直してもらう', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+
+  // 一覧を取ったあとで、リポジトリが削除されたか App のアクセス対象から外れた。
+  // ref もブランチの一覧も 404 になる（どちらも同じ理由なので、再試行では直らない）。
+  await page.route('https://api.github.com/repos/octo/novel/**', (route) =>
+    route.request().method() === 'OPTIONS'
+      ? route.fallback()
+      : route.fulfill({
+          status: 404,
+          headers: { 'access-control-allow-origin': '*', 'content-type': 'application/json' },
+          body: JSON.stringify({ message: 'Not Found' }),
+        }),
+  );
+  await dialog(page).getByRole('button', { name: 'octo/novel' }).click();
+
+  const alert = dialog(page).getByRole('alert');
+  await expect(alert).toContainText('見つかりませんでした');
+  await expect(alert.getByRole('button', { name: '再試行' })).toHaveCount(0);
+  const installationsBefore = mock.apiCalls(/^\/user\/installations$/).length;
+  await alert.getByRole('button', { name: 'リポジトリを選び直す' }).click();
+
+  // 手元の一覧は古いので、取り直してから選んでもらう。
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toBeVisible();
+  expect(mock.apiCalls(/^\/user\/installations$/).length).toBeGreaterThan(installationsBefore);
+});
+
 test('ブランチを変えると、そのブランチの先頭で固定し直す', async ({ page }) => {
   const mock = new GitHubMock([REPO]);
   await start(page, mock);
@@ -867,6 +927,17 @@ test('ブラウザへの保存に失敗している間は、画面遷移する�
   await page.getByRole('button', { name: 'GitHubから追加' }).click();
   await expect(dialog(page).getByRole('alert')).toContainText('保存できていない作業が失われます');
   await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeDisabled();
+
+  // その場から書き出せる（モーダルの外の「作業データ」を探させない）。保存できていない
+  // 編集も、書き出したファイルには入っている。
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    dialog(page).getByRole('button', { name: '作業データを書き出す' }).click(),
+  ]);
+  expect(download.suggestedFilename()).toMatch(/^bulk-replace-workspace-\d{8}-\d{4}\.json$/);
+  const exported = await readFile(await download.path(), 'utf8');
+  expect(exported).toContain('changed.md');
+  expect(mock.authorizeCalls).toEqual([]);
 });
 
 test('保存の直前（デバウンス中）に接続しても、書き出せなければ画面遷移しない', async ({ page }) => {

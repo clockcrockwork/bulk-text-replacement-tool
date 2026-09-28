@@ -1204,6 +1204,11 @@ a.btn {
   margin-top: 6px;
 }
 
+/* 保存に失敗しているときの警告。その場で書き出せるよう、文の下にボタンを置く。 */
+.github__save-failed-text {
+  margin: 0 0 8px;
+}
+
 .dialog__confirm {
   display: flex;
   flex-direction: column;

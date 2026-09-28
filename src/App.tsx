@@ -759,6 +759,7 @@ export function App(): JSX.Element {
           handlers={github}
           installUrl={github.installUrl}
           canonicalUrl={github.canonicalUrl}
+          onExportBackup={exportBackup}
           saveFailed={saveFailed}
           sameSource={githubSameSource}
           titleCollision={githubTitleCollision}

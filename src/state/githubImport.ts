@@ -33,7 +33,8 @@ export interface DirectoryListing {
 /** 画面に出す失敗。`recover` は利用者が取れる次の手。 */
 export interface GitHubImportError {
   message: string;
-  recover: 'retry' | 'reconnect' | 'dismiss';
+  /** `reselect` はリポジトリの一覧を取り直して選び直す（`recoveryFor`）。 */
+  recover: 'retry' | 'reconnect' | 'dismiss' | 'reselect';
 }
 
 export type ConnectionState =

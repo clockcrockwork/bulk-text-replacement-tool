@@ -16,6 +16,7 @@ export interface GitHubDialogHandlers {
   reloadRepositories: () => void;
   selectRepository: (repository: GitHubRepository) => void;
   clearRepository: () => void;
+  reselectRepository: () => void;
   showBranches: () => void;
   hideBranches: () => void;
   selectBranch: (ref: string) => void;
@@ -40,6 +41,8 @@ interface GitHubImportDialogProps {
   installUrl: string | null;
   /** 正規でないオリジンで開かれているとき、正規のオリジンの URL（`useGitHubImport`）。 */
   canonicalUrl: string | null;
+  /** 作業データを書き出す（「作業データ」ダイアログの書き出しと同じ処理）。 */
+  onExportBackup: () => void;
   /**
    * ブラウザへの保存に失敗しているか。
    * 認可は画面遷移を伴うので、保存できていない作業はそこで失われる。
@@ -78,6 +81,7 @@ export function GitHubImportDialog({
   handlers,
   installUrl,
   canonicalUrl,
+  onExportBackup,
   saveFailed,
   sameSource,
   titleCollision,
@@ -135,6 +139,7 @@ export function GitHubImportDialog({
           <ConsentView
             state={state}
             canonicalUrl={canonicalUrl}
+            onExportBackup={onExportBackup}
             saveFailed={saveFailed}
             headingRef={headingRef}
             onConnect={handlers.connect}
@@ -164,6 +169,15 @@ export function GitHubImportDialog({
             {state.error.recover === 'reconnect' ? (
               <button type="button" className="btn btn--small" onClick={handlers.disconnect}>
                 接続し直す
+              </button>
+            ) : null}
+            {state.error.recover === 'reselect' ? (
+              <button
+                type="button"
+                className="btn btn--small"
+                onClick={handlers.reselectRepository}
+              >
+                リポジトリを選び直す
               </button>
             ) : null}
             {state.error.recover === 'dismiss' ? (
@@ -207,6 +221,7 @@ export function GitHubImportDialog({
 interface ConsentViewProps {
   state: GitHubImportState;
   canonicalUrl: string | null;
+  onExportBackup: () => void;
   saveFailed: boolean;
   headingRef: RefObject<HTMLHeadingElement | null>;
   onConnect: () => void;
@@ -219,6 +234,7 @@ interface ConsentViewProps {
 function ConsentView({
   state,
   canonicalUrl,
+  onExportBackup,
   saveFailed,
   headingRef,
   onConnect,
@@ -274,11 +290,21 @@ function ConsentView({
           </p>
         </div>
       ) : null}
+      {/* 書き出しはその場で行えるようにする。モーダルの外にある「作業データ」を探させると、
+          閉じたあとに書き出し忘れたまま作業を続けやすい。書き出す処理は既存のものと同じ。 */}
       {saveFailed ? (
-        <p className="dialog__error" role="alert">
-          いまブラウザへの保存に失敗しています。接続では GitHub の画面へ移動するため、
-          保存できていない作業が失われます。先に作業データを書き出してください。
-        </p>
+        <div className="dialog__error github__save-failed" role="alert">
+          <p className="github__save-failed-text">
+            いまブラウザへの保存に失敗しています。接続では GitHub の画面へ移動するため、
+            保存できていない作業が失われます。先に作業データを書き出してください。
+          </p>
+          <div className="dialog__row">
+            <button type="button" className="btn btn--small" onClick={onExportBackup}>
+              <Icon name="download" size={14} />
+              <span>作業データを書き出す</span>
+            </button>
+          </div>
+        </div>
       ) : null}
       <div className="dialog__row">
         <button

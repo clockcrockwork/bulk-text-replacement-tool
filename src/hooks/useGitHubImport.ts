@@ -3,8 +3,10 @@ import { createGitHubClient, type GitHubClient, GitHubRequestError } from '../gi
 import {
   buildCandidate,
   describeGitHubError,
+  type GitHubFetchStage,
   type NormalizedTree,
   orderBranches,
+  recoveryFor,
 } from '../lib/githubApi';
 import {
   base64UrlEncode,
@@ -30,6 +32,7 @@ import {
   validateCallback,
 } from '../lib/githubAuth';
 import { shortSha } from '../lib/inputSource';
+import { revealUnsafeChars } from '../lib/revealText';
 import {
   currentStep,
   type GitHubImportState,
@@ -66,6 +69,11 @@ export interface GitHubImport {
   reloadRepositories: () => void;
   selectRepository: (repository: GitHubRepository) => void;
   clearRepository: () => void;
+  /**
+   * リポジトリの一覧を取り直して選び直す。リポジトリが消えた・見えなくなった・空だった
+   * ときの次の手（手元の一覧は古いので、選び直す前に取り直す）。
+   */
+  reselectRepository: () => void;
   showBranches: () => void;
   hideBranches: () => void;
   selectBranch: (ref: string) => void;
@@ -182,13 +190,16 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
    * 新しい取得を始めると前の取得は中断する（遅れて返った古い応答で画面を戻さない）。
    */
   const run = <T>(
+    stage: GitHubFetchStage,
     label: string,
     task: (api: GitHubClient, signal: AbortSignal) => Promise<T>,
     onDone: (value: T) => void,
+    /** 選んでいたブランチが見つからないとき、ブランチの一覧へ戻す（`recoveryFor`）。 */
+    chooseBranch?: () => void,
   ): void => {
     const api = client();
     if (!api) return;
-    const again = (): void => run(label, task, onDone);
+    const again = (): void => run(stage, label, task, onDone, chooseBranch);
     lastTask.current = again;
     const controller = begin();
     dispatch({ type: 'busy', label });
@@ -203,12 +214,17 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
             dropConnection(describeGitHubError(error.detail));
             return;
           }
+          // やり直しても変わらない失敗に「再試行」を出さない（段階ごとに戻る先を決める）。
+          const recovery = recoveryFor(error.detail, stage);
+          if (recovery === 'chooseBranch' && chooseBranch) {
+            chooseBranch();
+            return;
+          }
           dispatch({
             type: 'fail',
             error: {
               message: describeGitHubError(error.detail),
-              // 一覧が長すぎるのは、やり直しても同じ結果で rate limit を食うだけなので再試行させない。
-              recover: error.detail.kind === 'listTooLong' ? 'dismiss' : 'retry',
+              recover: recovery === 'chooseBranch' ? 'retry' : recovery,
             },
           });
           return;
@@ -226,6 +242,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
 
   const loadRepositories = (): void => {
     run(
+      'repositories',
       'リポジトリを読み込んでいます',
       (api, signal) => api.listRepositories(signal),
       (repositories) => dispatch({ type: 'repositories/loaded', repositories }),
@@ -254,6 +271,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       return;
     }
     run(
+      'tree',
       'フォルダを読み込んでいます',
       (api, signal) => api.getTree(snapshot, step.treeSha, step.path, signal),
       (tree) => {
@@ -277,6 +295,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
     resume?: TrailStep,
   ): void => {
     run(
+      'snapshot',
       `${ref} の最新コミットを確認しています`,
       (api, signal) => api.resolveSnapshot(repository, ref, signal),
       (snapshot) => {
@@ -293,20 +312,31 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
           previous ? `${shortSha(snapshot.commitSha)} に更新しました` : undefined,
         );
       },
+      // 一覧を取ったあとで既定ブランチが改名・削除されると、同じ ref は何度解決しても 404。
+      // 再試行を押させ続けず、今あるブランチから選び直してもらう。
+      () =>
+        loadBranches(
+          repository,
+          `ブランチ ${revealUnsafeChars(ref)} が見つかりませんでした（名前が変わったか、削除された可能性があります）。ブランチを選んでください。`,
+        ),
     );
   };
 
-  const loadBranches = (repository: GitHubRepository): void => {
+  /** ブランチの一覧を開く。`notice` は一覧が出たあとに添える知らせ（ここへ戻された理由）。 */
+  const loadBranches = (repository: GitHubRepository, notice?: string): void => {
     dispatch({ type: 'branches/show' });
     run(
+      'branches',
       'ブランチを読み込んでいます',
       (api, signal) => api.listBranches(repository, signal),
-      (names) =>
+      (names) => {
         dispatch({
           type: 'branches/loaded',
           repositoryId: repository.id,
           branches: orderBranches(names, repository.defaultBranch),
-        }),
+        });
+        if (notice) dispatch({ type: 'info', message: notice });
+      },
     );
   };
 
@@ -531,6 +561,11 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       abortRef.current?.abort();
       dispatch({ type: 'repository/clear' });
     },
+    reselectRepository: () => {
+      abortRef.current?.abort();
+      dispatch({ type: 'repository/clear' });
+      loadRepositories();
+    },
     showBranches: () => {
       if (state.repository) loadBranches(state.repository);
     },
@@ -570,6 +605,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       const snapshot = state.snapshot;
       if (!snapshot || entry.status !== 'importable') return;
       run(
+        'blob',
         `${entry.name} を取得しています`,
         (api, signal) => api.getBlob(snapshot, entry.sha, signal),
         (buffer) => {
