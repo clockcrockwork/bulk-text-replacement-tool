@@ -74,10 +74,14 @@ export interface BatchUpdateTarget {
   label: string;
   /** 入力の一覧での番号（1 始まり）。更新先が多いとき、番号で指定するのに使う。 */
   position: number;
+  /** その入力を取り込んだときの blob。候補と同じなら、GitHub 側は前回から変わっていない。 */
+  blobSha: string;
 }
 
 export interface BatchSourceMatch {
   path: string;
+  /** 候補（今回取得した内容）の blob。 */
+  blobSha: string;
   /** 同じ取り込み元を持つ既存の入力。2件以上なら更新先を推測しない。 */
   sameSource: ReadonlyArray<BatchUpdateTarget>;
   /**
@@ -111,7 +115,12 @@ export function matchBatchSources(
     const identity = input.source ? sourceIdentity(input.source) : null;
     if (identity !== null) {
       const list = bySource.get(identity) ?? [];
-      list.push({ id: input.id, label: label(input, index), position: index + 1 });
+      list.push({
+        id: input.id,
+        label: label(input, index),
+        position: index + 1,
+        blobSha: input.source?.blobSha ?? '',
+      });
       bySource.set(identity, list);
     }
     const key = outputKey(input.title, index);
@@ -133,6 +142,7 @@ export function matchBatchSources(
       (batchNames.get(key) ?? 0) > 1;
     return {
       path: candidate.source.path,
+      blobSha: candidate.source.blobSha,
       sameSource: bySource.get(identity) ?? [],
       titleCollision,
     };

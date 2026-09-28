@@ -7,6 +7,8 @@ import {
   useRef,
   useState,
 } from 'react';
+import { flushSync } from 'react-dom';
+import { useBackdropClose } from '../hooks/useBackdropClose';
 import { useBeforeDeadline } from '../hooks/useBeforeDeadline';
 import { formatTextMeta } from '../lib/format';
 import { describeEntryStatus, describeGitHubError, formatBytes } from '../lib/githubApi';
@@ -17,12 +19,17 @@ import {
   choiceToValue,
   chooseAddForUndecided,
   chooseSingleUpdates,
+  countSingleUpdates,
   countUndecided,
   effectiveBatchChoices,
+  firstUndecidedIndex,
   type GitHubBatchDecision,
+  isUnchangedTarget,
+  type ListPage,
   listPage,
   needsDecision,
   orderForReview,
+  summarizeOutcome,
   toBatchDecisions,
   UPDATE_TARGET_OPTION_LIMIT,
   updateTargetAt,
@@ -178,6 +185,7 @@ export function GitHubImportDialog({
   onApplyBatch,
 }: GitHubImportDialogProps): JSX.Element {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const backdrop = useBackdropClose(dialogRef, () => handlers.close());
   const headingRef = useRef<HTMLHeadingElement>(null);
   const key = viewKey(state);
   const rateLimited = useBeforeDeadline(state.rateLimitedUntil);
@@ -198,7 +206,7 @@ export function GitHubImportDialog({
   const connected = state.connection === 'connected';
 
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: キーボードでの閉じる操作は <dialog> 標準の Escape（onCancel）が担う
+    // 背景のクリックで閉じる（useBackdropClose）。キーボードでは <dialog> 標準の Escape（onCancel）で閉じる
     <dialog
       ref={dialogRef}
       className="dialog dialog--github"
@@ -207,9 +215,7 @@ export function GitHubImportDialog({
         event.preventDefault();
         handlers.close();
       }}
-      onClick={(event) => {
-        if (event.target === dialogRef.current) handlers.close();
-      }}
+      {...backdrop}
     >
       <div className="dialog__inner">
         <h2 className="dialog__title">GitHubから追加</h2>
@@ -670,7 +676,11 @@ function Explorer({
             disabled={selectionLocked}
             onChange={(selected) => handlers.setSelected(here.path, selected)}
           >
-            このフォルダ全体を選択
+            {/* 絞り込みは表示だけを変える。見えている項目だけを選ぶ操作と取り違えないよう、
+                絞り込み中は隠れている項目も選ぶことを名前に含める。 */}
+            {filter
+              ? 'このフォルダ全体を選択（絞り込みで隠れている項目も含む）'
+              : 'このフォルダ全体を選択'}
           </SelectionCheckbox>
         </div>
       ) : null}
@@ -860,6 +870,10 @@ function BatchPlanView({
 }): JSX.Element {
   const rateLimited = useBeforeDeadline(state.rateLimitedUntil);
   const plan = useMemo(() => planBatch(entries), [entries]);
+  // 本文を取り始める前の最後の確認なので、101件目以降も見られるようにする（並べる数は抑える）。
+  const [pageIndex, setPageIndex] = useState(0);
+  const page = listPage(entries.length, pageIndex);
+  const listRef = useRef<HTMLUListElement>(null);
   return (
     <section className="github__section" aria-label="取り込むファイルの確認">
       <h3 ref={headingRef} className="github__heading" tabIndex={-1}>
@@ -881,17 +895,21 @@ function BatchPlanView({
           ))}
         </ul>
       ) : null}
-      <ul className="github__plan-list" aria-label="取り込むファイル">
-        {entries.slice(0, BATCH_LIST_LIMIT).map((entry) => (
+      <ul ref={listRef} className="github__plan-list" aria-label="取り込むファイル">
+        {entries.slice(page.start, page.end).map((entry) => (
           <li key={entry.path}>
             <span className="github__plan-path">{entry.path}</span>
             <span>{entry.size === null ? '大きさ不明' : formatBytes(entry.size)}</span>
           </li>
         ))}
       </ul>
-      {entries.length > BATCH_LIST_LIMIT ? (
-        <p className="github__list-more">ほか {entries.length - BATCH_LIST_LIMIT}件</p>
-      ) : null}
+      <ListPager
+        label="取り込むファイルの一覧のページ"
+        page={page}
+        total={entries.length}
+        listRef={listRef}
+        onGo={setPageIndex}
+      />
       <div className="dialog__row">
         <button type="button" className="btn" onClick={handlers.clearBatch}>
           選択へ戻る
@@ -906,6 +924,60 @@ function BatchPlanView({
         </button>
       </div>
     </section>
+  );
+}
+
+/**
+ * 一覧のページ送り。
+ *
+ * ページャは一覧の下にあるので、末尾までスクロールしてから押すのが自然で、スクロール位置を
+ * 残すと次のページが末尾から始まる。押したボタンは端のページで無効になりフォーカスが
+ * 外れるので、範囲の表示へ移す（行を入れ替える前に移しても、表示は残る）。
+ */
+function ListPager({
+  label,
+  page,
+  total,
+  note = '',
+  listRef,
+  onGo,
+}: {
+  label: string;
+  page: ListPage;
+  total: number;
+  note?: string;
+  listRef: RefObject<HTMLUListElement | null>;
+  onGo: (index: number) => void;
+}): JSX.Element | null {
+  const rangeRef = useRef<HTMLParagraphElement>(null);
+  if (page.count <= 1) return null;
+  const go = (index: number): void => {
+    onGo(index);
+    if (listRef.current) listRef.current.scrollTop = 0;
+    rangeRef.current?.focus();
+  };
+  return (
+    <nav className="github__list-pager" aria-label={label}>
+      <button
+        type="button"
+        className="btn btn--small"
+        disabled={page.index === 0}
+        onClick={() => go(page.index - 1)}
+      >
+        前の{BATCH_LIST_LIMIT}件
+      </button>
+      <p ref={rangeRef} className="github__list-more" tabIndex={-1} aria-live="polite">
+        {page.start + 1}〜{page.end}件目 / 全{total}件{note}
+      </p>
+      <button
+        type="button"
+        className="btn btn--small"
+        disabled={page.index === page.count - 1}
+        onClick={() => go(page.index + 1)}
+      >
+        次の{BATCH_LIST_LIMIT}件
+      </button>
+    </nav>
   );
 }
 
@@ -943,26 +1015,27 @@ function BatchCandidateView({
   );
   const undecided = countUndecided(batchMatches, choices);
   const needingDecision = batchMatches.filter(needsDecision);
-  const singleTargets = needingDecision.filter(
-    (match) => match.sameSource.length === 1 && !choices.has(match.path),
-  ).length;
+  const singleTargets = countSingleUpdates(batchMatches, choices);
+  const outcome = summarizeOutcome(batchMatches, choices);
+  const nextUndecided = firstUndecidedIndex(ordered, choices);
   const bytes = candidates.reduce((sum, candidate) => sum + candidate.size, 0);
   const shiftJis = candidates.filter((candidate) => candidate.encoding === 'shift_jis').length;
   const [pageIndex, setPageIndex] = useState(0);
   const page = listPage(ordered.length, pageIndex);
   const shown = ordered.slice(page.start, page.end);
   const listRef = useRef<HTMLUListElement>(null);
-  const rangeRef = useRef<HTMLParagraphElement>(null);
 
   /**
-   * ページを送る。ページャは一覧の下にあるので、末尾までスクロールしてから押すのが自然で、
-   * スクロール位置を残すと次のページが末尾から始まる。押したボタンは端のページで無効になり
-   * フォーカスが外れるので、範囲の表示へ移す（行を入れ替える前に移しても、表示は残る）。
+   * 最初の未決定の行へ移り、その選択欄にフォーカスする。決めても並び順は動かないので、
+   * 判断が要る候補が 100 件を超えると、未決定は後ろのページに残る。探して回らせない。
    */
-  const goToPage = (index: number): void => {
-    setPageIndex(index);
-    if (listRef.current) listRef.current.scrollTop = 0;
-    rangeRef.current?.focus();
+  const goToUndecided = (): void => {
+    if (nextUndecided === null) return;
+    // 行を入れ替えてからフォーカスするため、描画を待ってから選択欄を探す。
+    flushSync(() => setPageIndex(Math.floor(nextUndecided / BATCH_LIST_LIMIT)));
+    const row = listRef.current?.querySelector<HTMLElement>(`[data-index="${nextUndecided}"]`);
+    row?.scrollIntoView({ block: 'nearest' });
+    row?.querySelector<HTMLSelectElement>('select')?.focus();
   };
 
   /** まとめて決める。押したボタンは件数が 0 になると消えるので、フォーカスを見出しへ戻す。 */
@@ -991,8 +1064,7 @@ function BatchCandidateView({
         {shiftJis > 0 ? (
           <li>
             {shiftJis}件は Shift_JIS
-            として読み込みました（推測）。この画面では本文を確認できないので、
-            気になる場合は選択へ戻り、ファイル名を押して1件ずつ確認してください。
+            として読み込みました（推測）。文字化けしていないか、その行の「本文を確認」で確かめてください。
           </li>
         ) : null}
         {needingDecision.length > 0 ? (
@@ -1026,11 +1098,11 @@ function BatchCandidateView({
       ) : null}
 
       <ul ref={listRef} className="github__batch-list" aria-label="取り込むファイル">
-        {shown.map((match) => {
+        {shown.map((match, offset) => {
           const candidate = candidateByPath.get(match.path);
           if (!candidate) return null;
           return (
-            <li key={match.path} className="github__batch-item">
+            <li key={match.path} className="github__batch-item" data-index={page.start + offset}>
               <div className="github__batch-file">
                 <strong>{match.path}</strong>
                 <span>
@@ -1052,42 +1124,49 @@ function BatchCandidateView({
               ) : (
                 <span className="github__batch-new">新しい入力として追加</span>
               )}
+              {candidate.encoding === 'shift_jis' ? (
+                <TextPreview path={match.path} text={candidate.text} />
+              ) : null}
             </li>
           );
         })}
       </ul>
-      {page.count > 1 ? (
-        <nav className="github__list-pager" aria-label="取り込むファイルの一覧のページ">
-          <button
-            type="button"
-            className="btn btn--small"
-            disabled={page.index === 0}
-            onClick={() => goToPage(page.index - 1)}
-          >
-            前の{BATCH_LIST_LIMIT}件
-          </button>
-          <p ref={rangeRef} className="github__list-more" tabIndex={-1} aria-live="polite">
-            {page.start + 1}〜{page.end}件目 / 全{ordered.length}
-            件（判断が要るもの・注意が要るものを先に並べています）
+      <ListPager
+        label="取り込むファイルの一覧のページ"
+        page={page}
+        total={ordered.length}
+        note="（判断が要るもの・注意が要るものを先に並べています）"
+        listRef={listRef}
+        onGo={setPageIndex}
+      />
+
+      {/* 確定すると何が起きるか、押せないならなぜかを、確定ボタンのすぐ上に出す。 */}
+      <div id="github-batch-outcome" className="github__batch-outcome" aria-live="polite">
+        {undecided > 0 ? (
+          <>
+            <p>未決定が{undecided}件あります。すべて決めると取り込めます。</p>
+            <button type="button" className="btn btn--small" onClick={goToUndecided}>
+              次の未決定へ
+            </button>
+          </>
+        ) : (
+          <p>
+            追加 {outcome.adds}件 · 本文の置き換え {outcome.updates}件
+            {outcome.unchangedUpdates > 0
+              ? `（うち${outcome.unchangedUpdates}件は GitHub 側が前回の取り込みから変わっていないため、手元で直した内容が失われるだけです）`
+              : ''}
           </p>
-          <button
-            type="button"
-            className="btn btn--small"
-            disabled={page.index === page.count - 1}
-            onClick={() => goToPage(page.index + 1)}
-          >
-            次の{BATCH_LIST_LIMIT}件
-          </button>
-        </nav>
-      ) : null}
+        )}
+      </div>
 
       <div className="dialog__row">
         <button type="button" className="btn" onClick={handlers.clearBatch}>
-          選択へ戻る
+          選択へ戻る（取得した内容を破棄）
         </button>
         <button
           type="button"
           className="btn btn--primary"
+          aria-describedby="github-batch-outcome"
           disabled={state.busy !== null || undecided > 0}
           onClick={() => onApplyBatch(toBatchDecisions(batchMatches, choices))}
         >
@@ -1095,6 +1174,38 @@ function BatchCandidateView({
         </button>
       </div>
     </section>
+  );
+}
+
+/**
+ * 取得済みの本文を、その場で開いて確かめる（通信はしない）。
+ *
+ * Shift_JIS は推測なので確かめたいが、確かめるために「選択へ戻る」と取得した一括を捨てる
+ * ことになる。本文は手元にあるので、行の中で開けるようにする。開いた行だけ描画する。
+ */
+function TextPreview({ path, text }: { path: string; text: string }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="github__batch-preview">
+      <button
+        type="button"
+        className="btn btn--small"
+        aria-expanded={open}
+        aria-label={`${path} の本文を${open ? '閉じる' : '確認'}`}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {open ? '本文を閉じる' : '本文を確認'}
+      </button>
+      {open ? (
+        <textarea
+          className="dialog__textarea github__preview"
+          readOnly
+          value={text}
+          aria-label={`${path} の本文`}
+          spellCheck={false}
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -1121,6 +1232,8 @@ function BatchDecision({
   const chosenId = choice?.action === 'update' ? choice.inputId : null;
   const options = visibleUpdateTargets(targets, chosenId, range.index);
   const paged = range.count > 1;
+  const chosen = chosenId === null ? undefined : targets.find((target) => target.id === chosenId);
+  const unchangedCount = targets.filter((target) => isUnchangedTarget(match, target)).length;
   return (
     <div className="github__batch-decision">
       <label className="github__batch-decision-field">
@@ -1135,10 +1248,23 @@ function BatchDecision({
           {options.map((target) => (
             <option key={target.id} value={choiceToValue({ action: 'update', inputId: target.id })}>
               {target.label} を更新
+              {isUnchangedTarget(match, target) ? '（GitHub 側は変更なし）' : ''}
             </option>
           ))}
         </select>
       </label>
+      {chosen && isUnchangedTarget(match, chosen) ? (
+        <p className="github__batch-warning" role="note">
+          GitHub
+          側はこの入力を取り込んだときから変わっていません。更新すると、手元で直した内容が失われるだけです。
+        </p>
+      ) : unchangedCount > 0 && !chosen ? (
+        <p className="github__batch-note">
+          {unchangedCount === targets.length
+            ? 'GitHub 側は前回の取り込みから変わっていません（まとめて更新の対象外）'
+            : `${unchangedCount}件の更新先は、GitHub 側が前回の取り込みから変わっていません`}
+        </p>
+      ) : null}
       {paged ? (
         <div className="github__batch-targets">
           <button

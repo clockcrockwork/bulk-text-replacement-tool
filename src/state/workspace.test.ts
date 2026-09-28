@@ -560,7 +560,7 @@ describe('サンプル状態', () => {
     const before = sample();
     const cleared = workspaceReducer(before, { type: 'sample/clear', reset: RESET });
     const restored = workspaceReducer(cleared, {
-      type: 'sample/restore',
+      type: 'workspace/restore',
       workspace: {
         inputs: before.inputs,
         groups: before.groups,

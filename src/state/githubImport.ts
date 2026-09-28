@@ -152,8 +152,17 @@ export type GitHubImportAction =
   | { type: 'batch/set'; selection: GitHubTreeSelection; candidates: GitHubCandidate[] }
   | { type: 'batch/clear' }
   | { type: 'batch/choose'; choices: BatchChoices }
+  /** 確定した一括取り込みを「元に戻す」で取り消したとき、確認画面を決めた内容ごと戻す。 */
+  | { type: 'batch/restore'; batch: SuspendedBatch }
   | { type: 'selection/set'; path: string; selected: boolean }
   | { type: 'selection/clear' };
+
+/** 確定した一括取り込みの控え。「元に戻す」で確認画面へ戻すために持つ。 */
+export interface SuspendedBatch {
+  selection: GitHubTreeSelection;
+  candidates: GitHubCandidate[];
+  choices: BatchChoices;
+}
 
 /** 決めた取り込み方法が無い状態。読み取り専用なので、同じインスタンスを共有してよい。 */
 const NO_CHOICES: BatchChoices = new Map();
@@ -371,6 +380,9 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
       if (!state.batchCandidates) return state;
       return { ...state, batchChoices: action.choices };
 
+    case 'batch/restore':
+      return restoreBatch(state, action.batch);
+
     case 'batch/clear':
       // 取得の途中で戻ったときも、呼び出し側が取得を中断するので待ち表示を片付ける。
       return {
@@ -448,6 +460,34 @@ function acceptBatchCandidates(
     batchCandidates: action.candidates,
     batchChoices: NO_CHOICES,
     busy: null,
+    error: null,
+  };
+}
+
+/**
+ * 取り消した一括取り込みを、確認画面へ戻す。
+ *
+ * 候補は取得済みなので取り直さない。戻せるのは、同じスナップショットを見ていて、
+ * 別の一括や取得を始めていないときだけ（そうでなければ、今の作業を上書きしてしまう）。
+ */
+function restoreBatch(state: GitHubImportState, batch: SuspendedBatch): GitHubImportState {
+  const snapshot = state.snapshot;
+  const first = batch.candidates[0];
+  if (!snapshot || !first) return state;
+  if (state.busy !== null || state.batchPlan || state.batchCandidates) return state;
+  const sameSnapshot = batch.candidates.every(
+    (candidate) =>
+      candidate.source.commitSha === snapshot.commitSha &&
+      candidate.source.repositoryId === snapshot.repository.id,
+  );
+  if (!sameSnapshot) return state;
+  return {
+    ...state,
+    selection: batch.selection,
+    candidate: null,
+    batchPlan: null,
+    batchCandidates: batch.candidates,
+    batchChoices: batch.choices,
     error: null,
   };
 }

@@ -199,7 +199,7 @@ export function App(): JSX.Element {
     // 別々に出すと、あとから出た方が前のトーストを消してしまう。
     return {
       label: '元に戻す',
-      onClick: () => dispatch({ type: 'sample/restore', workspace: snapshot }),
+      onClick: () => dispatch({ type: 'workspace/restore', workspace: snapshot }),
     };
   };
 
@@ -360,6 +360,8 @@ export function App(): JSX.Element {
     // 取り込み方法は画面で全件決めてから呼ばれるはずだが、決まっていない候補があれば
     // 「追加」とみなさずに止める。同じ取り込み元の更新先を推測しない（仕様 §9）ことを、
     // 画面側のボタンの無効化だけに任せない。
+    // 更新先は ID で引く。候補ごとに入力を全走査すると、大量の更新で確定の1クリックが固まる。
+    const inputsById = new Map(state.inputs.map((input) => [input.id, input]));
     for (const candidate of candidates) {
       const decision = byPath.get(candidate.source.path);
       if (!decision) {
@@ -370,7 +372,7 @@ export function App(): JSX.Element {
         adds.push({ ...createInput(candidate.title, candidate.text), source: candidate.source });
         continue;
       }
-      const target = state.inputs.find((input) => input.id === decision.inputId);
+      const target = inputsById.get(decision.inputId);
       if (!target?.source || sourceIdentity(target.source) !== sourceIdentity(candidate.source)) {
         flash('更新先が変わったため、取り込み方法を選び直してください');
         return;
@@ -379,8 +381,16 @@ export function App(): JSX.Element {
     }
 
     guard('GitHub からの一括取り込み', () => {
-      // 一括ではサンプルの片付けに「元に戻す」を付けない。戻すと取り込んだ全件も消えるため
-      // （docs/github-import-v2.md §7 Untouched sample workspace）。
+      // 「元に戻す」は、取り込む前の内容（片付けたサンプルを含む）へ戻し、一括の確認画面も
+      // 決めた内容ごと開き直す。取得済みの候補を使うので取り直しにならず、違うフォルダや
+      // 押し間違い、置き換えた本文を1手で戻せる（docs/github-import-v2.md §7）。
+      const before: PersistedWorkspace = {
+        inputs: state.inputs,
+        groups: state.groups,
+        rules: state.rules,
+        theme: state.theme,
+        isSample: state.isSample,
+      };
       const clearedSample = state.isSample;
       dispatch({
         type: 'inputs/applyGitHubBatch',
@@ -395,8 +405,41 @@ export function App(): JSX.Element {
           (updates.length > 0 ? ` · ${updates.length}件を更新` : '') +
           (shiftJis > 0 ? ` · ${shiftJis}件は Shift_JIS` : '') +
           (clearedSample ? ' · サンプルを片付けました' : ''),
+        {
+          label: '元に戻す',
+          onClick: () => {
+            dispatch({ type: 'workspace/restore', workspace: before });
+            github.restoreBatch();
+          },
+        },
       );
     });
+  };
+
+  /**
+   * 接続の解除。一括取り込みの途中なら、取得した内容と決めた取り込み方法も捨てることになる。
+   * ダイアログを閉じても残すようにした分、足元の「接続を解除」で黙って失わせない。
+   */
+  const disconnectGitHub = (): void => {
+    const { batchPlan, batchCandidates } = github.state;
+    if (!batchPlan && !batchCandidates) {
+      github.disconnect();
+      return;
+    }
+    void confirmThen(
+      {
+        title: 'GitHub との接続を解除する',
+        message:
+          '進行中の一括取り込みも破棄します。もう一度取り込むには、接続し直して取得からやり直します。',
+        details: [
+          batchCandidates
+            ? `取得済みの ${batchCandidates.length}ファイルと、決めた取り込み方法`
+            : `数え終えた ${batchPlan?.entries.length ?? 0}ファイルの計画`,
+        ],
+        confirmLabel: '接続を解除する',
+      },
+      github.disconnect,
+    );
   };
 
   const openEditor = (id: string, caret: number, scrollRatio: number): void => {
@@ -823,7 +866,7 @@ export function App(): JSX.Element {
       {github.state.open ? (
         <GitHubImportDialog
           state={github.state}
-          handlers={github}
+          handlers={{ ...github, disconnect: disconnectGitHub }}
           installUrl={github.installUrl}
           saveFailed={saveFailed}
           sameSource={githubSameSource}

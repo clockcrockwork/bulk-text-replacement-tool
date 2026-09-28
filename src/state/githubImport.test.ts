@@ -493,6 +493,26 @@ describe('一括取り込みの段階', () => {
     expect(githubImportReducer(decided, { type: 'batch/clear' }).batchChoices.size).toBe(0);
   });
 
+  it('取り消した一括は、同じスナップショットのあいだだけ確認画面へ決めた内容ごと戻す', () => {
+    const cleared = githubImportReducer(PINNED, { type: 'selection/clear' });
+    const choices = new Map([[ENTRY.path, { action: 'add' as const }]]);
+    const batch = { selection: SELECTED.selection, candidates: [candidate()], choices };
+    const restored = githubImportReducer(cleared, { type: 'batch/restore', batch });
+    expect(restored.batchCandidates).toBe(batch.candidates);
+    expect(restored.batchChoices).toBe(choices);
+    expect(restored.selection).toBe(SELECTED.selection);
+
+    // 別のコミットの候補や、別の一括を始めているときは戻さない（今の作業を上書きしない）。
+    const otherCommit = { ...batch, candidates: [candidate(SHA_C)] };
+    expect(githubImportReducer(cleared, { type: 'batch/restore', batch: otherCommit })).toBe(
+      cleared,
+    );
+    expect(githubImportReducer(PLANNED, { type: 'batch/restore', batch })).toBe(PLANNED);
+    expect(
+      githubImportReducer(cleared, { type: 'batch/restore', batch: { ...batch, candidates: [] } }),
+    ).toBe(cleared);
+  });
+
   it('確認画面でないときに届いた決定は受け取らない', () => {
     const choices = new Map([[ENTRY.path, { action: 'add' as const }]]);
     expect(githubImportReducer(PLANNED, { type: 'batch/choose', choices })).toBe(PLANNED);

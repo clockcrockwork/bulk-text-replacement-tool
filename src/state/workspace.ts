@@ -107,7 +107,7 @@ export type WorkspaceAction =
   | { type: 'cellEdit/open'; target: CellEditTarget }
   | { type: 'cellEdit/close' }
   | { type: 'sample/clear'; reset: SampleReset }
-  | { type: 'sample/restore'; workspace: PersistedWorkspace };
+  | { type: 'workspace/restore'; workspace: PersistedWorkspace };
 
 /** 置換元が空の新規行。表の末尾に置いて入力待ちにする。 */
 export function createEmptyRule(): Rule {
@@ -443,7 +443,9 @@ function reduce(state: WorkspaceState, action: WorkspaceAction): WorkspaceState 
     case 'sample/clear':
       return { ...state, ...clearedSample(action.reset) };
 
-    case 'sample/restore':
+    case 'workspace/restore':
+      // 取り込みの「元に戻す」で、取り込む前の内容へまるごと戻す（サンプルの片付けと、
+      // GitHub の一括取り込み）。結果は戻した内容に合わないので捨てる。
       return { ...state, ...action.workspace, result: null, lastSignature: null };
 
     case 'cellEdit/open':

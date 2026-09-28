@@ -99,10 +99,29 @@ export function countUndecided(
 }
 
 /**
+ * GitHub 側が、その入力を取り込んだときから変わっていないか（blob が同じか）。
+ *
+ * 変わっていない候補で「更新」すると、得るものは無く、手元で直した本文を失うだけになる。
+ * 一括の「更新」は本文をまるごと置き換え、この画面では本文を比べられないので、見分けて知らせる。
+ */
+export function isUnchangedTarget(match: BatchSourceMatch, target: BatchUpdateTarget): boolean {
+  return target.blobSha === match.blobSha;
+}
+
+/** まとめて「更新」に決めてよい候補の、ただ1つの更新先。当てはまらなければ null。 */
+function singleUpdateTarget(match: BatchSourceMatch): BatchUpdateTarget | null {
+  const [only, ...rest] = match.sameSource;
+  if (!only || rest.length > 0 || isUnchangedTarget(match, only)) return null;
+  return only;
+}
+
+/**
  * 未決定のうち、同じ取り込み元の入力がちょうど1件の候補を、その入力の更新に決める。
  *
  * 更新先が1件しか無いので推測にはならない。2件以上ある候補は、どれを更新するかを
  * 利用者が1件ずつ決める（ここでは触らない）。決め済みの候補も上書きしない。
+ * GitHub 側が変わっていない候補も外す。まとめて押した1回で手元の変更を消させない
+ * （1件ずつ選べば更新はできる）。
  */
 export function chooseSingleUpdates(
   matches: readonly BatchSourceMatch[],
@@ -110,11 +129,56 @@ export function chooseSingleUpdates(
 ): Map<string, BatchChoice> {
   const next = new Map(choices);
   for (const match of matches) {
-    const [only, ...rest] = match.sameSource;
-    if (next.has(match.path) || !only || rest.length > 0) continue;
+    const only = singleUpdateTarget(match);
+    if (next.has(match.path) || !only) continue;
     next.set(match.path, { action: 'update', inputId: only.id });
   }
   return next;
+}
+
+/** `chooseSingleUpdates` が決める候補の数（まとめ操作のボタンに出す）。 */
+export function countSingleUpdates(
+  matches: readonly BatchSourceMatch[],
+  choices: BatchChoices,
+): number {
+  return matches.filter((match) => !choices.has(match.path) && singleUpdateTarget(match)).length;
+}
+
+/** 確定すると何が起きるか。確定ボタンの近くに出す。 */
+export interface BatchOutcome {
+  adds: number;
+  /** 既存の入力の本文を置き換える件数。 */
+  updates: number;
+  /** そのうち、GitHub 側が変わっていない（手元の変更を失うだけの）件数。 */
+  unchangedUpdates: number;
+}
+
+export function summarizeOutcome(
+  matches: readonly BatchSourceMatch[],
+  choices: BatchChoices,
+): BatchOutcome {
+  const outcome: BatchOutcome = { adds: 0, updates: 0, unchangedUpdates: 0 };
+  for (const match of matches) {
+    const choice = choices.get(match.path);
+    if (!choice) continue;
+    if (choice.action === 'add') {
+      outcome.adds += 1;
+      continue;
+    }
+    outcome.updates += 1;
+    const target = match.sameSource.find((candidate) => candidate.id === choice.inputId);
+    if (target && isUnchangedTarget(match, target)) outcome.unchangedUpdates += 1;
+  }
+  return outcome;
+}
+
+/** 並べた順で最初の未決定の位置。すべて決まっていれば null。 */
+export function firstUndecidedIndex(
+  ordered: readonly BatchSourceMatch[],
+  choices: BatchChoices,
+): number | null {
+  const index = ordered.findIndex((match) => !choices.has(match.path));
+  return index === -1 ? null : index;
 }
 
 /** 未決定の候補をすべて「別の入力として追加」に決める。決め済みの候補は上書きしない。 */

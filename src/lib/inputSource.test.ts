@@ -139,9 +139,11 @@ describe('matchBatchSources', () => {
     const [match] = matchBatchSources(inputs, [candidate('chapters/ch1.md')], label);
     expect(match).toEqual({
       path: 'chapters/ch1.md',
+      blobSha: SHA_B,
       sameSource: [
-        { id: 'one', label: '1:custom-one.md', position: 1 },
-        { id: 'two', label: '2:custom-two.md', position: 2 },
+        // 取り込んだときの blob を持つ（GitHub 側が変わったかの判定に使う）。
+        { id: 'one', label: '1:custom-one.md', position: 1, blobSha: SHA_B },
+        { id: 'two', label: '2:custom-two.md', position: 2, blobSha: SHA_B },
       ],
       titleCollision: false,
     });

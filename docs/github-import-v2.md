@@ -173,6 +173,7 @@ Normal browsing:
 - deselecting a descendant makes the parent indeterminate
 - search/filter changes visibility only and must not change selection
 - filter matching compares Unicode NFC forms (file names committed on macOS may be NFD); displayed names and paths are never rewritten
+- while a filter is active, the current-folder checkbox is labelled 「このフォルダ全体を選択（絞り込みで隠れている項目も含む）」. Checking it selects the whole folder, including entries the filter hides; without that wording it reads as "select what is shown"
 - selection rules are keyed by repository path in a `Map`, never as plain-object keys, so names such as `__proto__` behave like any other path
 - while an enumeration or fetch is running, checkboxes are disabled; a result is accepted only if the selection is still the one it was computed from
 
@@ -228,6 +229,8 @@ Paginated listings (installations, repositories, branches) follow `Link: rel="ne
 Git trees are content-addressed: identical directories at different paths share a tree SHA. Any cache or staleness check for a directory listing must key on **tree SHA + directory path**, because listing entries carry repository paths that become provenance and source identity.
 
 Blob fetch concurrency starts at 4 or fewer concurrent requests.
+
+Blobs fetched for a multi-file import are kept in memory, keyed by repository id and blob SHA, until another snapshot is pinned, the tab disconnects, or a batch is committed. A blob SHA names its content, so the cache cannot serve stale text. Retrying after a network failure, or going back to uncheck one file and fetching again, then only requests the blobs that are still missing.
 
 Respect rate-limit signals the browser can actually read: `x-ratelimit-remaining` / `x-ratelimit-reset` (exposed through CORS) and the error `message` in the response body. `retry-after` is **not** in GitHub's `Access-Control-Expose-Headers`, so browser code cannot read it; when a secondary rate limit is detected from the status and message, wait at least one minute as GitHub's rate-limit documentation advises. Do not retry continuously.
 
@@ -286,17 +289,23 @@ What the plan step guarantees: **no file content (blob) is fetched in bulk befor
 
 Neither list renders more than 100 rows at a time. There is no hard cap on the selection, so without this the screen that shows the warnings could itself become too large to render.
 
-- The plan list shows the first 100 paths and a count of the rest. It only informs; nothing is decided there.
+- The plan list is paged in steps of 100 as well. Nothing is decided there, but it is the last point to audit the targets before blob requests are spent, so paths beyond the first 100 must be viewable too.
 - The confirmation list is paged in steps of 100, with previous/next controls. Same-source candidates must be decided row by row, so every row has to stay reachable; a list that showed only the first 100 would leave the 101st undecidable. It shows candidates that need a decision first, then candidates with a warning (same basename, Shift_JIS guess), then the rest. The order does not change as choices are made, so the row being edited never moves away.
 - Moving to another page scrolls the list back to its top (the pager sits below the list, so it is usually pressed after scrolling to the end) and moves focus to the range text (for example 「101〜120件目 / 全120件」), which is also a polite live region. The pressed button may become disabled at the first or last page, so focus must not stay on it.
 - A bulk action (§9) removes its own button once nothing is left for it to decide, so focus moves to the step heading.
 - The update-target `<select>` of one candidate lists at most 50 same-source inputs at a time (plus the chosen one when it lies outside that range). Same-source inputs have no upper bound (**add as another input** can be repeated), so without this a single row could hold thousands of options. When there are more, the row has its own previous/next controls, so every target can be chosen by its list number and title inside the modal (the input list behind the modal cannot be consulted). The row also accepts an input's list number directly, as a shortcut.
 
-The batch confirmation does not preview file contents. For Shift_JIS guesses it says so and points to going back and opening files one by one (the single-file view shows the text).
+The batch confirmation does not preview every file. A row guessed as Shift_JIS has a 「本文を確認」 toggle that shows the already-fetched text in place (no request; only opened rows render a text area). Pointing the user to **選択へ戻る** instead would make them discard the fetched batch just to check it.
+
+On the confirmation step the back button reads 「選択へ戻る（取得した内容を破棄）」, because it is the one action there that throws the fetched batch and the choices away.
+
+Next to the commit button, the confirmation step says what committing will do: 「追加 X件 · 本文の置き換え Y件」, and how many of the replacements have an unchanged GitHub file (§9). While candidates are undecided, the same place says how many remain and offers 「次の未決定へ」, which pages to the first undecided row and focuses its `<select>`. The commit button is described by this text (`aria-describedby`).
 
 **選択へ戻る** on the plan step also cancels a fetch that is in progress. The remaining blob requests are aborted and the busy state is cleared.
 
-Closing the dialog (the close button, Escape, or a click on the backdrop) does **not** discard a multi-file import in progress. The plan, the fetched and validated candidates, and the add/update choices made so far stay in memory, and reopening the dialog returns to the same step. Fetching again costs rate limit and choosing again costs manual work, and Escape or a backdrop click is easy to trigger by accident. A fetch that was running when the dialog closed is aborted; reopening shows the plan step so it can be started again without re-enumerating. Only **選択へ戻る**, changing the selection, pinning another snapshot, disconnecting, or committing the import discards the batch. Choices are rechecked against the current workspace when shown: an update choice whose target input no longer has the same source is dropped and must be made again (never guessed).
+Closing the dialog (the close button, Escape, or a click on the backdrop) does **not** discard a multi-file import in progress. The plan, the fetched and validated candidates, and the add/update choices made so far stay in memory, and reopening the dialog returns to the same step. Fetching again costs rate limit and choosing again costs manual work, and Escape or a backdrop click is easy to trigger by accident. A fetch that was running when the dialog closed is aborted; reopening shows the plan step so it can be started again without re-enumerating. Only **選択へ戻る**, changing the selection, pinning another snapshot, disconnecting, or committing the import discards the batch. Disconnecting while a batch is in progress asks for confirmation first (`ConfirmDialog`), because keeping the batch on close makes the disconnect button the one remaining easy way to lose it.
+
+The backdrop closes a dialog only when the pointer was also pressed on the backdrop. `click` fires on the common ancestor of the press and release targets, so selecting text inside the dialog and releasing outside would otherwise count as a backdrop click (`useBackdropClose`, shared by every dialog in the app). Choices are rechecked against the current workspace when shown: an update choice whose target input no longer has the same source is dropped and must be made again (never guessed).
 
 Any fetch/decode/validation failure leaves the workspace unchanged.
 
@@ -308,10 +317,12 @@ Use bounded concurrency and `AbortController` so cancellation stops pending work
 
 If the workspace is still the untouched first-run sample (`isSample === true`), a GitHub import clears the sample inputs, groups, and rules in the same mutation that applies the imported inputs. An edited sample is the user's work and is never cleared automatically.
 
-Whether the toast offers **元に戻す** depends on the import path:
+Both import paths offer **元に戻す** in the toast:
 
-- **Single-file import**: offers **元に戻す**, the same as the V1 local import. Undo restores the sample snapshot, which also drops the one imported file; that file is cheap to import again.
-- **Multi-file import**: does **not** offer **元に戻す**. Undo restores the whole pre-import workspace, so it would also discard every imported file. Those files were fetched and validated over the network and cost rate limit to fetch again. The sample is only demo content, and a user who wants to study it can do so before importing. Losing the batch by accident is the heavier loss, so the batch path deliberately has no undo.
+- **Single-file import**: the same as the V1 local import. Undo restores the sample snapshot, which also drops the one imported file; that file is cheap to import again.
+- **Multi-file import**: undo restores the whole pre-import workspace (inputs, groups, rules, and the sample if it was cleared) **and reopens the batch confirmation with the same candidates and choices**. The candidates were fetched and validated over the network, so they are kept for this instead of being discarded; undo never costs a refetch. This makes the common mistakes one step to reverse: the wrong folder, pressing 「すべて別の入力として追加」 by mistake, or replacing text that had local edits. The batch is restored only while the same snapshot is pinned and no other batch or fetch is in progress; otherwise only the workspace is restored.
+
+An earlier revision of this spec gave the multi-file path no undo, because undo would have discarded every imported file. Keeping the candidates removes that cost.
 
 The toast still says that the sample was cleared, so the removal is never silent.
 
@@ -372,6 +383,14 @@ Because a batch can contain many same-source candidates, the confirmation step o
 - add every undecided candidate as a new input
 
 Candidates with two or more same-source inputs still need an explicit choice, unless the user adds them all. Bulk actions never overwrite a choice that has already been made.
+
+An update replaces the input's whole text. When the candidate's blob SHA equals the blob SHA stored in the target input's provenance, the GitHub file has not changed since that input was imported, so updating it gains nothing and only loses local edits. Such candidates:
+
+- say so on the row (and in the `<option>` of that target), with a warning once the unchanged target is chosen
+- are left out of 「更新先が1件の…をすべて更新」; they can still be updated one by one
+- are counted separately in the outcome text next to the commit button
+
+Skipping a single candidate is still out of scope; the user adds it, updates it knowingly, or goes back and unchecks it.
 
 ### Same basename but different GitHub source
 
@@ -612,6 +631,11 @@ Implemented:
 - bulk same-source decisions (update single-target candidates / add all undecided) that never guess
 - paging resets the list scroll and moves focus to the range text (a live region); bulk actions move focus to the heading
 - a candidate's update-target list shows 50 options at a time with its own paging, plus selection by input number as a shortcut
+- candidates whose GitHub file is unchanged since the target was imported are marked and excluded from the bulk update; the commit area shows added / replaced counts and the next undecided row
+- multi-file undo restores the workspace and reopens the confirmation with the same candidates and choices (no refetch)
+- Shift_JIS rows can show the fetched text in place; the plan list is paged by 100
+- fetched blobs are reused within a snapshot, so retries and re-selection only request missing blobs
+- disconnecting with a batch in progress asks for confirmation; a backdrop click closes a dialog only when the press also started on the backdrop
 - closing the dialog keeps the plan, fetched candidates, and choices; only 選択へ戻る (or a selection/snapshot change, disconnect, or commit) discards them
 - the rate-limit wait holds while the page stays loaded; a reload or OAuth round-trip re-learns it from the first response
 - the filename collision warning follows the output-name rules and ignores an untouched sample
@@ -627,7 +651,7 @@ Implemented:
 - a failed path leaves the workspace unchanged and is shown in the error
 - batch same-source conflicts require an explicit update target; multiple matches are never guessed
 - same-basename/different-source collisions are warnings only
-- final batch application is one workspace reducer action, including untouched-sample cleanup (no undo; see §7 **Untouched sample workspace**)
+- final batch application is one workspace reducer action, including untouched-sample cleanup (undo restores it and reopens the confirmation; see §7 **Untouched sample workspace**)
 - keyboard/mobile checkbox operation and screen-reader mixed state
 - filter matching is Unicode-normalization aware (NFC)
 

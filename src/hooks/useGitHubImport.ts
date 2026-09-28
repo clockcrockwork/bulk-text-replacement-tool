@@ -43,6 +43,7 @@ import {
   githubImportReducer,
   initialGitHubImportState,
   rateLimitWaitMs,
+  type SuspendedBatch,
   type TrailStep,
 } from '../state/githubImport';
 import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types';
@@ -197,6 +198,11 @@ export interface GitHubImport {
   finish: () => void;
   /** 一括取り込みを確定したあとに呼ぶ。選択を片付けてダイアログを閉じる。 */
   finishBatch: () => void;
+  /**
+   * 確定した一括取り込みを「元に戻す」で取り消したとき、確認画面を決めた内容ごと開き直す。
+   * 取得済みの候補を使うので、GitHub へは要求しない。
+   */
+  restoreBatch: () => void;
 }
 
 /** 暗号学的な乱数を base64url にする。32 バイトで verifier は 43 文字になる。 */
@@ -240,8 +246,16 @@ export function useGitHubImport(): GitHubImport {
    * キーはリポジトリ・tree SHA・パスの組（`loadListing` を参照）。
    */
   const treeCache = useRef(new Map<string, NormalizedTree>());
+  /**
+   * 一括取り込みで取れた blob（キーはリポジトリと blob SHA）。blob は内容で決まる SHA で
+   * 取るので中身は変わらない。1件の失敗や1件の選び直し、通信切れの再試行で、取れていた分まで
+   * 取り直して利用上限を使わないように持つ。固定し直し・切断・一括の確定で捨てる。
+   */
+  const blobCache = useRef(new Map<string, ArrayBuffer>());
   /** 直前に失敗した操作。「再試行」で同じことをやり直す。 */
   const lastTask = useRef<(() => void) | null>(null);
+  /** 直前に確定した一括取り込みの控え。「元に戻す」で確認画面へ戻すのに使う。 */
+  const suspendedBatch = useRef<SuspendedBatch | null>(null);
   const handledCallback = useRef(false);
 
   /** 進行中の取得を止めて、新しい取得の中断口を作る。 */
@@ -257,6 +271,7 @@ export function useGitHubImport(): GitHubImport {
     abortRef.current = null;
     tokenRef.current = null;
     treeCache.current.clear();
+    blobCache.current.clear();
     lastTask.current = null;
     dispatch({ type: 'disconnect', notice });
   };
@@ -388,14 +403,18 @@ export function useGitHubImport(): GitHubImport {
       '選択したファイルを取得しています',
       (api, signal) =>
         mapWithConcurrency(plan.entries, BLOB_CONCURRENCY, signal, async (entry, requestSignal) => {
-          let buffer: ArrayBuffer;
-          try {
-            buffer = await api.getBlob(snapshot, entry.sha, requestSignal);
-          } catch (error) {
-            if (error instanceof GitHubRequestError) {
-              throw new GitHubBatchRequestError(entry.path, error);
+          const key = JSON.stringify([snapshot.repository.id, entry.sha]);
+          let buffer = blobCache.current.get(key);
+          if (!buffer) {
+            try {
+              buffer = await api.getBlob(snapshot, entry.sha, requestSignal);
+            } catch (error) {
+              if (error instanceof GitHubRequestError) {
+                throw new GitHubBatchRequestError(entry.path, error);
+              }
+              throw error;
             }
-            throw error;
+            blobCache.current.set(key, buffer);
           }
           const result = buildCandidate(snapshot, entry, buffer);
           if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
@@ -464,6 +483,7 @@ export function useGitHubImport(): GitHubImport {
           dispatch({ type: 'info', message: `最新です（${shortSha(snapshot.commitSha)} のまま）` });
           return;
         }
+        blobCache.current.clear();
         dispatch({ type: 'snapshot/pinned', snapshot });
         const notes = [
           previous ? `${shortSha(snapshot.commitSha)} に更新しました` : null,
@@ -723,10 +743,27 @@ export function useGitHubImport(): GitHubImport {
       dispatch({ type: 'close' });
     },
     finishBatch: () => {
-      // 一括で取り込んだ選択は役目を終えたので片付ける。
+      // 取り消されたら確認画面へ戻せるよう、候補と決めた内容を控えておく（取り直させない）。
+      suspendedBatch.current = state.batchCandidates
+        ? {
+            selection: state.selection,
+            candidates: state.batchCandidates,
+            choices: state.batchChoices,
+          }
+        : null;
+      // 一括で取り込んだ選択は役目を終えたので片付ける。取り消しで戻る確認画面は控えた候補を
+      // 使うので、blob の控えはもう要らない。
+      blobCache.current.clear();
       dispatch({ type: 'batch/clear' });
       dispatch({ type: 'selection/clear' });
       dispatch({ type: 'close' });
+    },
+    restoreBatch: () => {
+      const batch = suspendedBatch.current;
+      suspendedBatch.current = null;
+      if (!batch) return;
+      dispatch({ type: 'batch/restore', batch });
+      dispatch({ type: 'open' });
     },
   };
 }

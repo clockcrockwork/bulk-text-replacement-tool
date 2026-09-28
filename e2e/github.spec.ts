@@ -755,7 +755,13 @@ test('大量の選択でも、計画画面は先頭だけを並べ、確認画�
   await expect(
     plan.getByRole('list', { name: '取り込むファイル' }).getByRole('listitem'),
   ).toHaveCount(100);
-  await expect(plan).toContainText('ほか 20件');
+  // 本文を取る前の最後の確認なので、101件目以降もページを送って見られる。
+  await expect(plan).toContainText('1〜100件目 / 全120件');
+  await plan.getByRole('button', { name: '次の100件' }).click();
+  const planRows = plan.getByRole('list', { name: '取り込むファイル' }).getByRole('listitem');
+  await expect(planRows).toHaveCount(20);
+  await expect(planRows.last()).toContainText('many/f119.md');
+  await expect(plan.getByText('101〜120件目 / 全120件')).toBeFocused();
 
   await plan.getByRole('button', { name: '120ファイルを取得' }).click();
   const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
@@ -967,6 +973,207 @@ test('接続の解除はこのタブだけだと、ボタンの名前と補足�
   await disconnect.click();
   await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeVisible();
   await expect(dialog(page).getByRole('button', { name: 'このタブの接続を解除' })).toHaveCount(0);
+});
+
+test('GitHub 側が変わっていない候補は、まとめて更新の対象外にし、確定前に置き換えの件数を示す', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  const head = mock.headOf(REPO.id, 'main');
+  const sourceOf = (path: string, blobSha: string) => ({
+    kind: 'github' as const,
+    repositoryId: REPO.id,
+    owner: REPO.owner,
+    repo: REPO.name,
+    ref: 'main',
+    commitSha: head,
+    path,
+    blobSha,
+  });
+  await mock.install(page);
+  await seedWorkspace(page, {
+    inputs: [
+      // 前回の取り込みから GitHub 側は変わっておらず、手元で直している。
+      {
+        id: 'one',
+        title: 'one.md',
+        text: '手元で直した\n',
+        source: sourceOf('chapters/ch1.md', GitHubMock.blobSha('アリスは川辺に座っていた。\n')),
+      },
+      {
+        id: 'two',
+        title: 'two.txt',
+        text: '古い2\n',
+        source: sourceOf('chapters/ch2.txt', 'b'.repeat(40)),
+      },
+    ],
+    groups: [{ id: 'g1', name: 'A用' }],
+    rules: [],
+  });
+  await openApp(page);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  const batch = await fetchSelection(page, 2);
+  const blobCalls = mock.apiCalls(/\/git\/blobs\//).length;
+  const first = batch.getByRole('combobox', { name: 'chapters/ch1.md の取り込み方法' });
+
+  // まとめて更新するのは、GitHub 側が変わった1件だけ。
+  await batch.getByRole('button', { name: '更新先が1件の1件をすべて更新' }).click();
+  await expect(batch).toContainText('GitHub 側は前回の取り込みから変わっていません');
+  await expect(batch).toContainText('未決定が1件あります');
+  const commit = batch.getByRole('button', { name: '2ファイルを取り込む' });
+  await expect(commit).toBeDisabled();
+
+  // 押せない理由の横から、残りの未決定へ移れる。
+  await batch.getByRole('button', { name: '次の未決定へ' }).click();
+  await expect(first).toBeFocused();
+  await first.selectOption('update:one');
+  await expect(batch.getByRole('note')).toContainText('手元で直した内容が失われるだけです');
+  await expect(commit).toHaveAccessibleDescription(
+    /追加 0件 · 本文の置き換え 2件（うち1件は GitHub 側が前回の取り込みから変わっていない/,
+  );
+  await commit.click();
+  await expect(page.locator('.input-card__preview').nth(0)).toHaveValue(
+    'アリスは川辺に座っていた。\n',
+  );
+
+  // 「元に戻す」で、置き換えた本文も確認画面も決めた内容ごと戻る（取り直さない）。
+  await page.getByRole('button', { name: '元に戻す' }).click();
+  await expect(page.locator('.input-card__preview').nth(0)).toHaveValue('手元で直した\n');
+  await expect(page.locator('.input-card__preview').nth(1)).toHaveValue('古い2\n');
+  await expect(first).toHaveValue('update:one');
+  await expect(
+    batch.getByRole('combobox', { name: 'chapters/ch2.txt の取り込み方法' }),
+  ).toHaveValue('update:two');
+  // 今度は追加に決め直して取り込める。
+  await first.selectOption('add');
+  await commit.click();
+  await expect(page.locator('.input-card')).toHaveCount(3);
+  await expect(page.locator('.input-card__preview').nth(0)).toHaveValue('手元で直した\n');
+  expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(blobCalls);
+});
+
+test('一括の確認画面で、Shift_JIS と推測した本文をその場で確かめられる（取り直さない）', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([
+    novelRepository({
+      branches: {
+        main: [
+          { path: 'old/a.txt', content: Buffer.from([0x82, 0xa0, 0x0a]) },
+          { path: 'old/b.md', content: 'UTF-8 の本文\n' },
+        ],
+      },
+    }),
+  ]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'old フォルダを選択' }).check();
+  const batch = await fetchSelection(page, 2);
+  const blobCalls = mock.apiCalls(/\/git\/blobs\//).length;
+  await expect(batch).toContainText('その行の「本文を確認」で確かめてください');
+  // Shift_JIS の行にだけ出す。
+  await expect(batch.getByRole('button', { name: /の本文を確認/ })).toHaveCount(1);
+  await batch.getByRole('button', { name: 'old/a.txt の本文を確認' }).click();
+  await expect(batch.getByRole('textbox', { name: 'old/a.txt の本文' })).toHaveValue('あ\n');
+  await batch.getByRole('button', { name: 'old/a.txt の本文を閉じる' }).click();
+  await expect(batch.getByRole('textbox', { name: 'old/a.txt の本文' })).toHaveCount(0);
+  expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(blobCalls);
+});
+
+test('選び直して取得し直しても、取得済みの本文は GitHub へ取りに行かない', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  const chapters = dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' });
+  await chapters.check();
+  const batch = await fetchSelection(page, 2);
+  const blobCalls = mock.apiCalls(/\/git\/blobs\//).length;
+  expect(blobCalls).toBe(2);
+
+  // 1件だけ外すために選択へ戻る（取得した一括は破棄される）。
+  await batch.getByRole('button', { name: '選択へ戻る（取得した内容を破棄）' }).click();
+  await entry(page, 'chapters/').click();
+  await dialog(page).getByRole('checkbox', { name: 'ch2.txt を選択' }).uncheck();
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  await dialog(page).getByRole('button', { name: '1ファイルを取得' }).click();
+  await dialog(page)
+    .getByRole('region', { name: '複数ファイルの取り込み確認' })
+    .getByRole('button', { name: '1ファイルを取り込む' })
+    .click();
+  await expect(page.locator('.input-card')).toHaveCount(2);
+  expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(blobCalls);
+});
+
+test('一括取り込みの途中で接続を解除するときは、破棄してよいか確かめる', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  const batch = await fetchSelection(page, 2);
+  const disconnect = dialog(page).getByRole('button', { name: 'このタブの接続を解除' });
+
+  await disconnect.click();
+  const confirm = page.getByRole('dialog', { name: 'GitHub との接続を解除する' });
+  await expect(confirm).toContainText('取得済みの 2ファイルと、決めた取り込み方法');
+  await confirm.getByRole('button', { name: 'キャンセル' }).click();
+  await expect(batch.getByRole('button', { name: '2ファイルを取り込む' })).toBeVisible();
+
+  await disconnect.click();
+  await confirm.getByRole('button', { name: '接続を解除する' }).click();
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeVisible();
+});
+
+test('絞り込み中の「このフォルダ全体を選択」は、隠れている項目も選ぶことを名前で伝える', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+  await entry(page, 'chapters/').click();
+
+  await expect(
+    dialog(page).getByRole('checkbox', { name: 'このフォルダ全体を選択' }),
+  ).toBeVisible();
+  await dialog(page).getByRole('searchbox', { name: 'このフォルダを絞り込み' }).fill('ch1');
+  const whole = dialog(page).getByRole('checkbox', {
+    name: 'このフォルダ全体を選択（絞り込みで隠れている項目も含む）',
+  });
+  await whole.check();
+  // 絞り込みを外すと、隠れていた ch2.txt も選ばれている。
+  await dialog(page).getByRole('searchbox', { name: 'このフォルダを絞り込み' }).fill('');
+  await expect(dialog(page).getByRole('checkbox', { name: 'ch2.txt を選択' })).toBeChecked();
+});
+
+test('ダイアログの中で文字をドラッグで選び、外側で離しても閉じない', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+  await entry(page, 'chapters/').click();
+  await entry(page, 'ch1.md').click();
+
+  const preview = dialog(page).getByRole('textbox', { name: '取り込む本文' });
+  const box = await preview.boundingBox();
+  if (!box) throw new Error('本文欄の位置が取れません');
+  await page.mouse.move(box.x + 5, box.y + 5);
+  await page.mouse.down();
+  await page.mouse.move(2, 2, { steps: 5 });
+  await page.mouse.up();
+  await expect(preview).toBeVisible();
+
+  // 背景で押して背景で離せば、これまでどおり閉じる。
+  await page.mouse.click(2, 2);
+  await expect(dialog(page)).toHaveCount(0);
 });
 
 test('大きさの分からないファイルがあれば、合計が小さくても取得の前に警告する', async ({ page }) => {

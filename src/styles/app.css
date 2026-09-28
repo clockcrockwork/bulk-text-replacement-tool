@@ -1728,6 +1728,37 @@ button.github__entry:hover {
   gap: 8px;
 }
 
+/* GitHub 側が変わっていない更新先の補足。警告ほど強くはしない。 */
+.github__batch-note {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+/* 取得済みの本文をその場で開く（Shift_JIS の確認）。 */
+.github__batch-preview {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.github__batch-preview .github__preview {
+  width: 100%;
+}
+
+/* 確定すると何が起きるか、押せないならなぜかを、確定ボタンの上に出す。 */
+.github__batch-outcome {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.github__batch-outcome p {
+  margin: 0;
+}
+
 /* 更新先が選択欄に並べきれないときのページ送り。 */
 .github__batch-targets {
   display: flex;
@@ -1786,6 +1817,7 @@ button.github__entry:hover {
    */
   .github__batch-bulk .btn,
   .github__batch-targets .btn,
+  .github__batch-outcome .btn,
   .github__list-pager .btn {
     flex: 1 1 100%;
     width: 100%;

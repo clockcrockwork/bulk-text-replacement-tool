@@ -4,11 +4,15 @@ import {
   choiceToValue,
   chooseAddForUndecided,
   chooseSingleUpdates,
+  countSingleUpdates,
   countUndecided,
   effectiveBatchChoices,
+  firstUndecidedIndex,
+  isUnchangedTarget,
   listPage,
   needsDecision,
   orderForReview,
+  summarizeOutcome,
   toBatchDecisions,
   UPDATE_TARGET_OPTION_LIMIT,
   updateTargetAt,
@@ -17,10 +21,22 @@ import {
 } from './githubBatchReview';
 import type { BatchSourceMatch } from './inputSource';
 
-function match(path: string, targets: string[] = [], titleCollision = false): BatchSourceMatch {
+/** 更新先は、既定では前回の取り込み（`old`）から GitHub 側が変わった候補にする。 */
+function match(
+  path: string,
+  targets: string[] = [],
+  titleCollision = false,
+  targetBlob = 'old',
+): BatchSourceMatch {
   return {
     path,
-    sameSource: targets.map((id, index) => ({ id, label: `${id} のラベル`, position: index + 1 })),
+    blobSha: 'new',
+    sameSource: targets.map((id, index) => ({
+      id,
+      label: `${id} のラベル`,
+      position: index + 1,
+      blobSha: targetBlob,
+    })),
     titleCollision,
   };
 }
@@ -77,6 +93,38 @@ describe('一括取り込みの確認', () => {
     expect(chooseSingleUpdates([SINGLE], alreadyAdd).get('b.md')).toEqual({ action: 'add' });
   });
 
+  it('GitHub 側が変わっていない候補は、まとめて更新する対象から外す（1件ずつなら選べる）', () => {
+    const unchanged = match('u.md', ['in9'], false, 'new');
+    expect(
+      isUnchangedTarget(unchanged, { id: 'in9', label: '', position: 1, blobSha: 'new' }),
+    ).toBe(true);
+    const next = chooseSingleUpdates([SINGLE, unchanged], new Map());
+    expect(next.get('b.md')).toEqual({ action: 'update', inputId: 'in1' });
+    expect(next.has('u.md')).toBe(false);
+    expect(countSingleUpdates([SINGLE, unchanged, MULTI], new Map())).toBe(1);
+    expect(countSingleUpdates([SINGLE], next)).toBe(0);
+  });
+
+  it('確定すると追加・置き換えが何件になり、うち何件が変わっていない候補かを数える', () => {
+    const unchanged = match('u.md', ['in9'], false, 'new');
+    const choices = new Map<string, BatchChoice>([
+      ['a.md', { action: 'add' }],
+      ['b.md', { action: 'update', inputId: 'in1' }],
+      ['u.md', { action: 'update', inputId: 'in9' }],
+    ]);
+    expect(summarizeOutcome([PLAIN, SINGLE, unchanged, MULTI], choices)).toEqual({
+      adds: 1,
+      updates: 2,
+      unchangedUpdates: 1,
+    });
+  });
+
+  it('並べた順で最初の未決定を探す', () => {
+    const choices = new Map<string, BatchChoice>([['b.md', { action: 'add' }]]);
+    expect(firstUndecidedIndex([SINGLE, MULTI], choices)).toBe(1);
+    expect(firstUndecidedIndex([SINGLE], choices)).toBeNull();
+  });
+
   it('未決定をまとめて追加に決め、決め済みは上書きしない', () => {
     const decided = new Map<string, BatchChoice>([['b.md', { action: 'update', inputId: 'in1' }]]);
     const next = chooseAddForUndecided([PLAIN, SINGLE, MULTI], decided);
@@ -127,6 +175,7 @@ describe('更新先の選択肢', () => {
     id: `in${index}`,
     label: `${index + 1} x.md`,
     position: index + 1,
+    blobSha: 'old',
   }));
 
   it('上限件ずつ区切って並べ、ページを送ればどの更新先にも届く', () => {

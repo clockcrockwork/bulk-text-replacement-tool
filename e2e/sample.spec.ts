@@ -49,9 +49,10 @@ test('原稿を取り込むとサンプルは自動で片付き、元に戻せ�
   await expect(page.locator('.sample-notice')).toBeVisible();
 });
 
-test('GitHub から一括で取り込むとサンプルは片付くが、元に戻すは出さない', async ({ page }) => {
-  // 戻すと取り込んだ全件も消えるので、一括では意図して付けない
-  // （docs/github-import-v2.md §7 Untouched sample workspace）。
+test('GitHub から一括で取り込むとサンプルは片付き、元に戻すと確認画面ごと戻る', async ({
+  page,
+}) => {
+  // 戻しても取得した一括は失わない（確認画面へ戻るだけ。docs/github-import-v2.md §7）。
   const mock = new GitHubMock([novelRepository()]);
   await mock.install(page);
   const dialog = page.getByRole('dialog', { name: 'GitHubから追加' });
@@ -69,9 +70,17 @@ test('GitHub から一括で取り込むとサンプルは片付くが、元に�
   await expect(page.locator('.input-card__title').nth(1)).toHaveValue('ch2.txt');
   await expect(page.locator('.sample-notice')).toHaveCount(0);
   await expect(page.getByText('サンプルを片付けました')).toBeVisible();
-  await expect(page.getByRole('button', { name: '元に戻す' })).toHaveCount(0);
   await goToTab(page, 'ルール');
   await expect(page.locator('[data-cell="0:0"]')).toHaveValue('');
+
+  await page.getByRole('button', { name: '元に戻す' }).click();
+  const blobs = mock.apiCalls(/\/git\/blobs\//).length;
+  await expect(dialog.getByRole('button', { name: '2ファイルを取り込む' })).toBeVisible();
+  await dialog.getByRole('button', { name: '閉じる' }).click();
+  await goToTab(page, '入力');
+  await expect(page.locator('.sample-notice')).toBeVisible();
+  await expect(page.locator('.input-card__title').first()).toHaveValue('chapter1.md');
+  expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(blobs);
 });
 
 test('一括取り込みの確認では、手つかずのサンプルとの同名を警告しない', async ({ page }) => {

@@ -1,4 +1,5 @@
 import { type JSX, useEffect, useRef } from 'react';
+import { useBackdropClose } from '../hooks/useBackdropClose';
 
 export interface ConfirmRequest {
   /** 見出し。「何をしようとしているか」を動詞で書く。 */
@@ -33,6 +34,7 @@ interface ConfirmDialogProps {
  */
 export function ConfirmDialog({ request, onChoose }: ConfirmDialogProps): JSX.Element {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const backdrop = useBackdropClose(dialogRef, () => onChoose('cancel'));
   const cancelRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -43,7 +45,7 @@ export function ConfirmDialog({ request, onChoose }: ConfirmDialogProps): JSX.El
   }, []);
 
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: キーボードでの閉じる操作は <dialog> 標準の Escape（onCancel）が担う
+    // 背景のクリックで閉じる（useBackdropClose）。キーボードでは <dialog> 標準の Escape（onCancel）で閉じる
     <dialog
       ref={dialogRef}
       className="dialog dialog--confirm"
@@ -52,9 +54,7 @@ export function ConfirmDialog({ request, onChoose }: ConfirmDialogProps): JSX.El
         event.preventDefault();
         onChoose('cancel');
       }}
-      onClick={(event) => {
-        if (event.target === dialogRef.current) onChoose('cancel');
-      }}
+      {...backdrop}
     >
       <div className="dialog__inner">
         <h2 className="dialog__title">{request.title}</h2>
