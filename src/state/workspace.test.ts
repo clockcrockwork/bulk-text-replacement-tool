@@ -6,6 +6,7 @@ import {
   createInput,
   createSampleReset,
   initWorkspace,
+  toPersisted,
   type WorkspaceState,
   workspaceReducer,
   workspaceSignature,
@@ -63,6 +64,19 @@ function state(overrides: Partial<WorkspaceState> = {}): WorkspaceState {
     ...overrides,
   };
 }
+
+describe('toPersisted', () => {
+  it('保存する5項目だけを取り出し、画面の状態は含めない', () => {
+    const persisted = toPersisted(state({ inputs: [input('i1', 'x')], tab: 'output' }));
+    expect(persisted).toEqual({
+      inputs: [input('i1', 'x')],
+      groups: [GROUP_A, GROUP_B],
+      rules: [],
+      theme: 'light',
+      isSample: false,
+    });
+  });
+});
 
 describe('workspaceReducer', () => {
   it('テーマを切り替える', () => {

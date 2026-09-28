@@ -6,6 +6,7 @@ import type {
   GitHubTreeEntry,
 } from '../types';
 import { isAcceptedFile } from './inputFiles';
+import { formatLimit, MAX_INPUT_BYTES } from './inputLimits';
 import { baseName, isGitSha, isRepositoryPath } from './inputSource';
 import { revealUnsafeChars } from './revealText';
 import { type DecodedText, decodeText } from './text';
@@ -83,9 +84,6 @@ export const GITHUB_FETCH_INIT = {
   referrerPolicy: 'no-referrer',
 } as const satisfies RequestInit;
 
-/** Git blob API が扱える上限。これを超えるファイルは取得を試みない。 */
-export const MAX_BLOB_BYTES = 100 * 1024 * 1024;
-
 // ---- 待ち時間の方針（issue #20） ------------------------------------------------
 //
 // どれも「利用者の操作1回」ではなく「1リクエスト」に掛ける。ページ送りは1ページずつ、
@@ -107,7 +105,7 @@ export const RECURSIVE_TREE_TIMEOUT_MS = 60_000;
 /**
  * blob を1バイトも受け取れていない時間（ヘッダ待ちを含む）。blob は大きさで正常な所要時間が
  * 変わるので、合計ではなく「受信が止まっている時間」で見る。何 MB まで受け入れるかは
- * 別の方針（`MAX_BLOB_BYTES`・issue #19）で、ここでは決めない。
+ * 別の方針（`src/lib/inputLimits.ts`・issue #19）で、ここでは決めない。
  */
 export const BLOB_STALL_TIMEOUT_MS = 30_000;
 
@@ -172,8 +170,6 @@ export type GitHubErrorKind =
   | 'offline'
   /** 決めた時間のあいだ応答がない、または受信が止まった。 */
   | 'timeout'
-  /** 受け取った本文が取得の上限（`MAX_BLOB_BYTES`）を超えた。 */
-  | 'tooLarge'
   /** 期待した形の応答ではない。 */
   | 'invalidResponse'
   /** 一覧が長すぎて、辿れる上限までに終わらなかった（途中までの一覧は使わない）。 */
@@ -307,9 +303,7 @@ export type GitHubRecovery = 'retry' | 'dismiss' | 'reselect' | 'chooseBranch';
 export function recoveryFor(error: GitHubError, stage: GitHubFetchStage): GitHubRecovery {
   switch (error.kind) {
     case 'listTooLong':
-    case 'tooLarge':
-      // やり直しても同じ結果で、rate limit を食うだけ（tooLarge は固定した blob を同じ上限で
-      // 取り直すことになるので、何度やっても超える）。
+      // やり直しても同じ結果で、rate limit を食うだけ。
       return 'dismiss';
     case 'emptyRepository':
       // コミットが増えるまで何度やっても同じ。別のリポジトリを選んでもらう。
@@ -323,14 +317,6 @@ export function recoveryFor(error: GitHubError, stage: GitHubFetchStage): GitHub
     default:
       return 'retry';
   }
-}
-
-/**
- * 取得の上限を画面に出す形にする。上限の値（`MAX_BLOB_BYTES`）を変えたときに、
- * 文言の数字だけ古いまま残らないよう、定数から作る。
- */
-export function formatBlobLimit(bytes: number = MAX_BLOB_BYTES): string {
-  return `${Math.floor(bytes / (1024 * 1024))}MB`;
 }
 
 /** 失敗を利用者向けの文にする。 */
@@ -362,8 +348,6 @@ export function describeGitHubError(error: GitHubError): string {
         ? `GitHub からの受信が ${seconds} 秒止まったため中断しました。通信状況を確認して再試行してください。`
         : `GitHub から ${seconds} 秒応答がなかったため中断しました。通信状況を確認して再試行してください。`;
     }
-    case 'tooLarge':
-      return `取得の上限（${formatBlobLimit()}）を超えたため取り込めません。`;
     case 'invalidResponse':
       return 'GitHub から想定外の応答が返りました。再試行してください。';
     case 'listTooLong':
@@ -477,7 +461,9 @@ export function classifyTreeEntry(
   if (type === 'tree') return 'dir';
   if (type !== 'blob') return null;
   if (!isAcceptedFile(name)) return 'unsupported';
-  if (size !== null && size > MAX_BLOB_BYTES) return 'tooLarge';
+  // 上限はローカルのファイルと共有する（経路で扱いを分けない）。GitHub の blob API の
+  // 境界（100MB）はそれより大きいので、ここでは見なくてよい。
+  if (size !== null && size > MAX_INPUT_BYTES) return 'tooLarge';
   return 'importable';
 }
 
@@ -555,12 +541,30 @@ export function describeEntryStatus(status: GitHubEntryStatus): string | null {
     case 'unsupported':
       return '非対応の形式';
     case 'tooLarge':
-      return `${formatBlobLimit()} を超えるため取得できません`;
+      return `${formatLimit(MAX_INPUT_BYTES)} を超えるため取り込めません`;
     case 'symlink':
       return 'シンボリックリンク';
     case 'submodule':
       return 'サブモジュール';
   }
+}
+
+/** 1ファイルの上限を超えたときの文言。一覧・取得・候補のどこで分かっても同じにする。 */
+export function blobTooLargeMessage(path: string): string {
+  return `${revealUnsafeChars(path)} は ${formatLimit(MAX_INPUT_BYTES)} を超えるため取り込めません。`;
+}
+
+/**
+ * `Content-Length` を読む。整数として読めなければ null。
+ *
+ * 応答が圧縮されていると、これは展開前の長さになる。上限を超えていれば読む前に
+ * 断ってよいが、上限内でも本文が上限内とは限らないので、通す根拠には使わない
+ * （最終的な判定は読みながら数えた長さ）。
+ */
+export function parseContentLength(value: string | null): number | null {
+  if (value === null || !/^\d+$/.test(value.trim())) return null;
+  const length = Number(value.trim());
+  return Number.isSafeInteger(length) ? length : null;
 }
 
 /** バイト数を読みやすくする。 */
@@ -615,11 +619,9 @@ export function buildCandidate(
       message: `${revealUnsafeChars(entry.path)} は取り込めない種類のファイルです。`,
     };
   }
-  if (buffer.byteLength > MAX_BLOB_BYTES) {
-    return {
-      kind: 'error',
-      message: `${revealUnsafeChars(entry.path)} は取得の上限（${formatBlobLimit()}）を超えるため取り込めません。`,
-    };
+  // 取得の側（`getBlob`）で読みながら打ち切っているが、候補にする入口でも確かめる。
+  if (buffer.byteLength > MAX_INPUT_BYTES) {
+    return { kind: 'error', message: blobTooLargeMessage(entry.path) };
   }
   if (isLfsPointer(new Uint8Array(buffer))) {
     return {

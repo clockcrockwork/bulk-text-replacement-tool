@@ -1,5 +1,6 @@
 import type { GitHubEntryStatus, GitHubTreeEntry } from '../types';
 import { compareCodePoints } from './githubApi';
+import { MAX_IMPORT_TOTAL_BYTES } from './inputLimits';
 
 /**
  * 遅延読み込みする tree の選択。
@@ -151,18 +152,11 @@ export function summarizeKnownSelection(
  */
 export const BATCH_WARN_FILES = 200;
 
-/**
- * これを超えたら、ブラウザへの保存に失敗し得ることを知らせる。localStorage は
- * 数MBで打ち止めになり、取り込んだ本文はそこへ丸ごと入る。
- */
-export const BATCH_WARN_BYTES = 2 * 1024 * 1024;
-
 export type BatchWarning =
   | { kind: 'requests'; files: number }
-  | { kind: 'storage'; bytes: number }
   /**
-   * 大きさを事前に確かめられない項目がある。表示する合計は下限にすぎず、既知の分が
-   * しきい値未満でも実際には大きくなり得るので、容量の警告とは別に必ず知らせる。
+   * 大きさを事前に確かめられない項目がある。表示する合計は下限にすぎず、実際には
+   * 1回の上限を超え得る（超えたら取得の途中で止める）ので、必ず知らせる。
    */
   | { kind: 'unknownSize'; files: number };
 
@@ -172,6 +166,11 @@ export interface BatchPlanSummary {
   bytes: number;
   /** 大きさの分からない項目の数。0 でなければ合計は下限。 */
   unknownSizes: number;
+  /**
+   * 分かっている分だけで1回の取り込みの上限（`MAX_IMPORT_TOTAL_BYTES`）を超えている。
+   * 取得を始めさせない（取ってから断ると、断るまでの読み込みがまるごと無駄になる）。
+   */
+  overLimit: boolean;
   warnings: BatchWarning[];
 }
 
@@ -185,9 +184,14 @@ export function planBatch(entries: readonly GitHubTreeEntry[]): BatchPlanSummary
   }
   const warnings: BatchWarning[] = [];
   if (entries.length > BATCH_WARN_FILES) warnings.push({ kind: 'requests', files: entries.length });
-  if (bytes > BATCH_WARN_BYTES) warnings.push({ kind: 'storage', bytes });
   if (unknownSizes > 0) warnings.push({ kind: 'unknownSize', files: unknownSizes });
-  return { files: entries.length, bytes, unknownSizes, warnings };
+  return {
+    files: entries.length,
+    bytes,
+    unknownSizes,
+    overLimit: bytes > MAX_IMPORT_TOTAL_BYTES,
+    warnings,
+  };
 }
 
 /** 取り込めない項目の種類ごとの件数。表示する順に並べる。 */

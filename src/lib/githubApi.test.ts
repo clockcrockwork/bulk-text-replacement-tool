@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { GitHubSnapshot } from '../types';
 import {
   BLOB_STALL_TIMEOUT_MS,
+  blobTooLargeMessage,
   buildCandidate,
   classifyErrorResponse,
   classifyFetchFailure,
@@ -9,7 +10,6 @@ import {
   describeEntryStatus,
   describeGitHubError,
   encodePath,
-  formatBlobLimit,
   formatBytes,
   GITHUB_CORS_ALLOWED_REQUEST_HEADERS,
   GITHUB_CORS_EXPOSED_RESPONSE_HEADERS,
@@ -18,7 +18,6 @@ import {
   githubRequestHeaders,
   isLfsPointer,
   joinPath,
-  MAX_BLOB_BYTES,
   METADATA_TIMEOUT_MS,
   mergeRepositories,
   normalizeBranches,
@@ -29,6 +28,7 @@ import {
   normalizeRepositories,
   normalizeTree,
   orderBranches,
+  parseContentLength,
   parseNextLink,
   RECURSIVE_TREE_TIMEOUT_MS,
   readErrorMessage,
@@ -36,6 +36,7 @@ import {
   SLOW_NOTICE_MS,
   timeoutError,
 } from './githubApi';
+import { MAX_INPUT_BYTES } from './inputLimits';
 import { BOM } from './text';
 
 const SHA_A = 'a'.repeat(40);
@@ -231,10 +232,6 @@ describe('recoveryFor', () => {
     for (const stage of stages) expect(recoveryFor(error('listTooLong'), stage)).toBe('dismiss');
   });
 
-  it('上限を超える本文は、固定した blob を同じ上限で取り直しても変わらないので閉じるだけ', () => {
-    for (const stage of stages) expect(recoveryFor(error('tooLarge'), stage)).toBe('dismiss');
-  });
-
   it('時間切れは、どの段階でも同じ GET をやり直せる（コミットは固定済み）', () => {
     for (const stage of stages) {
       expect(recoveryFor(timeoutError(METADATA_TIMEOUT_MS, false), stage)).toBe('retry');
@@ -284,7 +281,6 @@ describe('describeGitHubError', () => {
       'network',
       'offline',
       'timeout',
-      'tooLarge',
       'invalidResponse',
       'listTooLong',
     ];
@@ -301,13 +297,6 @@ describe('describeGitHubError', () => {
   it('オフラインは、ネットワーク障害一般と区別して伝える', () => {
     expect(describeGitHubError(classifyFetchFailure(false))).toContain('オフライン');
     expect(describeGitHubError(classifyFetchFailure(true))).not.toContain('オフライン');
-  });
-
-  it('上限を超えた本文は、上限の値を定数から出す', () => {
-    expect(describeGitHubError({ kind: 'tooLarge', status: null, resetAt: null })).toContain(
-      formatBlobLimit(MAX_BLOB_BYTES),
-    );
-    expect(formatBlobLimit(MAX_BLOB_BYTES)).toBe('100MB');
   });
 });
 
@@ -401,8 +390,9 @@ describe('tree の分類', () => {
     // 名前が対応拡張子でも、リンクとサブモジュールは中身がスナップショットの外にあり得る。
     expect(classifyTreeEntry('120000', 'blob', 'link.md', 10)).toBe('symlink');
     expect(classifyTreeEntry('160000', 'commit', 'sub.md', null)).toBe('submodule');
-    expect(classifyTreeEntry('100644', 'blob', 'huge.md', MAX_BLOB_BYTES + 1)).toBe('tooLarge');
-    expect(classifyTreeEntry('100644', 'blob', 'edge.md', MAX_BLOB_BYTES)).toBe('importable');
+    // 上限はローカルのファイルと同じ（GitHub の blob API の 100MB ではない）。
+    expect(classifyTreeEntry('100644', 'blob', 'huge.md', MAX_INPUT_BYTES + 1)).toBe('tooLarge');
+    expect(classifyTreeEntry('100644', 'blob', 'edge.md', MAX_INPUT_BYTES)).toBe('importable');
     expect(classifyTreeEntry('100644', 'weird', 'a.md', 1)).toBeNull();
   });
 
@@ -483,7 +473,7 @@ describe('tree の分類', () => {
     expect(describeEntryStatus('dir')).toBeNull();
     expect(describeEntryStatus('importable')).toBeNull();
     expect(describeEntryStatus('unsupported')).toBe('非対応の形式');
-    expect(describeEntryStatus('tooLarge')).toContain('100MB');
+    expect(describeEntryStatus('tooLarge')).toBe('5MiB を超えるため取り込めません');
     expect(describeEntryStatus('symlink')).toBe('シンボリックリンク');
     expect(describeEntryStatus('submodule')).toBe('サブモジュール');
   });
@@ -547,10 +537,29 @@ describe('buildCandidate', () => {
     expect(buildCandidate(SNAPSHOT, { ...entry, status: 'symlink' }, bytes('x')).kind).toBe(
       'error',
     );
-    const huge = { byteLength: MAX_BLOB_BYTES + 1 } as ArrayBuffer;
+    const huge = new ArrayBuffer(MAX_INPUT_BYTES + 1);
     expect(buildCandidate(SNAPSHOT, entry, huge)).toEqual({
       kind: 'error',
-      message: 'chapters/ch1.md は取得の上限（100MB）を超えるため取り込めません。',
+      message: 'chapters/ch1.md は 5MiB を超えるため取り込めません。',
     });
+    expect(buildCandidate(SNAPSHOT, entry, new ArrayBuffer(MAX_INPUT_BYTES)).kind).toBe('ok');
+  });
+});
+
+describe('上限を超える blob', () => {
+  it('文言は一覧・取得・候補で共通で、見えない文字は見える形にする', () => {
+    expect(blobTooLargeMessage('docs/a.md')).toBe('docs/a.md は 5MiB を超えるため取り込めません。');
+    expect(blobTooLargeMessage('a\u202egpj.md')).toContain('⟨U+202E⟩');
+  });
+
+  it('Content-Length は整数として読めるときだけ使う', () => {
+    expect(parseContentLength('5242881')).toBe(5242881);
+    expect(parseContentLength(' 12 ')).toBe(12);
+    expect(parseContentLength(null)).toBeNull();
+    expect(parseContentLength('')).toBeNull();
+    expect(parseContentLength('-1')).toBeNull();
+    expect(parseContentLength('1.5')).toBeNull();
+    expect(parseContentLength('12, 12')).toBeNull();
+    expect(parseContentLength('9'.repeat(20))).toBeNull();
   });
 });

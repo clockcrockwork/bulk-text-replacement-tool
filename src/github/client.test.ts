@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MAX_BLOB_BYTES } from '../lib/githubApi';
-import { createGitHubClient, GitHubRequestError, MAX_PAGES } from './client';
+import {
+  createGitHubClient,
+  GitHubBlobTooLargeError,
+  GitHubRequestError,
+  MAX_PAGES,
+} from './client';
 
 /**
  * 通信層のうち、ページ送りと送るヘッダだけをここで見る。画面の流れはモックした GitHub
@@ -88,6 +92,128 @@ describe('送るヘッダ', () => {
   });
 });
 
+describe('blob の上限', () => {
+  const SNAPSHOT = {
+    repository: REPO,
+    ref: 'main',
+    commitSha: 'a'.repeat(40),
+    treeSha: 'b'.repeat(40),
+  };
+  const SHA = 'c'.repeat(40);
+
+  /** `chunks` 個の `chunkSize` バイトを流す本文。読まれた回数と取り消しを記録する。 */
+  function streamed(chunkSize: number, chunks: number) {
+    const log = { pulled: 0, cancelled: false };
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (log.pulled >= chunks) {
+          controller.close();
+          return;
+        }
+        log.pulled += 1;
+        controller.enqueue(new Uint8Array(chunkSize).fill(log.pulled));
+      },
+      cancel() {
+        log.cancelled = true;
+      },
+    });
+    return { stream, log };
+  }
+
+  function blobFetch(body: BodyInit, headers: Record<string, string> = {}) {
+    return (async () => new Response(body, { status: 200, headers })) as typeof fetch;
+  }
+
+  const getBlob = (
+    fetchImpl: typeof fetch,
+    maxBytes: number,
+    take?: (bytes: number) => boolean,
+    signal = new AbortController().signal,
+  ) =>
+    createGitHubClient('t', fetchImpl).getBlob(SNAPSHOT, SHA, signal, {
+      maxBytes,
+      ...(take ? { take } : {}),
+    });
+
+  it('上限ちょうどまでは、分けて届いた本文をつないで返す', async () => {
+    const { stream } = streamed(4, 3);
+    const buffer = await getBlob(blobFetch(stream), 12);
+    expect([...new Uint8Array(buffer)]).toEqual([1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]);
+  });
+
+  it('大きさが分からなくても、読みながら数えて上限を超えた時点でやめる', async () => {
+    const { stream, log } = streamed(4, 1000);
+    await expect(getBlob(blobFetch(stream), 10)).rejects.toBeInstanceOf(GitHubBlobTooLargeError);
+    // 上限を超えた3つ目で取り消し、残りは受け取らない。
+    expect(log.cancelled).toBe(true);
+    expect(log.pulled).toBeLessThan(10);
+  });
+
+  it('Content-Length が上限を超えていれば、本文を読まずに断る', async () => {
+    const { stream, log } = streamed(4, 1000);
+    await expect(getBlob(blobFetch(stream, { 'content-length': '11' }), 10)).rejects.toBeInstanceOf(
+      GitHubBlobTooLargeError,
+    );
+    expect(log.cancelled).toBe(true);
+    expect(log.pulled).toBeLessThanOrEqual(1);
+  });
+
+  it('Content-Length が上限内でも信用せず、実際の長さで断る（圧縮されていれば展開前の長さ）', async () => {
+    const { stream } = streamed(4, 5);
+    await expect(getBlob(blobFetch(stream, { 'content-length': '8' }), 10)).rejects.toBeInstanceOf(
+      GitHubBlobTooLargeError,
+    );
+  });
+
+  it('1件の上限を超えたときは scope が file', async () => {
+    const { stream } = streamed(4, 1000);
+    await expect(getBlob(blobFetch(stream), 10)).rejects.toMatchObject({ scope: 'file' });
+  });
+
+  it('届いた分ずつ共有の予算から差し引き、足りなくなった時点で読むのをやめる', async () => {
+    const { stream, log } = streamed(4, 1000);
+    const taken: number[] = [];
+    let budget = 10;
+    const take = (bytes: number): boolean => {
+      taken.push(bytes);
+      budget -= bytes;
+      return budget >= 0;
+    };
+    await expect(getBlob(blobFetch(stream), 1_000_000, take)).rejects.toMatchObject({
+      scope: 'total',
+    });
+    // 3つ目（合計 12 バイト）で予算を超え、それ以上は差し引かずに取り消す。
+    expect(taken).toEqual([4, 4, 4]);
+    expect(log.cancelled).toBe(true);
+    expect(log.pulled).toBeLessThan(10);
+  });
+
+  it('中断されたら、続きを読まずに取り消す', async () => {
+    const { stream, log } = streamed(4, 1000);
+    const controller = new AbortController();
+    const take = (): boolean => {
+      controller.abort();
+      return true;
+    };
+    await expect(
+      getBlob(blobFetch(stream), 1_000_000, take, controller.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(log.cancelled).toBe(true);
+    expect(log.pulled).toBeLessThan(10);
+  });
+
+  it('本文の途中で切れたら、通信の失敗として分類する', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError('network'));
+      },
+    });
+    await expect(getBlob(blobFetch(stream), 10)).rejects.toMatchObject({
+      detail: { kind: 'network' },
+    });
+  });
+});
+
 /**
  * 本物の fetch と同じく、signal の中断を応答ヘッダ待ちと本文の読み取りの両方へ伝える fetch。
  * `chunks` は `[経過ミリ秒, バイト列]` を順に流し、`end` なら閉じる（無ければ止まったまま）。
@@ -143,6 +269,8 @@ const SNAPSHOT = {
 };
 const TIMEOUTS = { metadataMs: 1_000, recursiveTreeMs: 2_000, blobStallMs: 1_000 };
 const bytes = (text: string) => new TextEncoder().encode(text);
+/** 上限では止めない（ここでは待ち時間だけを見る）。 */
+const NO_LIMIT = { maxBytes: 1_000_000 };
 
 describe('待ち時間（issue #20）', () => {
   beforeEach(() => vi.useFakeTimers());
@@ -233,6 +361,7 @@ describe('待ち時間（issue #20）', () => {
       SNAPSHOT,
       'b'.repeat(40),
       new AbortController().signal,
+      NO_LIMIT,
     );
     await vi.advanceTimersByTimeAsync(3_600);
     const buffer = await result;
@@ -245,6 +374,7 @@ describe('待ち時間（issue #20）', () => {
       SNAPSHOT,
       'b'.repeat(40),
       new AbortController().signal,
+      NO_LIMIT,
     );
     const settled = expect(result).rejects.toMatchObject({
       detail: { kind: 'timeout', timeout: { ms: 1_000, stall: true } },
@@ -260,6 +390,7 @@ describe('待ち時間（issue #20）', () => {
       SNAPSHOT,
       'b'.repeat(40),
       new AbortController().signal,
+      NO_LIMIT,
     );
     const settled = expect(result).rejects.toMatchObject({
       detail: { kind: 'timeout', timeout: { stall: true } },
@@ -268,36 +399,10 @@ describe('待ち時間（issue #20）', () => {
     await settled;
   });
 
-  it('blob の受信量が上限を超えたら、残りを読まずに tooLarge で止める', async () => {
-    // 同じバイト列を何度も流す（メモリを上限の分だけ確保しない）。
-    const half = new Uint8Array(Math.ceil(MAX_BLOB_BYTES / 2) + 1);
-    const pulled = { count: 0 };
-    const fetchImpl = timedFetch({
-      kind: 'body',
-      chunks: [
-        [0, half],
-        [10, half],
-        [10_000, half],
-      ],
-      end: true,
-      pulled,
-    });
-    const result = client(fetchImpl).getBlob(
-      SNAPSHOT,
-      'b'.repeat(40),
-      new AbortController().signal,
-    );
-    const settled = expect(result).rejects.toMatchObject({ detail: { kind: 'tooLarge' } });
-    await vi.advanceTimersByTimeAsync(20);
-    await settled;
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(pulled.count).toBe(2);
-  });
-
   it('blob の読み取りの途中で呼び出し側が中断したら、中断として投げ直す', async () => {
     const caller = new AbortController();
     const fetchImpl = timedFetch({ kind: 'body', chunks: [[0, bytes('あ')]], end: false });
-    const result = client(fetchImpl).getBlob(SNAPSHOT, 'b'.repeat(40), caller.signal);
+    const result = client(fetchImpl).getBlob(SNAPSHOT, 'b'.repeat(40), caller.signal, NO_LIMIT);
     await vi.advanceTimersByTimeAsync(100);
     caller.abort();
     await expect(result).rejects.toMatchObject({ name: 'AbortError' });
@@ -309,6 +414,7 @@ describe('待ち時間（issue #20）', () => {
       SNAPSHOT,
       'b'.repeat(40),
       new AbortController().signal,
+      NO_LIMIT,
     );
     expect(buffer.byteLength).toBe(0);
   });

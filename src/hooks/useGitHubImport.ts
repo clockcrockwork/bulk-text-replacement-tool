@@ -1,11 +1,18 @@
 import { useEffect, useReducer, useRef } from 'react';
-import { createGitHubClient, type GitHubClient, GitHubRequestError } from '../github/client';
+import {
+  createGitHubClient,
+  GitHubBlobTooLargeError,
+  type GitHubClient,
+  GitHubRequestError,
+} from '../github/client';
 import { createDeadline, createWatchdog, type Watchdog } from '../github/deadline';
 import { mapWithConcurrency } from '../lib/concurrency';
 import {
+  blobTooLargeMessage,
   buildCandidate,
   compareCodePoints,
   describeGitHubError,
+  type GitHubCandidate,
   type GitHubError,
   type GitHubFetchStage,
   type NormalizedTree,
@@ -47,6 +54,11 @@ import {
   isPathSelected,
   selectionMayContainSelected,
 } from '../lib/githubSelection';
+import {
+  describeImportTotalTooLarge,
+  MAX_IMPORT_TOTAL_BYTES,
+  MAX_INPUT_BYTES,
+} from '../lib/inputLimits';
 import { shortSha } from '../lib/inputSource';
 import { revealUnsafeChars } from '../lib/revealText';
 import {
@@ -67,6 +79,10 @@ const EXPIRED_NOTICE = 'GitHub との接続の有効期限が切れました。�
 
 const BLOB_CONCURRENCY = 4;
 
+/**
+ * やり直しても結果が変わらない失敗（「再試行」を出さずに閉じてもらう）。一括の準備で
+ * 使い始めたが、1件の取得で上限を超えたときも同じ扱いにする。
+ */
 export class GitHubBatchPreparationError extends Error {}
 
 class GitHubBatchRequestError extends Error {
@@ -131,7 +147,7 @@ export interface SelectedEntries {
   /** 取り込める（対応する）ファイル。パス順。 */
   files: GitHubTreeEntry[];
   /**
-   * 選択範囲にあったが取り込めない項目（非対応の形式・100MB 超・シンボリックリンク・
+   * 選択範囲にあったが取り込めない項目（非対応の形式・上限超え・シンボリックリンク・
    * サブモジュール）。開かずにフォルダごと選ぶと一覧で見えないので、計画画面で件数を出す。
    */
   excluded: GitHubTreeEntry[];
@@ -210,6 +226,110 @@ export async function enumerateSelectedEntries(
   files.sort((a, b) => compareCodePoints(a.path, b.path));
   excluded.sort((a, b) => compareCodePoints(a.path, b.path));
   return { files, excluded };
+}
+
+/**
+ * 1件の blob を上限付きで取る。上限を超えたら「再試行」の無い失敗にする（何度取っても
+ * 大きさは変わらない）。1件の上限ならどのファイルかを添え、操作全体の予算（`take`）なら
+ * 合計が超えたと伝える。
+ */
+async function getBlobWithinLimit(
+  api: GitHubClient,
+  snapshot: GitHubSnapshot,
+  entry: GitHubTreeEntry,
+  signal: AbortSignal,
+  take?: (bytes: number) => boolean,
+): Promise<ArrayBuffer> {
+  try {
+    return await api.getBlob(snapshot, entry.sha, signal, {
+      maxBytes: MAX_INPUT_BYTES,
+      ...(take ? { take } : {}),
+    });
+  } catch (error) {
+    if (error instanceof GitHubBlobTooLargeError) {
+      throw new GitHubBatchPreparationError(
+        error.scope === 'file' ? blobTooLargeMessage(entry.path) : describeImportTotalTooLarge(),
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * 計画した全件の blob を取り、候補にする。1件でも失敗したら全体を失敗にする。
+ *
+ * 1回の取り込みの合計（`MAX_IMPORT_TOTAL_BYTES`）は、並行するすべての取得で共有する予算に
+ * して、届いた分ずつ差し引く。大きさの分かる分は計画の画面で断っているが、tree が大きさを
+ * 返さない項目は取ってみるまで分からない。読み終えてから合計を足すと、超えたと分かるまでに
+ * 並行する取得がそれぞれ上限近くまで読めてしまう。
+ *
+ * `cache` は取り直しを避けるための控え（キーはリポジトリと blob SHA）。
+ * - 控えから使った分も予算に数える（今回の取り込みで扱う量なので）。
+ * - 始める時点で、今回の計画に無い控えは捨てる。選び直しを繰り返しても、控えが1回の
+ *   取り込みの量を超えて積み上がらないように。
+ * - 控えるのは読み切れた blob だけ（予算の内側で読めたもの）。やり直しても変わらない失敗
+ *   （上限超え・LFS など）で終わったら、今回足した控えも捨てる。通信の失敗なら残し、
+ *   再試行で取れていた分まで取り直さない。
+ */
+export async function fetchBatchCandidates(
+  api: GitHubClient,
+  snapshot: GitHubSnapshot,
+  entries: readonly GitHubTreeEntry[],
+  cache: Map<string, ArrayBuffer>,
+  signal: AbortSignal,
+  onProgress: (done: number, total: number) => void,
+): Promise<GitHubCandidate[]> {
+  const keyOf = (entry: GitHubTreeEntry): string =>
+    JSON.stringify([snapshot.repository.id, entry.sha]);
+  const planned = new Set(entries.map(keyOf));
+  for (const key of [...cache.keys()]) {
+    if (!planned.has(key)) cache.delete(key);
+  }
+
+  let used = 0;
+  const take = (bytes: number): boolean => {
+    used += bytes;
+    return used <= MAX_IMPORT_TOTAL_BYTES;
+  };
+  const added: string[] = [];
+  let done = 0;
+  try {
+    return await mapWithConcurrency(
+      entries,
+      BLOB_CONCURRENCY,
+      signal,
+      async (entry, requestSignal) => {
+        const key = keyOf(entry);
+        let buffer = cache.get(key);
+        if (buffer) {
+          if (!take(buffer.byteLength)) {
+            throw new GitHubBatchPreparationError(describeImportTotalTooLarge());
+          }
+        } else {
+          try {
+            buffer = await getBlobWithinLimit(api, snapshot, entry, requestSignal, take);
+          } catch (error) {
+            if (error instanceof GitHubRequestError) {
+              throw new GitHubBatchRequestError(entry.path, error);
+            }
+            throw error;
+          }
+          cache.set(key, buffer);
+          added.push(key);
+        }
+        const result = buildCandidate(snapshot, entry, buffer);
+        if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
+        done += 1;
+        if (!requestSignal.aborted) onProgress(done, entries.length);
+        return result.candidate;
+      },
+    );
+  } catch (error) {
+    if (error instanceof GitHubBatchPreparationError) {
+      for (const key of added) cache.delete(key);
+    }
+    throw error;
+  }
 }
 
 const CANCELLED_NOTICE = 'GitHub への接続を取り消しました。';
@@ -529,41 +649,27 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
     const plan = state.batchPlan;
     if (!snapshot || !plan) return;
 
-    const total = plan.entries.length;
-    let done = 0;
     run(
       'blob',
       '選択したファイルを取得しています',
       (api, signal) =>
-        mapWithConcurrency(plan.entries, BLOB_CONCURRENCY, signal, async (entry, requestSignal) => {
-          const key = JSON.stringify([snapshot.repository.id, entry.sha]);
-          let buffer = blobCache.current.get(key);
-          if (!buffer) {
-            try {
-              buffer = await api.getBlob(snapshot, entry.sha, requestSignal);
-            } catch (error) {
-              if (error instanceof GitHubRequestError) {
-                throw new GitHubBatchRequestError(entry.path, error);
-              }
-              throw error;
-            }
-            blobCache.current.set(key, buffer);
-          }
-          const result = buildCandidate(snapshot, entry, buffer);
-          if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
+        fetchBatchCandidates(
+          api,
+          snapshot,
+          plan.entries,
+          blobCache.current,
+          signal,
           // 件数が多いと長くかかるので、進んでいることを見せる。変わらない表示のままだと
           // 固まったと思って閉じたりやり直したりしやすい。中断したあとは表示を戻さない。
-          done += 1;
-          if (!requestSignal.aborted) {
+          (done, total) => {
             dispatch({
               type: 'busy',
               label: `選択したファイルを取得しています（${done} / ${total}）`,
             });
             // 件数が進んだのは画面で分かる進みなので、「時間がかかっています」を数え直す。
             slowRef.current?.restart();
-          }
-          return result.candidate;
-        }),
+          },
+        ),
       (candidates) => dispatch({ type: 'batch/set', selection: plan.selection, candidates }),
     );
   };
@@ -977,7 +1083,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       run(
         'blob',
         `${entry.name} を取得しています`,
-        (api, signal) => api.getBlob(snapshot, entry.sha, signal),
+        (api, signal) => getBlobWithinLimit(api, snapshot, entry, signal),
         (buffer) => {
           const result = buildCandidate(snapshot, entry, buffer);
           if (result.kind === 'error') {

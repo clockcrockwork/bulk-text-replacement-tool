@@ -289,7 +289,7 @@ What the plan step guarantees: **no file content (blob) is fetched in bulk befor
 
 Neither list renders more than 100 rows at a time. There is no hard cap on the selection, so without this the screen that shows the warnings could itself become too large to render.
 
-- The plan says that only supported files (`.md` / `.txt` / `.tex`) in the selected range are imported, and counts the entries that were selected but cannot be imported, by kind (unsupported format, over 100 MB, symlink, submodule). A folder checked without being opened hides those entries, and "N files found" would otherwise read as "the whole folder was checked", so a chapter in an unsupported format could go missing from a successful import. Git LFS pointers are only known after the blob is read and still fail the batch atomically.
+- The plan says that only supported files (`.md` / `.txt` / `.tex`) in the selected range are imported, and counts the entries that were selected but cannot be imported, by kind (unsupported format, over the 5 MB input limit, symlink, submodule). A folder checked without being opened hides those entries, and "N files found" would otherwise read as "the whole folder was checked", so a chapter in an unsupported format could go missing from a successful import. Git LFS pointers are only known after the blob is read and still fail the batch atomically.
 - The plan list is paged in steps of 100 as well. Nothing is decided there, but it is the last point to audit the targets before blob requests are spent, so paths beyond the first 100 must be viewable too.
 - The confirmation list is paged in steps of 100, with previous/next controls. Same-source candidates must be decided row by row, so every row has to stay reachable; a list that showed only the first 100 would leave the 101st undecidable. It shows candidates that need a decision first, then candidates with a warning (same basename, Shift_JIS guess), then the rest. The order does not change as choices are made, so the row being edited never moves away.
 - Moving to another page scrolls the list back to its top (the pager sits below the list, so it is usually pressed after scrolling to the end) and moves focus to the range text (for example 「101〜120件目 / 全120件」), which is also a polite live region. The pressed button may become disabled at the first or last page, so focus must not stay on it.
@@ -423,16 +423,24 @@ GitHub provenance is.
 
 Existing V1 workspace data has no `source`; normalize it as `source: undefined`.
 
-The current workspace still stores full imported text in localStorage, so browser storage capacity is likely to become a practical constraint before GitHub's 100 MB blob limit.
+The current workspace still stores full imported text in localStorage, so browser storage capacity is a practical constraint long before GitHub's 100 MB blob limit.
+
+Input size limits are an app-wide resource policy shared with local files (issue #19, `docs/resource-policy.md`, values in `src/lib/inputLimits.ts`). GitHub's 100 MB per-blob API limit is not used as the app's limit.
 
 V2 behavior:
 
 - show selected file count and known bytes before fetch
-- reject blobs over 100 MB before fetch
-- warn for unusually large selections that browser persistence may fail
-  - the plan step (§7) warns when the selection has more than 200 files (each blob is one more request against the usual 5,000 requests/hour; the warning counts only these blob requests, because the tree requests of the enumeration have already been spent when the plan is shown) or more than 2 MB in total (localStorage stops at a few MB)
-  - it also warns whenever some entries have an unknown size. The shown total is then only a lower bound, and the real size cannot be checked before fetching, so this case is never shown as "no warning"
-  - these are warnings only; there is no hard cap, so a legitimate large import is still possible after the user has seen the numbers. A hard safety ceiling may be added later, based on measurements of browser memory and storage failures on real devices; it is a separate layer from GitHub's 100 MB per-blob API limit
+- hard cap of 5 MiB per file (bytes before decoding)
+  - entries whose tree `size` is over the cap are listed as not importable and are never fetched
+  - entries with an unknown size (`size === null`) are read as a stream and counted; the read is cancelled as soon as the cap is exceeded. A `Content-Length` over the cap rejects before reading, but a smaller one is not trusted
+  - an over-cap file is a non-retryable failure (it fails the whole batch; inputs stay unchanged)
+- hard cap of 5 MiB for one import operation (single file or batch)
+  - the plan step (§7) blocks fetching when the known total is over the cap
+  - while fetching, all concurrent blob streams share one byte budget that is consumed chunk by chunk (cached blobs count too); once it is exceeded, every stream is cancelled, so the bytes received by the whole operation stay within the budget plus one in-flight chunk per stream
+  - the blob cache keeps only fully read blobs; entries outside the current plan are dropped when a fetch starts, and entries added by a failed attempt are dropped when the failure is not retryable (over the cap, LFS, …)
+- warn in the plan step when the selection has more than 200 files (each blob is one more request against the usual 5,000 requests/hour; the warning counts only these blob requests, because the tree requests of the enumeration have already been spent when the plan is shown)
+- warn whenever some entries have an unknown size. The shown total is then only a lower bound, and the batch may stop during fetching, so this case is never shown as "no warning"
+- before applying (add, update, or batch commit), estimate the serialized length of the resulting workspace; if it may exceed browser storage, ask for confirmation. This is a pre-warning only; `saveWorkspace()` success remains the final signal
 - keep the existing persistent save-failure warning and backup path
 - do not make an IndexedDB migration a prerequisite for GitHub import
 
@@ -499,7 +507,8 @@ Handle at least:
 - rate limit
 - network error
 - unsupported file
-- file over 100 MB
+- file over the input limit (5 MiB), including one found only while reading an unknown-size blob
+- batch total over the input limit (5 MiB)
 - Git LFS pointer detected
 - decode failure
 - Shift_JIS fallback
@@ -523,7 +532,7 @@ The values are conservative initial policy values (`src/lib/githubApi.ts`, `src/
 
 - Every limit applies to **one request**, not to one user action. Pagination is limited per page, and multi-file import per blob, so long lists and large selections are not cut off.
 - The limit lasts until the response body has been read, not only until the headers arrive. A body that stalls after the headers must hit the same limit. The Function's upstream limit (10 s, `UPSTREAM_TIMEOUT_MS`) already covers the body, because a fetch signal also aborts body reads.
-- The blob limit is a transport policy: it looks at stalls, not total time, because the normal duration depends on the file size. How large a file the app accepts is a separate resource policy (issue #19). The blob reader counts received bytes and stops as soon as `MAX_BLOB_BYTES` is exceeded (error kind `tooLarge`, next step: close only). A response without a body stream falls back to `arrayBuffer()`, where the stall limit acts as a total limit.
+- The blob limit is a transport policy: it looks at stalls, not total time, because the normal duration depends on the file size. How large a file the app accepts is a separate resource policy (issue #19). The stall timer shares the reader that already counts received bytes against those limits (`GitHubBlobTooLargeError`, no retry). A response without a body stream falls back to `arrayBuffer()`, where the stall limit acts as a total limit.
 - **Slow notice**: when nothing visible to the user has changed for 8 s, the busy line gets "時間がかかっています。閉じると中断できます（作業データはそのまま残ります）。" The notice does not assume the user knows that closing cancels. Only progress the user can see (the `n / total` counter in multi-file import) restarts the 8 s. Blob chunks restart only the transport stall timer, so a download that trickles but looks frozen still gets the notice.
 - **Hidden pages**: while `document.hidden` is true, the user cannot watch the wait, so that time does not count towards any limit. When the page becomes visible again, counting starts over. This is product policy. It does not depend on how a browser throttles background timers or networking.
 - `AbortSignal.timeout` and `AbortSignal.any` are not used. `AbortSignal.any` needs Safari 17.4. `AbortSignal.timeout` would be available, but the stall reset, the slow notice, and the hidden-page rule need our own timer. Controllers are chained by hand (`src/github/deadline.ts`).
@@ -548,7 +557,7 @@ How failures are shown:
 | timeout | our own limits above | retry (REST) / reconnect (exchange) |
 | server | 5xx | retry |
 | rate limit | `x-ratelimit-*` or the body `message` | retry after the reset time |
-| too large | received bytes over `MAX_BLOB_BYTES` | close only |
+| too large | received bytes over the input limits (`src/lib/inputLimits.ts`) | close only |
 
 The Function reports its own upstream timeout as `504 upstream_timeout`, whether the stall happens before the headers or in the middle of the body. This keeps it apart from `502 upstream_invalid` (a broken response) and `502 upstream_unreachable`.
 

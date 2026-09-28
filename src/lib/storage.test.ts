@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { STORAGE_CONFIRM_CODE_UNITS } from './inputLimits';
 import {
   clearWorkspace,
   loadWorkspace,
+  mayExceedStorage,
   preferredTheme,
   readRawWorkspace,
   STORAGE_KEY,
@@ -239,6 +241,40 @@ describe('saveWorkspace', () => {
     expect(() =>
       saveWorkspace({ inputs: [], groups: [], rules: [], theme: 'light', isSample: false }),
     ).not.toThrow();
+  });
+});
+
+describe('mayExceedStorage', () => {
+  /** 保存したときの長さ（キー込み）が `total` になる、本文1件のワークスペース。 */
+  function sized(total: number, fill = 'a') {
+    const empty = {
+      inputs: [{ id: 'i1', title: 'a.md', text: '' }],
+      groups: [{ id: 'g1', name: 'A' }],
+      rules: [],
+      theme: 'light' as const,
+      isSample: false,
+    };
+    const base = STORAGE_KEY.length + JSON.stringify(empty).length;
+    const text = fill.repeat(total - base);
+    return { ...empty, inputs: [{ id: 'i1', title: 'a.md', text }] };
+  }
+
+  it('保存する長さ（キー込み）が目安ちょうどまでは確かめない', () => {
+    expect(mayExceedStorage(sized(STORAGE_CONFIRM_CODE_UNITS))).toBe(false);
+    expect(mayExceedStorage(sized(STORAGE_CONFIRM_CODE_UNITS + 1))).toBe(true);
+  });
+
+  it('本文の文字数ではなく、エスケープ後の JSON の長さで見る', () => {
+    // 改行は JSON で `\n` の2文字になる。文字数で数えると目安の半分でも、保存する長さは超える。
+    const half = STORAGE_CONFIRM_CODE_UNITS / 2 + 10;
+    const workspace = {
+      inputs: [{ id: 'i1', title: 'a.md', text: '\n'.repeat(half) }],
+      groups: [{ id: 'g1', name: 'A' }],
+      rules: [],
+      theme: 'light' as const,
+      isSample: false,
+    };
+    expect(mayExceedStorage(workspace)).toBe(true);
   });
 });
 

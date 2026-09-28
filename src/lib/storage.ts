@@ -1,5 +1,6 @@
 import type { Group, InputText, PersistedWorkspace, Rule, RuleOrder, Theme } from '../types';
 import { createGroupId, createId } from './id';
+import { STORAGE_CONFIRM_CODE_UNITS } from './inputLimits';
 import { normalizeInputSource } from './inputSource';
 
 /** 永続化キー。スキーマを壊す変更をしたら末尾の版を上げること。 */
@@ -153,6 +154,23 @@ export function loadWorkspace(): PersistedWorkspace | null {
   return normalizeWorkspace(parsed);
 }
 
+/** 保存する形。容量の見込み（`mayExceedStorage`）と実際の保存で同じものを使う。 */
+function serializeWorkspace(workspace: PersistedWorkspace): string {
+  return JSON.stringify(workspace);
+}
+
+/**
+ * 保存すると容量を超えそうか。取り込む前の確認に使う。
+ *
+ * 本文の文字数ではなく、保存する JSON の長さ（キーを含む UTF-16 のコード単位。
+ * localStorage はこの単位で数える）で見る。改行や引用符はエスケープで長くなるので、
+ * 文字数では足りない。超えなくても保存に失敗することはあり（容量はブラウザ次第）、
+ * そのときは `saveWorkspace` の失敗として出したままの警告になる。
+ */
+export function mayExceedStorage(workspace: PersistedWorkspace): boolean {
+  return STORAGE_KEY.length + serializeWorkspace(workspace).length > STORAGE_CONFIRM_CODE_UNITS;
+}
+
 /**
  * 保存する。書けたかどうかを返す。
  *
@@ -162,7 +180,7 @@ export function loadWorkspace(): PersistedWorkspace | null {
  */
 export function saveWorkspace(workspace: PersistedWorkspace): boolean {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(workspace));
+    localStorage.setItem(STORAGE_KEY, serializeWorkspace(workspace));
     return true;
   } catch {
     return false;

@@ -21,6 +21,8 @@ import {
 
 const REPO = novelRepository();
 
+const MiB = 1024 * 1024;
+
 async function seed(page: Page): Promise<void> {
   await seedWorkspace(page, {
     inputs: [{ id: 'i1', title: 'local.md', text: 'ローカルの原稿\n' }],
@@ -61,7 +63,11 @@ async function fetchSelection(page: Page, files: number) {
     plan.getByRole('heading', { name: `${files}ファイルが見つかりました` }),
   ).toBeVisible();
   await plan.getByRole('button', { name: `${files}ファイルを取得` }).click();
-  return dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+  const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+  // 確認画面が出るまで待つ（取得はそこで終わっている）。押した直後に返すと、呼び出し側が
+  // blob の要求を数えたときに、まだ出ていない要求を取りこぼす。
+  await expect(batch).toBeVisible();
+  return batch;
 }
 
 /**
@@ -657,12 +663,12 @@ test('未展開のフォルダを選ぶと、blob を取る前に正確な件数
   await expect(page.locator('.input-card')).toHaveCount(1);
 });
 
-test('大きな選択は、取得の前にブラウザへ保存できない可能性を警告する', async ({ page }) => {
+test('分かっている合計が 5MiB を超える選択は、取得を始めさせない', async ({ page }) => {
   const repository = novelRepository({
     branches: {
       main: [
-        { path: 'big/huge.md', content: 'あ'.repeat(800_000) },
-        { path: 'big/small.md', content: '小さい\n' },
+        { path: 'big/a.md', content: 'a'.repeat(3 * MiB) },
+        { path: 'big/b.md', content: 'b'.repeat(3 * MiB) },
       ],
     },
   });
@@ -674,7 +680,8 @@ test('大きな選択は、取得の前にブラウザへ保存できない可�
   await dialog(page).getByRole('checkbox', { name: 'big フォルダを選択' }).check();
   await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
   const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
-  await expect(plan).toContainText('保存に失敗する可能性があります');
+  await expect(plan.getByRole('alert')).toContainText('選んだファイルの合計が 5MiB を超えるため');
+  await expect(plan.getByRole('button', { name: '2ファイルを取得' })).toBeDisabled();
   expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(0);
 });
 
@@ -2381,6 +2388,110 @@ test('ファイル名の双方向制御文字は見える形で出し、取り�
       return [input?.title, input?.source?.path];
     })
     .toEqual([spoofed, `bills/${spoofed}`]);
+});
+
+test.describe('取り込む大きさの上限（5MiB）', () => {
+  test('大きさの分かる 5MiB 超えは、一覧で理由を出して選ばせない', async ({ page }) => {
+    const mock = new GitHubMock([
+      novelRepository({
+        branches: { main: [{ path: 'huge.md', content: 'a'.repeat(5 * MiB + 1) }] },
+      }),
+    ]);
+    await start(page, mock);
+    await connect(page);
+    await openRepository(page);
+
+    await expect(
+      dialog(page).locator('.github__list .is-disabled', { hasText: 'huge.md' }),
+    ).toContainText('5MiB を超えるため取り込めません');
+    expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(0);
+  });
+
+  test('大きさの分からない 5MiB 超えは、取得の途中で止め、再試行を出さない', async ({ page }) => {
+    const mock = new GitHubMock([
+      novelRepository({
+        branches: { main: [{ path: 'huge.md', content: 'a'.repeat(5 * MiB + 1) }] },
+      }),
+    ]);
+    mock.omitTreeSizes = true;
+    await start(page, mock);
+    await connect(page);
+    await openRepository(page);
+
+    await entry(page, 'huge.md').click();
+    const alert = dialog(page).getByRole('alert');
+    await expect(alert).toContainText('huge.md は 5MiB を超えるため取り込めません。');
+    // 何度取っても大きさは変わらないので、再試行ではなく閉じるだけにする。
+    await expect(alert.getByRole('button', { name: '再試行' })).toHaveCount(0);
+    await expect(alert.getByRole('button', { name: '閉じる' })).toBeVisible();
+    await expect(dialog(page).getByRole('region', { name: '取り込む内容の確認' })).toHaveCount(0);
+    await expect(page.locator('.input-card')).toHaveCount(1);
+  });
+
+  test('大きさの分からない一括で合計が 5MiB を超えたら、途中で止めて入力を変えない', async ({
+    page,
+  }) => {
+    const mock = new GitHubMock([
+      novelRepository({
+        branches: {
+          main: [
+            { path: 'big/a.md', content: 'a'.repeat(3 * MiB) },
+            { path: 'big/b.md', content: 'b'.repeat(3 * MiB) },
+          ],
+        },
+      }),
+    ]);
+    mock.omitTreeSizes = true;
+    await start(page, mock);
+    await connect(page);
+    await openRepository(page);
+
+    await dialog(page).getByRole('checkbox', { name: 'big フォルダを選択' }).check();
+    await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+    const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
+    await expect(plan).toContainText(
+      '取得の途中で合計が 5MiB を超えたら、そこで止めて取り込みません',
+    );
+    await plan.getByRole('button', { name: '2ファイルを取得' }).click();
+
+    const alert = dialog(page).getByRole('alert');
+    await expect(alert).toContainText('選んだファイルの合計が 5MiB を超えるため');
+    await expect(alert.getByRole('button', { name: '再試行' })).toHaveCount(0);
+    await expect(
+      dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' }),
+    ).toHaveCount(0);
+    await expect(page.locator('.input-card')).toHaveCount(1);
+  });
+
+  test('取り込むと保存容量を超えそうなら、入力に追加する前に確かめる', async ({ page }) => {
+    const mock = new GitHubMock([
+      novelRepository({
+        branches: { main: [{ path: 'large.md', content: 'a'.repeat(4.5 * MiB) }] },
+      }),
+    ]);
+    await start(page, mock);
+    await connect(page);
+    await openRepository(page);
+    await entry(page, 'large.md').click();
+    const confirm = dialog(page).getByRole('region', { name: '取り込む内容の確認' });
+    await confirm.getByRole('button', { name: '入力に追加' }).click();
+
+    const storage = page.getByRole('dialog', { name: 'ブラウザに保存できない可能性があります' });
+    await expect(storage).toContainText('large.md');
+    // やめたら何も変えず、候補の確認に戻る。
+    await storage.getByRole('button', { name: 'キャンセル' }).click();
+    await expect(storage).toHaveCount(0);
+    await expect(page.locator('.input-card')).toHaveCount(1);
+    await expect(confirm).toBeVisible();
+
+    await confirm.getByRole('button', { name: '入力に追加' }).click();
+    await storage.getByRole('button', { name: '取り込む' }).click();
+    // 大きな本文の描画に時間がかかり、トーストは確かめる前に消えることがあるので、入力で見る。
+    await expect(page.locator('.input-card')).toHaveCount(2);
+    await expect(page.locator('.input-card').nth(1).locator('.input-card__source')).toContainText(
+      'octo/novel · large.md',
+    );
+  });
 });
 
 // ---- 通信が止まったとき（issue #20） ----------------------------------------------
