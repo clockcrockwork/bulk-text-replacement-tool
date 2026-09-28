@@ -356,6 +356,22 @@ describe('fetchBatchCandidates', () => {
     expect(cache.size).toBe(0);
   });
 
+  it('大きさ不明の 3MiB + 3MiB を並行して取っても、読む量と控えは 5MiB を大きく越えない', async () => {
+    const size = 3 * 1024 * 1024;
+    const { api, log } = streamingGitHub({ [SHA_A]: size, [SHA_B]: size });
+    const cache = new Map<string, ArrayBuffer>();
+
+    const result = fetchAll(api, [at('a.md', SHA_A), at('b.md', SHA_B)], cache);
+    await expect(result).rejects.toThrow('合計が 5MiB を超える');
+
+    // 2本が交互に進むので、どちらも読み切る前に予算が尽きる（読み終えてから足すと 6MiB 読む）。
+    expect(log.finished.size).toBe(0);
+    expect(log.cancelled).toEqual(new Set([SHA_A, SHA_B]));
+    expect(log.delivered).toBeLessThanOrEqual(MAX_IMPORT_TOTAL_BYTES + 2 * 2 * CHUNK);
+    expect(log.delivered).toBeLessThan(2 * size);
+    expect(cache.size).toBe(0);
+  });
+
   it('上限で失敗したら、その取り込みで控えた blob も捨てる', async () => {
     const small = 1024 * 1024;
     const { api, log } = streamingGitHub({
