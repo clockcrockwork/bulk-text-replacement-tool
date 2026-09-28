@@ -12,6 +12,11 @@
  * - 応答は `Cache-Control: no-store`
  * - コード・verifier・トークン・GitHub の生の応答をログに出さない
  *
+ * 回数の制限はここでは持たない。Origin はブラウザ以外からなら偽れるので、大量の送信は
+ * Vercel Firewall のレート制限ルールで Function に届く前に止める
+ * （`docs/github-app-setup.md` §3）。メモリ上のカウンタは、サーバーレスでは
+ * インスタンス間で共有されず起動のたびに消えるので、制限として機能しない。
+ *
  * TypeScript ではなく JSDoc 付きの JavaScript で書いている。このリポジトリの
  * TypeScript は 7（ネイティブ実装）で、従来の JS API（transpileModule など）を持たない。
  * Vercel の Node ランタイムが Function の .ts をプロジェクトの typescript で変換しようと
@@ -23,6 +28,14 @@ export const GITHUB_TOKEN_URL = 'https://github.com/login/oauth/access_token';
 
 /** 受け付ける本文の上限。3つの短い文字列しか来ないので、大きなものは読まずに断る。 */
 export const MAX_BODY_BYTES = 4096;
+
+/**
+ * 受け付けるトークンの有効期限（秒）の上限。GitHub App のユーザートークンは現在 8 時間
+ * （28800）固定。GitHub 側の変更に少し余裕を持たせて 1 日までにし、それより長いものは
+ * 想定外の応答として断る。巨大な値を通すと、ブラウザでミリ秒に直した時点で `Infinity` になり、
+ * 「期限は必須」にしたのに実質無期限のトークンとして扱われてしまう。
+ */
+export const MAX_TOKEN_LIFETIME_SECONDS = 24 * 60 * 60;
 
 /** GitHub の応答を待つ上限。 */
 const UPSTREAM_TIMEOUT_MS = 10_000;
@@ -50,10 +63,43 @@ function splitList(value) {
 }
 
 /**
+ * `https://example.com` の形（パスも末尾の `/` も無いオリジンそのもの）か。
+ * @param {string} value
+ * @returns {boolean}
+ */
+function isExactOrigin(value) {
+  try {
+    return new URL(value).origin === value;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `https://example.com/` の形（オリジン直下の callback）か。アプリの callback は
+ * オリジン直下に固定している（`callbackUrl`）ので、それ以外の形は必ず一致しない。
+ * @param {string} value
+ * @returns {boolean}
+ */
+function isRootCallback(value) {
+  try {
+    const url = new URL(value);
+    return url.href === value && value === `${url.origin}/`;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 環境変数から設定を読む。どれかが欠けていれば null（交換を断る）。
  *
  * Client ID はブラウザにも要る公開値なので、ビルド時の `VITE_GITHUB_APP_CLIENT_ID` を
  * そのまま読む（同じ値を2か所で管理しない）。secret と許可リストはこの Function 専用。
+ *
+ * 許可リストは形まで確かめ、崩れていれば設定なし（503）として扱い、どの変数かをログに出す。
+ * 2つの変数は見た目が似ているのに末尾の `/` の要否が逆（オリジンは無し、callback は有り）で、
+ * 取り違えると設定は読めてしまい、GitHub で承認まで通ったあと全員の交換が 403 / 400 で
+ * 失敗する。そのとき原因がどこにも出ないと、運用者が手掛かりなしで切り分けることになる。
  *
  * @param {Record<string, string | undefined>} env
  * @returns {ExchangeConfig | null}
@@ -64,6 +110,23 @@ export function readExchangeConfig(env) {
   const allowedOrigins = splitList(env.GITHUB_OAUTH_ALLOWED_ORIGINS);
   const redirectUris = splitList(env.GITHUB_OAUTH_REDIRECT_URIS);
   if (!clientId || !clientSecret || allowedOrigins.size === 0 || redirectUris.size === 0) {
+    return null;
+  }
+  // 値は公開してよいもの（オリジンと callback URL）なので、変数名に添えて出してよい。
+  const badOrigins = [...allowedOrigins].filter((value) => !isExactOrigin(value));
+  if (badOrigins.length > 0) {
+    console.error(
+      `github token exchange: GITHUB_OAUTH_ALLOWED_ORIGINS must be origins like https://example.com (no path, no trailing /): ${badOrigins.join(', ')}`,
+    );
+    return null;
+  }
+  const badRedirects = [...redirectUris].filter(
+    (value) => !isRootCallback(value) || !allowedOrigins.has(new URL(value).origin),
+  );
+  if (badRedirects.length > 0) {
+    console.error(
+      `github token exchange: GITHUB_OAUTH_REDIRECT_URIS must be https://<allowed origin>/ (with the trailing /): ${badRedirects.join(', ')}`,
+    );
     return null;
   }
   return { clientId, clientSecret, allowedOrigins, redirectUris };
@@ -113,15 +176,45 @@ const VERIFIER_PATTERN = /^[A-Za-z0-9._~-]{43,128}$/;
 /** GitHub の認可コード。形を決め打ちしすぎないが、制御文字や区切りは通さない。 */
 const CODE_PATTERN = /^[A-Za-z0-9_.-]{1,256}$/;
 
+/** 本文に置いてよいキー。交換に要る3つだけで、それ以外があれば断る。 */
+const ALLOWED_BODY_KEYS = new Set(['code', 'code_verifier', 'redirect_uri']);
+
 /**
+ * 本文を上限まで読む。
+ *
+ * Content-Length があれば読む前に断る。無い（chunked など）ときも、`request.text()` で
+ * 全部を受け取ってから測るのではなく、読みながら数えて上限を超えた時点で打ち切る。
+ * 「大きなものは読まずに断る」をこの関数自身が保証する（配信基盤の上限に頼らない）。
+ *
  * @param {Request} request
  * @returns {Promise<string | null>} 上限を超えていれば null。
  */
 async function readBody(request) {
   const declared = Number(request.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return null;
-  const text = await request.text();
-  return new TextEncoder().encode(text).byteLength > MAX_BODY_BYTES ? null : text;
+  if (!request.body) return '';
+  const reader = request.body.getReader();
+  /** @type {Uint8Array[]} */
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      // 残りは受け取らない。取り消しの失敗は応答に関係しないので無視する。
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 /**
@@ -151,10 +244,17 @@ export async function handleTokenExchange(request, config, fetchImpl) {
 
   // 許可したオリジンのページからだけ受け付ける。ブラウザは Origin を偽れない。
   const origin = request.headers.get('origin');
-  if (!origin || !config.allowedOrigins.has(origin)) return fail(403, 'origin_not_allowed');
+  if (!origin || !config.allowedOrigins.has(origin)) {
+    // 理由だけを残す（Origin の値は外から来る文字列なので書かない）。設定の取り違えは
+    // readExchangeConfig で弾くので、ここに来るのは主に許可していない送り元。
+    console.warn('github token exchange: origin not allowed');
+    return fail(403, 'origin_not_allowed');
+  }
 
+  // `application/json` そのもの（後ろにパラメータが付くのは可）だけを受け付ける。前方一致だと
+  // `application/jsonx` のような別の型も通ってしまう。
   const contentType = request.headers.get('content-type') ?? '';
-  if (!contentType.toLowerCase().startsWith('application/json')) {
+  if (!/^application\/json\s*(?:;|$)/i.test(contentType)) {
     return fail(415, 'unsupported_media_type');
   }
 
@@ -169,6 +269,11 @@ export async function handleTokenExchange(request, config, fetchImpl) {
     return fail(400, 'invalid_json');
   }
   if (!isRecord(body)) return fail(400, 'invalid_request');
+  // 受け取るのは交換に要る3項目だけ。余計な項目（原稿など）を黙って受け流さず、
+  // 「バックエンドは3項目しか受け取らない」をこちら側でも強制する。
+  if (Object.keys(body).some((key) => !ALLOWED_BODY_KEYS.has(key))) {
+    return fail(400, 'invalid_request');
+  }
 
   const { code, code_verifier: verifier, redirect_uri: redirectUri } = body;
   if (typeof code !== 'string' || !CODE_PATTERN.test(code)) return fail(400, 'invalid_request');
@@ -182,6 +287,7 @@ export async function handleTokenExchange(request, config, fetchImpl) {
     !config.redirectUris.has(redirectUri) ||
     originOf(redirectUri) !== origin
   ) {
+    console.warn('github token exchange: redirect_uri not allowed');
     return fail(400, 'redirect_uri_not_allowed');
   }
 
@@ -233,11 +339,25 @@ export async function handleTokenExchange(request, config, fetchImpl) {
     return fail(502, 'upstream_invalid');
   }
 
-  // 返すのはブラウザが使う分だけ。refresh_token と refresh_token_expires_in は捨てる。
-  /** @type {Record<string, unknown>} */
-  const response = { access_token: accessToken, token_type: 'bearer' };
-  if (typeof payload.expires_in === 'number' && Number.isFinite(payload.expires_in)) {
-    response.expires_in = payload.expires_in;
+  // 期限付きのユーザートークンだけを通す。GitHub App の「Expire user authorization tokens」を
+  // 切ると `expires_in` そのものが返らなくなる。設定の取り違えで、期限の無いトークンを
+  // 黙って「期限情報なし」として配らない（ブラウザはそれを無期限として使い続けてしまう）。
+  // 期限は正の整数（秒）で、上限（MAX_TOKEN_LIFETIME_SECONDS）以内であること。
+  const expiresIn = payload.expires_in;
+  if (
+    typeof expiresIn !== 'number' ||
+    !Number.isSafeInteger(expiresIn) ||
+    expiresIn <= 0 ||
+    expiresIn > MAX_TOKEN_LIFETIME_SECONDS
+  ) {
+    console.error('github token exchange: upstream token has no valid expiry');
+    return fail(502, 'upstream_invalid');
   }
-  return json(200, response);
+  // GitHub のユーザートークンは bearer。違う種類が返ったら、想定外の応答として扱う。
+  if (typeof payload.token_type !== 'string' || payload.token_type.toLowerCase() !== 'bearer') {
+    return fail(502, 'upstream_invalid');
+  }
+
+  // 返すのはブラウザが使う分だけ。refresh_token と refresh_token_expires_in は捨てる。
+  return json(200, { access_token: accessToken, token_type: 'bearer', expires_in: expiresIn });
 }

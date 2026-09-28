@@ -84,8 +84,9 @@ export function App(): JSX.Element {
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
 
-  const saveFailed = usePersistedWorkspace(state);
-  const github = useGitHubImport();
+  const { saveFailed, flush: flushWorkspace } = usePersistedWorkspace(state);
+  // GitHub の認可で画面を離れる直前に、保留中の編集も含めて書き出す（書けなければ離れない）。
+  const github = useGitHubImport({ beforeNavigate: flushWorkspace });
 
   // ---- 作業データ（バックアップ） --------------------------------------------
   const [backupOpen, setBackupOpen] = useState(false);

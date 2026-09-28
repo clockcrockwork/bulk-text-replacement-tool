@@ -149,6 +149,9 @@ test('PKCE（S256）と state で認可を始め、戻ったら URL と一時情
     .update(sent.code_verifier ?? '')
     .digest('base64url');
   expect(challenge).toBe(authorize?.get('code_challenge'));
+  // Function は Origin を許可リストと照合する。Referrer-Policy は Origin にも効き、
+  // `null` になると本番の交換が 403 で止まるので、配信時のヘッダの下で付いていることを見る。
+  expect(mock.tokenOrigins).toEqual(['http://127.0.0.1:4173']);
 
   // アドレスバーから code / state が消え、一時情報も残らない。
   expect(new URL(page.url()).search).toBe('');
@@ -159,6 +162,35 @@ test('PKCE（S256）と state で認可を始め、戻ったら URL と一時情
   expect(call?.headers.authorization).toBe(`Bearer ${E2E_TOKEN}`);
   // GitHub の CORS が許可していないヘッダは付けない（付けると本番の preflight で止まる）。
   expect(call?.headers['x-github-api-version']).toBeUndefined();
+});
+
+test('認可から戻った直後の読み込みで、code と state を Referer に載せない', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+
+  // 戻り先の HTML は `/?code=…&state=…` のまま開かれ、`history.replaceState` を走らせる JS
+  // そのものを読む要求には、まだその URL が Referer として付き得る。同一オリジンの要求にも
+  // クエリを載せない方針（Referrer-Policy: strict-origin）を、実際の要求で確かめる。
+  // route を張るとブラウザのキャッシュが効かなくなり、戻りの読み込みでも要求が必ず出る。
+  const referers: { url: string; referer: string | null }[] = [];
+  await page.route('http://127.0.0.1:4173/**', async (route) => {
+    const request = route.request();
+    referers.push({ url: request.url(), referer: await request.headerValue('referer') });
+    await route.fallback();
+  });
+
+  await connect(page);
+
+  // 戻りの読み込みで、同一オリジンの JS を取りに行っていること（何も見ずに通らないように）。
+  // 戻りの要求そのものを捕まえていなければ、以降の検証は初回の読み込みを見ているだけになる。
+  const callbackIndex = referers.findIndex((entry) => entry.url.includes(`code=${E2E_CODE}`));
+  expect(callbackIndex).toBeGreaterThanOrEqual(0);
+  const afterCallback = referers.slice(callbackIndex + 1);
+  expect(afterCallback.some((entry) => /\/assets\/.+\.js$/.test(entry.url))).toBe(true);
+  for (const { url, referer } of referers) {
+    expect(referer ?? '', url).not.toContain('code=');
+    expect(referer ?? '', url).not.toContain('state=');
+  }
 });
 
 test('アクセストークンはどこにも保存せず、再読み込みすると接続し直しになる', async ({ page }) => {
@@ -181,6 +213,34 @@ test('アクセストークンはどこにも保存せず、再読み込みす�
   await page.reload();
   await page.getByRole('button', { name: 'GitHubから追加' }).click();
   await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeVisible();
+});
+
+test('GitHub から追加した直後（保存のデバウンス中）に再読み込みしても、追加した入力は残る', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await mock.install(page);
+  await seed(page);
+  // 時計を止めて、デバウンス（400ms）の保存が走らないうちに再読み込みする状況を確実に作る。
+  // 残るのは、離れるとき（pagehide / visibilitychange）の書き出しが最新の内容を書いた場合だけ。
+  await page.clock.install();
+  await openApp(page);
+  await page.clock.pauseAt(Date.now() + 60_000);
+  await connect(page);
+  await openRepository(page);
+  await entry(page, 'chapters/').click();
+  await entry(page, 'ch1.md').click();
+  await dialog(page)
+    .getByRole('region', { name: '取り込む内容の確認' })
+    .getByRole('button', { name: '入力に追加' })
+    .click();
+  await expect(page.locator('.input-card')).toHaveCount(2);
+
+  await page.reload();
+  await expect(page.locator('.input-card')).toHaveCount(2);
+  await expect(page.locator('.input-card').nth(1).locator('.input-card__title')).toHaveValue(
+    'ch1.md',
+  );
 });
 
 test('リポジトリ → 既定ブランチの固定 → フォルダ → 1ファイルを入力に追加し、変換に使える', async ({
@@ -1789,6 +1849,49 @@ test('state が一致しない戻りはコードを交換せず、URL と一時�
   expect(await page.evaluate((key) => sessionStorage.getItem(key), PENDING_AUTH_KEY)).toBeNull();
 });
 
+test('トークン交換の途中で閉じたら接続を取り消し、あとから返った交換の結果で接続しない', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+
+  // 交換の応答を止めておく（モックより後に張った route が先に効く）。
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reached: () => void = () => {};
+  const exchangeStarted = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  await page.route('**/api/github/token', async (route) => {
+    reached();
+    await held;
+    await route.fallback();
+  });
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).click();
+  await exchangeStarted;
+  // 認可から戻った画面は「接続しています」のまま、交換の応答を待っている。
+  await expect(
+    dialog(page).getByRole('heading', { name: 'GitHub に接続しています' }),
+  ).toBeVisible();
+
+  await dialog(page).getByRole('button', { name: '閉じる' }).click();
+  await expect(dialog(page)).toHaveCount(0);
+  release();
+
+  // 交換は返ってくるが、その結果でトークンを持たない（一覧を取りに行かない）。
+  await expect.poll(() => mock.tokenCalls.length).toBe(1);
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  const consent = dialog(page).getByRole('region', { name: 'GitHub との接続' });
+  await expect(consent.getByRole('alert')).toContainText('GitHub への接続を取り消しました');
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeEnabled();
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toHaveCount(0);
+  expect(mock.apiCalls(/^\/user\/installations$/)).toEqual([]);
+});
+
 test('自分で始めていない戻り URL（直接開かれたもの）では何も交換しない', async ({ page }) => {
   const mock = new GitHubMock([REPO]);
   await mock.install(page);
@@ -1818,6 +1921,104 @@ test('ブラウザへの保存に失敗している間は、画面遷移する�
   await page.getByRole('button', { name: 'GitHubから追加' }).click();
   await expect(dialog(page).getByRole('alert')).toContainText('保存できていない作業が失われます');
   await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeDisabled();
+});
+
+test('保存の直前（デバウンス中）に接続しても、書き出せなければ画面遷移しない', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await mock.install(page);
+  await seed(page);
+  // 最初の保存は通し、編集のあとからだけ容量超過にする（警告がまだ出ていない状態を作る）。
+  await page.addInitScript((key) => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function setItem(name: string, value: string) {
+      if (name === key && (window as { __failSave?: boolean }).__failSave) {
+        throw new Error('QuotaExceededError');
+      }
+      return original.call(this, name, value);
+    };
+  }, STORAGE_KEY);
+  // 時計を止めて、デバウンス（400ms）の保存が走らないうちに接続を押す状況を確実に作る。
+  await page.clock.install();
+  await openApp(page);
+  await page.clock.pauseAt(Date.now() + 60_000);
+
+  await page.evaluate(() => {
+    (window as { __failSave?: boolean }).__failSave = true;
+  });
+  await page.locator('.input-card__title').fill('changed.md');
+  // まだ保存は走っていないので、警告は出ておらず、接続も押せる。
+  await expect(page.locator('.save-error')).toHaveCount(0);
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).click();
+
+  // その場で書き出して失敗に気付き、GitHub へは移らない。中止の知らせと保存失敗の警告は
+  // 役割を分け、書き出しの案内は1回だけ出す（同じ案内を2回読み上げさせない）。
+  const alerts = dialog(page).getByRole('alert');
+  await expect(alerts.filter({ hasText: 'GitHub への接続を中止しました' })).toHaveCount(1);
+  await expect(alerts.filter({ hasText: '先に作業データを書き出してください' })).toHaveCount(1);
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeDisabled();
+  await expect(page.locator('.save-error')).toBeVisible();
+  expect(mock.authorizeCalls).toEqual([]);
+  expect(new URL(page.url()).origin).toBe('http://127.0.0.1:4173');
+  expect(await page.evaluate((key) => sessionStorage.getItem(key), PENDING_AUTH_KEY)).toBeNull();
+  // 編集は画面に残っている（書き出して逃がせる）。
+  await page.getByRole('button', { name: '閉じる' }).click();
+  await expect(page.locator('.input-card__title')).toHaveValue('changed.md');
+});
+
+test('保存の直前（デバウンス中）に接続しても、直前の編集を書き出してから移り、戻っても残っている', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await mock.install(page);
+  await seed(page);
+  // 保存を記録する。画面を離れるとき（pagehide / 非表示）の書き出しは既存の保険なので、
+  // それより前に「直前の編集を含む内容」が書かれたかを区別して残す。記録はタブをまたいで
+  // 残るよう sessionStorage に置く（元の setItem で書き、記録そのものは数えない）。
+  await page.addInitScript((key) => {
+    let leaving = false;
+    const markLeaving = (): void => {
+      leaving = true;
+    };
+    window.addEventListener('pagehide', markLeaving, { capture: true });
+    document.addEventListener(
+      'visibilitychange',
+      () => {
+        if (document.visibilityState === 'hidden') markLeaving();
+      },
+      { capture: true },
+    );
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function setItem(name: string, value: string) {
+      original.call(this, name, value);
+      if (name === key && this === window.localStorage) {
+        const log = JSON.parse(window.sessionStorage.getItem('e2e-saves') ?? '[]') as unknown[];
+        log.push({ leaving, changed: value.includes('changed.md') });
+        original.call(window.sessionStorage, 'e2e-saves', JSON.stringify(log));
+      }
+    };
+  }, STORAGE_KEY);
+  // 時計を止めて、デバウンス（400ms）の保存が走らないうちに接続を押す。
+  await page.clock.install();
+  await openApp(page);
+  await page.clock.pauseAt(Date.now() + 60_000);
+
+  await page.locator('.input-card__title').fill('changed.md');
+  await connect(page);
+
+  // GitHub へ移る前（離れる前）に、直前の編集を含む内容が書かれている。
+  const saves = await page.evaluate(
+    () =>
+      JSON.parse(window.sessionStorage.getItem('e2e-saves') ?? '[]') as {
+        leaving: boolean;
+        changed: boolean;
+      }[],
+  );
+  expect(saves.some((save) => save.changed && !save.leaving)).toBe(true);
+
+  // 戻ってきたあとも編集は残っている。
+  await dialog(page).getByRole('button', { name: '閉じる' }).click();
+  await expect(page.locator('.input-card__title')).toHaveValue('changed.md');
 });
 
 test('キーボードだけでフォルダを辿ってファイルを選べる', async ({ page }) => {

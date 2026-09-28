@@ -14,11 +14,13 @@ import {
   callbackUrl,
   codeChallengeS256,
   describeCallbackFailure,
+  describeTokenExchangeFailure,
   type GitHubAppConfig,
   type GitHubToken,
   installationUrl,
   isTokenUsable,
   PENDING_AUTH_KEY,
+  parseExchangeErrorCode,
   parsePendingAuth,
   parseTokenResponse,
   readCallbackParams,
@@ -171,6 +173,8 @@ export async function enumerateSelectedEntries(
   return { files, excluded };
 }
 
+const CANCELLED_NOTICE = 'GitHub への接続を取り消しました。';
+
 export interface GitHubImport {
   config: GitHubAppConfig | null;
   /** App のインストール・権限設定の画面。 */
@@ -237,6 +241,16 @@ function readPendingAuth(): string | null {
   }
 }
 
+export interface GitHubImportOptions {
+  /**
+   * 認可のために GitHub の画面へ移る直前に呼ぶ。false を返したら移らない。
+   *
+   * 移ると今のページは破棄され、戻ってきたときは保存済みの内容から始まる。
+   * 保存できていない作業があるまま離れさせないために、App が保存の書き出しを渡す。
+   */
+  beforeNavigate?: () => boolean;
+}
+
 /**
  * 「GitHubから追加」の通信と状態をまとめる。
  *
@@ -246,7 +260,7 @@ function readPendingAuth(): string | null {
  *   戻ってきたら、検証の成否にかかわらず読んだ時点で消す。
  * - 取得した内容はワークスペースへ直接入れない。候補として返し、確定は App が行う。
  */
-export function useGitHubImport(): GitHubImport {
+export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport {
   const [state, dispatch] = useReducer(githubImportReducer, initialGitHubImportState);
 
   // 一括取り込みの途中の内容（計画・取得した本文・決めた取り込み方法）はメモリにだけある。
@@ -279,6 +293,13 @@ export function useGitHubImport(): GitHubImport {
   /** 直前に確定した一括取り込みの控え。「元に戻す」で確認画面へ戻すのに使う。 */
   const suspendedBatch = useRef<SuspendedBatch | null>(null);
   const handledCallback = useRef(false);
+  /**
+   * 接続の手続き（認可の画面へ移る準備と、戻ったあとのトークン交換）の世代。
+   * 途中で「閉じる」と進め、それより前に始めた手続きの結果を捨てる。
+   * 交換はコードが1回しか使えないので fetch 自体は止めないが、閉じたあとに返った
+   * トークンは持たない（閉じたのに裏で接続が完了し、一覧を取りに行く、を起こさない）。
+   */
+  const attempt = useRef(0);
 
   /** 進行中の取得を止めて、新しい取得の中断口を作る。 */
   const begin = (): AbortController => {
@@ -557,6 +578,7 @@ export function useGitHubImport(): GitHubImport {
 
   const exchangeCode = async (code: string, verifier: string): Promise<void> => {
     dispatch({ type: 'connect/start' });
+    const started = attempt.current;
     // 交換は中断口を共有しない。コードは1回しか使えないので、他の操作や
     // （開発時の Strict Mode による）effect の片付けで止めると、やり直せなくなる。
     try {
@@ -572,10 +594,17 @@ export function useGitHubImport(): GitHubImport {
         cache: 'no-store',
         credentials: 'same-origin',
       });
-      const token = response.ok ? parseTokenResponse(await response.json(), Date.now()) : null;
+      // 失敗の本文は理由コードだけを読む（読めなくても状態コードで知らせる）。
+      const payload: unknown = await response.json().catch(() => null);
+      const token = response.ok ? parseTokenResponse(payload, Date.now()) : null;
+      // 交換の途中で閉じられていたら、返ってきたトークンは捨てる（取り消し済み）。
+      if (attempt.current !== started) return;
       if (!token) {
         dropConnection(
-          `GitHub との接続に失敗しました（トークンの交換に失敗: ${response.status}）。もう一度接続してください。`,
+          describeTokenExchangeFailure(
+            response.status,
+            response.ok ? null : parseExchangeErrorCode(payload),
+          ),
         );
         return;
       }
@@ -583,6 +612,7 @@ export function useGitHubImport(): GitHubImport {
       dispatch({ type: 'connect/done' });
       loadRepositories();
     } catch (error) {
+      if (attempt.current !== started) return;
       console.error('GitHub のトークン交換に失敗しました', error);
       dropConnection(
         'GitHub との接続に失敗しました。ネットワークを確認して、もう一度接続してください。',
@@ -648,14 +678,29 @@ export function useGitHubImport(): GitHubImport {
       });
       return;
     }
+    const started = attempt.current;
     const pending = { state: randomToken(), verifier: randomToken(), createdAt: Date.now() };
     const codeChallenge = await codeChallengeS256(pending.verifier, crypto.subtle);
+    // 準備の間に閉じられていたら、認可の画面へは移らない。
+    if (attempt.current !== started) return;
     try {
       sessionStorage.setItem(PENDING_AUTH_KEY, serializePendingAuth(pending));
     } catch {
       dispatch({
         type: 'disconnect',
         notice: 'このブラウザの設定では接続の一時情報を保存できないため、接続できません。',
+      });
+      return;
+    }
+    // 保存はデバウンスしているので、押す直前の編集はまだ書かれていないことがある。
+    // 表示中の「保存に失敗している」は最後に実行済みの保存の結果でしかないため、
+    // 離れる直前にその場で書き出し、書けなければ移らない。
+    if (options.beforeNavigate && !options.beforeNavigate()) {
+      removePendingAuth();
+      dispatch({
+        type: 'disconnect',
+        // 書き出しの案内は、同時に出る保存失敗の警告（saveFailed）に任せる。
+        notice: 'ブラウザへの保存に失敗したため、GitHub への接続を中止しました。',
       });
       return;
     }
@@ -693,6 +738,13 @@ export function useGitHubImport(): GitHubImport {
     close: () => {
       abortRef.current?.abort();
       abortRef.current = null;
+      // 接続の途中で閉じたら、手続きを取り消す（裏で接続を完了させない）。
+      // 閉じたら終わり、という見た目どおりの意味にする。
+      if (state.connection === 'connecting') {
+        attempt.current += 1;
+        removePendingAuth();
+        dispatch({ type: 'disconnect', notice: CANCELLED_NOTICE });
+      }
       dispatch({ type: 'close' });
     },
     connect,

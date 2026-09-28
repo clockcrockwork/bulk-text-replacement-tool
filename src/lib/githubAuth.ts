@@ -205,28 +205,75 @@ export function describeCallbackFailure(reason: CallbackFailure): string {
   }
 }
 
+/**
+ * 交換エンドポイントの失敗の本文から、理由コード（`origin_not_allowed` など）を読む。
+ * 公開の識別子だけを通し、形の違うものは読まない（画面にそのまま出すため）。
+ */
+export function parseExchangeErrorCode(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const { error } = value;
+  return typeof error === 'string' && /^[a-z_]{1,40}$/.test(error) ? error : null;
+}
+
+/**
+ * トークン交換の失敗を、利用者に出す文言にする。
+ *
+ * 理由コードを添えるのは、利用者から運用者へそのまま伝えてもらうため。状態コードだけだと、
+ * 403 が「許可リストの取り違え」なのか「別のサイトからの送信」なのか切り分けられない。
+ * 429 は Vercel Firewall のレート制限。作業データは消えていないことも伝える。
+ */
+export function describeTokenExchangeFailure(status: number, reason: string | null = null): string {
+  if (status === 429) {
+    return 'GitHub への接続が短時間に続いたため、一時的に制限されています。少し時間をおいてから、もう一度接続してください（作業データはそのまま残っています）。';
+  }
+  const detail = reason ? `${status} ${reason}` : String(status);
+  return `GitHub との接続に失敗しました（トークンの交換に失敗: ${detail}）。もう一度接続してください。`;
+}
+
 /** ブラウザがメモリにだけ持つアクセストークン。 */
 export interface GitHubToken {
   accessToken: string;
-  /** 失効時刻（ミリ秒）。GitHub が有効期限を返さなかった場合は null。 */
-  expiresAt: number | null;
+  /**
+   * 失効時刻（ミリ秒）。期限付きのトークンしか受け付けないので、必ずある
+   * （`parseTokenResponse` を参照）。
+   */
+  expiresAt: number;
 }
+
+/**
+ * 受け付けるトークンの有効期限（秒）の上限。Function（`MAX_TOKEN_LIFETIME_SECONDS`）と同じ値。
+ * GitHub App のユーザートークンは現在 8 時間固定で、変更に少し余裕を持たせて 1 日までにする。
+ * 巨大な値を通すとミリ秒に直した時点で `Infinity` になり、実質無期限になってしまう。
+ */
+export const MAX_TOKEN_LIFETIME_SECONDS = 24 * 60 * 60;
 
 /**
  * 交換エンドポイントの応答を検証する。
  *
  * refresh token は Function 側で捨てているので、ここでも読まない
  * （紛れ込んでもメモリにすら載せない）。
+ *
+ * 有効期限（`expires_in`）の無い応答は受け付けない。期限付きのユーザートークンを使うのが
+ * 前提で、GitHub App の設定でトークンの期限切れがオフにされると `expires_in` が返らなくなる。
+ * そのとき「期限なし」として使い続けると、設定の取り違えで安全側の前提が黙って外れる。
+ * Function でも同じ確認（bearer・期限の範囲）をしているが、ここでも重ねて確かめる。
  */
 export function parseTokenResponse(value: unknown, now: number): GitHubToken | null {
   if (!isRecord(value)) return null;
-  const { access_token: accessToken, expires_in: expiresIn } = value;
+  const { access_token: accessToken, expires_in: expiresIn, token_type: tokenType } = value;
   if (typeof accessToken !== 'string' || accessToken === '') return null;
-  const expiresAt =
-    typeof expiresIn === 'number' && Number.isFinite(expiresIn) && expiresIn > 0
-      ? now + expiresIn * 1000
-      : null;
-  return { accessToken, expiresAt };
+  // Function と同じ契約を重ねて確かめる（bearer・正の整数・上限以内の期限）。
+  if (typeof tokenType !== 'string' || tokenType.toLowerCase() !== 'bearer') return null;
+  if (
+    typeof expiresIn !== 'number' ||
+    !Number.isSafeInteger(expiresIn) ||
+    expiresIn <= 0 ||
+    expiresIn > MAX_TOKEN_LIFETIME_SECONDS
+  ) {
+    return null;
+  }
+  const expiresAt = now + expiresIn * 1000;
+  return Number.isFinite(expiresAt) ? { accessToken, expiresAt } : null;
 }
 
 /**
@@ -238,5 +285,5 @@ export function parseTokenResponse(value: unknown, now: number): GitHubToken | n
 export const TOKEN_EXPIRY_MARGIN_MS = 60 * 1000;
 
 export function isTokenUsable(token: GitHubToken, now: number): boolean {
-  return token.expiresAt === null || now < token.expiresAt - TOKEN_EXPIRY_MARGIN_MS;
+  return now < token.expiresAt - TOKEN_EXPIRY_MARGIN_MS;
 }
