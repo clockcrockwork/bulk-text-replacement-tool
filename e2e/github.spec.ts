@@ -670,8 +670,9 @@ test('NovelText 型の深いパスで同名 body.md が複数あり、同じ blo
     'A用/body (3).md',
   ]);
 
-  // 同一内容の2件が同じ blob SHA になっている条件も固定する。
-  expect(GitHubMock.blobSha(shared)).toBe(GitHubMock.blobSha(shared));
+  // 同一内容の2件は同じ blob SHA なので、取得は共有されて2リクエストだけ。
+  // それでも source.path は別なので入力は3件残る。
+  expect(mock.apiCalls(/\\/git\\/blobs\\//)).toHaveLength(2);
 });
 
 test('未展開のフォルダを選ぶと、blob を取る前に正確な件数と容量を見せ、戻れば選択は残る', async ({
