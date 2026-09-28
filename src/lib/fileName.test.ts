@@ -150,3 +150,126 @@ describe('resolveFileNames（Zip Slip）', () => {
     expect(resolveFileNames(['../..'])).toEqual(['text-1.txt']);
   });
 });
+
+describe('sanitizeName（制御文字・双方向制御文字）', () => {
+  it('名前の中の改行・タブ・C0 制御文字を _ にする', () => {
+    expect(sanitizeName('a\nb', true)).toBe('a_b');
+    expect(sanitizeName('a\r\nb', true)).toBe('a__b');
+    expect(sanitizeName('a\tb', true)).toBe('a_b');
+    expect(sanitizeName('a\u0000b\u001fc', true)).toBe('a_b_c');
+  });
+
+  it('DEL と C1 制御文字を _ にする', () => {
+    expect(sanitizeName('a\u007fb', true)).toBe('a_b');
+    expect(sanitizeName('a\u0080b\u0085c\u009fd', true)).toBe('a_b_c_d');
+  });
+
+  it('前後の空白としての改行は従来どおり落とす', () => {
+    expect(sanitizeName('\n a.md \t\n', true)).toBe('a.md');
+  });
+
+  it('上書き・埋め込み・隔離の双方向制御文字を _ にする（拡張子の偽装を防ぐ）', () => {
+    // `a\u202egpj.md` は画面上で `adm.jpg` に見える。
+    expect(sanitizeName('a\u202egpj.md', true)).toBe('a_gpj.md');
+    for (const code of [0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069]) {
+      expect(sanitizeName(`x${String.fromCodePoint(code)}y`, true)).toBe('x_y');
+    }
+  });
+
+  it('LRM / RLM / ALM と行区切り・段落区切りを _ にする', () => {
+    for (const code of [0x200e, 0x200f, 0x061c, 0x2028, 0x2029]) {
+      expect(sanitizeName(`x${String.fromCodePoint(code)}y`, true)).toBe('x_y');
+    }
+  });
+
+  it('レビューで挙がった形がそのまま残らない', () => {
+    expect(sanitizeName('a\nb\u202egpj.md', false)).toBe('a_b_gpj.md');
+  });
+
+  it('制御文字を置き換えても、階層の区切りは / のまま', () => {
+    expect(sanitizeName('dir\n/file.md', true)).toBe('dir_/file.md');
+  });
+
+  it('通常の文字（日本語・絵文字・結合文字・全角空白・ZWJ 絵文字）は変えない', () => {
+    expect(sanitizeName('第一章　序.md', true)).toBe('第一章　序.md');
+    expect(sanitizeName('\u304b\u3099.md', true)).toBe('\u304b\u3099.md');
+    expect(sanitizeName('\u{1F468}\u200d\u{1F469}.md', true)).toBe('\u{1F468}\u200d\u{1F469}.md');
+    expect(sanitizeName('שלום.md', true)).toBe('שלום.md');
+  });
+});
+
+describe('resolveFileNames / resolveDirNames（制御文字）', () => {
+  it('出力ファイル名に改行や双方向制御文字を残さない', () => {
+    expect(resolveFileNames(['a\nb\u202egpj.md'])).toEqual(['a_b_gpj.md']);
+    expect(resolveFileNames(['\u202e'])).toEqual(['_.txt']);
+  });
+
+  it('ZIP のディレクトリ名にも残さない', () => {
+    expect(resolveDirNames(['A\n\u2066B'])).toEqual(['A__B']);
+  });
+});
+
+describe('sanitizeName（幅を持たない書式文字）', () => {
+  it('ZWSP・単語結合子・BOM・ソフトハイフン・行間注記・タグ文字を _ にする', () => {
+    for (const code of [
+      0x00ad, 0x200b, 0x2060, 0x2064, 0x206a, 0x206f, 0xfeff, 0xfff9, 0xfffb, 0xe0000, 0xe0041,
+      0xe007f,
+    ]) {
+      expect(sanitizeName(`x${String.fromCodePoint(code)}y`, true)).toBe('x_y');
+    }
+  });
+
+  it('BOM は前後にあっても黙って消さず _ にする（trim が空白として扱うため先に置き換える）', () => {
+    expect(sanitizeName('\ufeffa.md', false)).toBe('_a.md');
+    expect(sanitizeName('a.md\ufeff', false)).toBe('a.md_');
+    expect(sanitizeName('a\ufeff.md', false)).toBe('a_.md');
+  });
+
+  it('末尾の BOM は拡張子の一部として残るので、保証していない拡張子として .txt を足す', () => {
+    // `a.md` のまま出すと、見えない文字が消えて別の名前に化けたことに気付けない。
+    expect(resolveFileNames(['a.md\ufeff'])).toEqual(['a.md_.txt']);
+    expect(resolveFileNames(['\ufeffa.md'])).toEqual(['_a.md']);
+  });
+
+  it('前後の改行類（改行・行区切り・段落区切り）は従来どおり空白として落とす', () => {
+    expect(sanitizeName('\u2028a.md\u2029', false)).toBe('a.md');
+    expect(sanitizeName('\na.md\t', false)).toBe('a.md');
+  });
+
+  it('ZWNJ と ZWJ は残す（合字や文字の形を決める）', () => {
+    expect(sanitizeName('x\u200cy', true)).toBe('x\u200cy');
+    expect(sanitizeName('x\u200dy', true)).toBe('x\u200dy');
+  });
+
+  it('見た目が同じ別名を作らない', () => {
+    expect(resolveFileNames(['a\u200b.md', 'a.md', 'a\ufeff.md'])).toEqual([
+      'a_.md',
+      'a.md',
+      'a_ (2).md',
+    ]);
+  });
+});
+
+describe('dedupeNames（Unicode の正規化形）', () => {
+  it('正規化形だけが違う名前も重複として扱う（macOS へ展開すると衝突する）', () => {
+    // NFD の「か + 濁点」と NFC の「が」。
+    expect(dedupeNames(['\u304b\u3099.md', '\u304c.md'])).toEqual([
+      '\u304b\u3099.md',
+      '\u304c (2).md',
+    ]);
+    // 大文字小文字と正規化形の両方が違う場合も。
+    expect(dedupeNames(['e\u0301.md', '\u00c9.md'])).toEqual(['e\u0301.md', '\u00c9 (2).md']);
+  });
+
+  it('名前そのものは正規化しない', () => {
+    expect(dedupeNames(['\u304b\u3099.md'])).toEqual(['\u304b\u3099.md']);
+  });
+
+  it('連番先の重複判定にも同じキーを使う', () => {
+    expect(dedupeNames(['\u304c.md', '\u304c (2).md', '\u304b\u3099.md'])).toEqual([
+      '\u304c.md',
+      '\u304c (2).md',
+      '\u304b\u3099 (3).md',
+    ]);
+  });
+});

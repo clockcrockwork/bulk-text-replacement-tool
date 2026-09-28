@@ -3,6 +3,7 @@ import {
   GITHUB_TOKEN_URL,
   handleTokenExchange,
   MAX_BODY_BYTES,
+  MAX_TOKEN_LIFETIME_SECONDS,
   readExchangeConfig,
 } from './githubTokenExchange.js';
 
@@ -81,6 +82,67 @@ describe('readExchangeConfig', () => {
     }
     expect(readExchangeConfig({})).toBeNull();
   });
+
+  describe('許可リストの形の取り違え（末尾の / の要否が逆の2変数）', () => {
+    const base = {
+      VITE_GITHUB_APP_CLIENT_ID: 'id',
+      GITHUB_APP_CLIENT_SECRET: 'secret',
+      GITHUB_OAUTH_ALLOWED_ORIGINS: ORIGIN,
+      GITHUB_OAUTH_REDIRECT_URIS: REDIRECT,
+    };
+
+    it.each([
+      [
+        'オリジンに末尾の / が付いている',
+        { GITHUB_OAUTH_ALLOWED_ORIGINS: `${ORIGIN}/` },
+        'ALLOWED_ORIGINS',
+      ],
+      [
+        'オリジンにパスが付いている',
+        { GITHUB_OAUTH_ALLOWED_ORIGINS: `${ORIGIN}/app` },
+        'ALLOWED_ORIGINS',
+      ],
+      [
+        'オリジンが URL として読めない',
+        { GITHUB_OAUTH_ALLOWED_ORIGINS: 'bulk.example' },
+        'ALLOWED_ORIGINS',
+      ],
+      ['callback に末尾の / が無い', { GITHUB_OAUTH_REDIRECT_URIS: ORIGIN }, 'REDIRECT_URIS'],
+      [
+        'callback が下位のパス',
+        { GITHUB_OAUTH_REDIRECT_URIS: `${ORIGIN}/callback` },
+        'REDIRECT_URIS',
+      ],
+      [
+        'callback にクエリが付いている',
+        { GITHUB_OAUTH_REDIRECT_URIS: `${ORIGIN}/?x=1` },
+        'REDIRECT_URIS',
+      ],
+      [
+        'callback のオリジンが許可リストに無い',
+        { GITHUB_OAUTH_REDIRECT_URIS: 'https://other.example/' },
+        'REDIRECT_URIS',
+      ],
+    ])('%s なら設定なし（503）にし、どの変数かをログに出す', (_, override, variable) => {
+      const errors: string[] = [];
+      vi.spyOn(console, 'error').mockImplementation((message: string) => {
+        errors.push(message);
+      });
+      expect(readExchangeConfig({ ...base, ...override })).toBeNull();
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain(`GITHUB_OAUTH_${variable}`);
+    });
+
+    it('正しい形なら複数でも読める', () => {
+      expect(
+        readExchangeConfig({
+          ...base,
+          GITHUB_OAUTH_ALLOWED_ORIGINS: `${ORIGIN},https://other.example`,
+          GITHUB_OAUTH_REDIRECT_URIS: `${REDIRECT},https://other.example/`,
+        }),
+      ).not.toBeNull();
+    });
+  });
 });
 
 describe('handleTokenExchange', () => {
@@ -120,10 +182,51 @@ describe('handleTokenExchange', () => {
     expect(new Headers(calls[0]?.init?.headers).get('x-github-api-version')).toBeNull();
   });
 
-  it('有効期限が返らなければ付けない', async () => {
-    const { fetchImpl } = upstream({ access_token: 'ghu_access' });
+  it.each([
+    [
+      '有効期限が無い（App のトークン期限切れ設定がオフ）',
+      { access_token: 'ghu_access', token_type: 'bearer' },
+    ],
+    ['有効期限が 0', { access_token: 'ghu_access', token_type: 'bearer', expires_in: 0 }],
+    ['有効期限が負', { access_token: 'ghu_access', token_type: 'bearer', expires_in: -1 }],
+    [
+      '有効期限が数でない',
+      { access_token: 'ghu_access', token_type: 'bearer', expires_in: '28800' },
+    ],
+    [
+      'token_type が bearer でない',
+      { access_token: 'ghu_access', token_type: 'mac', expires_in: 28800 },
+    ],
+    ['token_type が無い', { access_token: 'ghu_access', expires_in: 28800 }],
+    [
+      '有効期限が整数でない',
+      { access_token: 'ghu_access', token_type: 'bearer', expires_in: 28800.5 },
+    ],
+    [
+      '有効期限が上限を超える',
+      {
+        access_token: 'ghu_access',
+        token_type: 'bearer',
+        expires_in: MAX_TOKEN_LIFETIME_SECONDS + 1,
+      },
+    ],
+    // 有限だが、ブラウザでミリ秒に直すと Infinity になる値。通すと実質無期限になる。
+    [
+      '有効期限が有限だが巨大（Number.MAX_VALUE）',
+      { access_token: 'ghu_access', token_type: 'bearer', expires_in: Number.MAX_VALUE },
+    ],
+    [
+      '有効期限が有限だが巨大（1e308）',
+      { access_token: 'ghu_access', token_type: 'bearer', expires_in: 1e308 },
+    ],
+  ])('%s トークンは渡さず 502（期限の無いトークンを配らない）', async (_, payload) => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { fetchImpl } = upstream(payload);
     const response = await handleTokenExchange(request(VALID), CONFIG, fetchImpl);
-    expect(await body(response)).toEqual({ access_token: 'ghu_access', token_type: 'bearer' });
+    expect(response.status).toBe(502);
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({ error: 'upstream_invalid' });
+    expect(text).not.toContain('ghu_access');
   });
 
   it('POST 以外は 405', async () => {
@@ -151,14 +254,30 @@ describe('handleTokenExchange', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('JSON 以外は 415', async () => {
-    const { fetchImpl } = upstream({});
-    const response = await handleTokenExchange(
-      request('code=abc', { contentType: 'application/x-www-form-urlencoded' }),
-      CONFIG,
-      fetchImpl,
-    );
+  it.each([
+    ['フォーム', 'application/x-www-form-urlencoded'],
+    ['application/json で始まる別の型', 'application/jsonx'],
+    ['application/json+ で始まる別の型', 'application/json-patch+json'],
+    ['空', ''],
+  ])('JSON 以外（%s）は 415', async (_, contentType) => {
+    const { fetchImpl, calls } = upstream({});
+    const response = await handleTokenExchange(request(VALID, { contentType }), CONFIG, fetchImpl);
     expect(response.status).toBe(415);
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    'application/json; charset=utf-8',
+    'Application/JSON',
+    'application/json ;charset=UTF-8',
+  ])('application/json（%s）は受け付ける', async (contentType) => {
+    const { fetchImpl } = upstream({
+      access_token: 'ghu_access',
+      token_type: 'bearer',
+      expires_in: 28800,
+    });
+    const response = await handleTokenExchange(request(VALID, { contentType }), CONFIG, fetchImpl);
+    expect(response.status).toBe(200);
   });
 
   it('大きすぎる本文は読まずに断る（原稿などを受け取る口にしない）', async () => {
@@ -169,6 +288,73 @@ describe('handleTokenExchange', () => {
       fetchImpl,
     );
     expect(response.status).toBe(413);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('Content-Length の無い本文も、上限を超えた時点で読むのをやめて断る', async () => {
+    const { fetchImpl, calls } = upstream({});
+    // 引かれるたびに 1KB を返し続ける本文。読み切ろうとすれば終わらない。
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(new Uint8Array(1024).fill(0x20));
+      },
+    });
+    const init: RequestInit & { duplex: 'half' } = {
+      method: 'POST',
+      headers: { origin: ORIGIN, 'content-type': 'application/json' },
+      body: stream,
+      duplex: 'half',
+    };
+    const streamed = new Request('https://bulk.example/api/github/token', init);
+    expect(streamed.headers.get('content-length')).toBeNull();
+
+    const response = await handleTokenExchange(streamed, CONFIG, fetchImpl);
+    expect(response.status).toBe(413);
+    expect(calls).toHaveLength(0);
+    // 上限（4KB）を1つ越えたところで止まる。ストリームは先読みの分だけ多く引かれ得る。
+    expect(pulled).toBeLessThanOrEqual(Math.ceil(MAX_BODY_BYTES / 1024) + 3);
+  });
+
+  it('Content-Length の無い本文でも、上限以内なら交換する', async () => {
+    const { fetchImpl, calls } = upstream({
+      access_token: 'ghu_token',
+      token_type: 'bearer',
+      expires_in: 28800,
+    });
+    const bytes = new TextEncoder().encode(JSON.stringify(VALID));
+    const init: RequestInit & { duplex: 'half' } = {
+      method: 'POST',
+      headers: { origin: ORIGIN, 'content-type': 'application/json' },
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          // 複数の断片に分けて届いても、つないで読む。
+          controller.enqueue(bytes.slice(0, 10));
+          controller.enqueue(bytes.slice(10));
+          controller.close();
+        },
+      }),
+      duplex: 'half',
+    };
+    const response = await handleTokenExchange(
+      new Request('https://bulk.example/api/github/token', init),
+      CONFIG,
+      fetchImpl,
+    );
+    expect(response.status).toBe(200);
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([
+    ['原稿のような余計な項目', { ...VALID, manuscript: '本文' }],
+    ['GitHub へ渡す値に紛れ込ませる項目', { ...VALID, client_id: 'Iv23other' }],
+    ['__proto__', JSON.parse(`{"__proto__":{"x":1},${JSON.stringify(VALID).slice(1)}`)],
+  ])('%s が付いていれば、3項目がそろっていても断る', async (_, payload) => {
+    const { fetchImpl, calls } = upstream({ access_token: 'ghu_token', token_type: 'bearer' });
+    const response = await handleTokenExchange(request(payload), CONFIG, fetchImpl);
+    expect(response.status).toBe(400);
+    expect(await body(response)).toEqual({ error: 'invalid_request' });
     expect(calls).toHaveLength(0);
   });
 

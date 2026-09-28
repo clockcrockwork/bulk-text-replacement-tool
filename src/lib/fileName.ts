@@ -28,12 +28,44 @@ function sanitizeSegment(segment: string): string {
 }
 
 /**
+ * 名前に残すと見た目と実体がずれる文字。
+ *
+ * - C0 / C1 制御文字: 改行やタブが ZIP のエントリ名やダウンロード名に入ると、
+ *   一覧の表示が崩れたり、展開するツールによって扱いが割れたりする
+ * - 双方向制御文字（LRM / RLM / ALM・埋め込み・上書き・隔離）: `a\u202egpj.md` が
+ *   `adm.jpg` のように見え、拡張子を偽装できる（CVE-2021-42574 と同じ仕組み）
+ * - 行区切り・段落区切り: 表示上は改行として扱われる
+ * - 幅を持たない書式文字（ZWSP・単語結合子などの U+2060–206F・BOM・ソフトハイフン・
+ *   行間注記 U+FFF9–FFFB・タグ文字 U+E0000–E007F）: `a\u200b.md` と `a.md` のように、
+ *   見た目が同じなのに別のファイルになる（`scripts/checkText.mjs` がソースで禁じている文字と揃える）
+ *
+ * ZWNJ（U+200C）と ZWJ（U+200D）は残す。絵文字の合字やインド系の文字では、
+ * 見た目と意味を持つ文字として使われる。
+ *
+ * 取り込んだ GitHub のパスは NUL と `/` 以外を何でも含み得るので、名前になる時点で潰す。
+ * 見えない文字を黙って消すと別の名前に化けたことに気付けないため、`_` に置き換える。
+ * ソースに実物を書かない（見えないまま壊れる）ので、すべてエスケープで書く。
+ */
+const INVISIBLE_OR_CONTROL =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: 制御文字を検出して置き換えるための正規表現
+  /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb\u{e0000}-\u{e007f}]/gu;
+
+/**
  * ファイル名・ディレクトリ名から、OS やアーカイバが嫌う文字と形を落とす。
  * `allowSlash` が false のとき `/` も潰す（ディレクトリ名として1階層に収めるため）。
+ *
+ * 変えるのは名前だけで、本文・ルール・変換結果の文字列はここを通らない。
  */
 export function sanitizeName(name: string, allowSlash: boolean): string {
   const forbidden = allowSlash ? /[\\:*?"<>|]/g : /[\\/:*?"<>|]/g;
-  const cleaned = name.replace(forbidden, '_').trim();
+  // 前後の空白・改行類（タブ・改行・U+2028/2029 など）は先に落とす（従来どおり）。中に残った
+  // ものだけを `_` にする。ただし BOM（U+FEFF）は JS の trim が空白として扱うので、trim より
+  // 先に置き換える。空白ではない見えない文字なので、前後にあっても黙って消さない。
+  const cleaned = name
+    .replace(/\ufeff/g, '_')
+    .trim()
+    .replace(INVISIBLE_OR_CONTROL, '_')
+    .replace(forbidden, '_');
   // `.` と `..` を落とす。これが残ると ZIP のエントリ名が `A用/../../evil.txt` のように
   // 展開先を抜け出す形になり得る（Zip Slip）。空の区切りもここで消える。
   return cleaned
@@ -42,6 +74,18 @@ export function sanitizeName(name: string, allowSlash: boolean): string {
     .map(sanitizeSegment)
     .filter((segment) => segment !== '')
     .join('/');
+}
+
+/**
+ * 展開先で同じ名前として扱われ得るかを比べるためのキー。
+ *
+ * 大文字小文字に加えて Unicode の正規化形も揃える。GitHub のパスは macOS 由来だと
+ * NFD（`か` + 濁点）で来ることが多く、NFC の `が` と ZIP の中では別エントリになるが、
+ * macOS（APFS）は正規化の差を無視して名前を比べるので、展開すると衝突して片方が失われ得る。
+ * 揃えるのは比べるキーだけで、名前そのものは正規化しない（コードポイントの差も利用者の名前）。
+ */
+function collisionKey(name: string): string {
+  return name.toLowerCase().normalize('NFC');
 }
 
 /**
@@ -54,7 +98,7 @@ export function sanitizeName(name: string, allowSlash: boolean): string {
 export function dedupeNames(names: readonly string[]): string[] {
   const seen = new Map<string, number>();
   return names.map((name) => {
-    const key = name.toLowerCase();
+    const key = collisionKey(name);
     const count = seen.get(key);
     if (count === undefined) {
       seen.set(key, 1);
@@ -66,11 +110,11 @@ export function dedupeNames(names: readonly string[]): string[] {
     let next = count + 1;
     seen.set(key, next);
     let candidate = `${base} (${next})${ext}`;
-    while (seen.has(candidate.toLowerCase())) {
+    while (seen.has(collisionKey(candidate))) {
       next += 1;
       candidate = `${base} (${next})${ext}`;
     }
-    seen.set(candidate.toLowerCase(), 1);
+    seen.set(collisionKey(candidate), 1);
     return candidate;
   });
 }

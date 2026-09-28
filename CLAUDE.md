@@ -112,8 +112,12 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   値が変わる状態になる）。列数が見出しと食い違う表は `findRaggedRows` で検出し、
   確定する前に見せる。
 - **出力ファイル名**（`src/lib/fileName.ts`）: タイトルは名前であってパスではないので
-  `/` は潰す。保証する拡張子は `ACCEPTED_EXTENSIONS`（取り込みと共有）で、それ以外は
-  消さずに `.txt` を足す（`title.html` → `title.html.txt`）。**変えるのは名前だけで、
+  `/` は潰す。制御文字（C0 / C1）・双方向制御文字・幅を持たない書式文字も `sanitizeName` が
+  `_` にする（改行が ZIP のエントリ名に入る・`U+202E` で拡張子を偽装できる・見た目が同じ別名が
+  できる）。ZWJ / ZWNJ は残す。重複の判定（`dedupeNames`）は大文字小文字と Unicode の正規化形を
+  揃えたキーで行う（名前そのものは正規化しない）。
+  保証する拡張子は `ACCEPTED_EXTENSIONS`（取り込みと共有）で、それ以外は消さずに `.txt` を足す
+  （`title.html` → `title.html.txt`）。**変えるのは名前だけで、
   本文・ルール・変換結果の文字列には触らない。**
 - **グループ名**は出力先の識別子。追加・取り込み・作業データの読み込みでは
   `uniqueName` で一意にし、変換時はタブ名も ZIP のディレクトリ名と同じ値を使う
@@ -141,10 +145,27 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   - アクセストークンは `useGitHubImport` の ref（メモリ）にだけ持つ。localStorage /
     sessionStorage / ワークスペース / 作業データに書かない。sessionStorage に置いてよいのは
     リダイレクトを跨ぐ state と PKCE verifier だけで、戻った時点で消す。
+  - トークンは**期限付きだけ**を使う。`expires_in` は正の整数で 1 日（`MAX_TOKEN_LIFETIME_SECONDS`）
+    以内、`token_type` は bearer であること。外れた応答は Function が 502 にし、ブラウザ
+    （`parseTokenResponse`）も受け付けない。GitHub App の期限切れ設定がオフにされると
+    `expires_in` が返らなくなり、「期限なし」として使い続けてしまうため。巨大な値もミリ秒に
+    直すと `Infinity` になり実質無期限になるので、上限で断る。
+  - 接続の途中（`connecting`）で閉じたら取り消す（`attempt` の世代を進める）。トークン交換の
+    fetch はコードが1回しか使えないので止めないが、閉じたあとに返った結果は捨てる。
   - 認可は毎回アプリが state と PKCE（S256）を付けて始める。GitHub の「インストール時に
     OAuth を要求」には頼らない。callback はオリジン直下（`base: './'` なので下位パス不可）。
+  - 認可で GitHub の画面へ移る直前に、保留中の編集も含めて保存を書き出す
+    （`usePersistedWorkspace` の `flush` を `beforeNavigate` として渡す）。書けなければ移らない。
+    表示中の `saveFailed` は最後に実行済みの保存の結果でしかなく、デバウンス中の編集は含まない。
+    `flush` はそのレンダーの値を書く（effect で更新する ref は、次の操作より先に更新済みとは限らない）。
+    離れるとき（pagehide / visibilitychange）の保険が読む ref も、`useLayoutEffect` で更新する。
+  - Function の許可リスト（`GITHUB_OAUTH_ALLOWED_ORIGINS` は `/` 無し、`GITHUB_OAUTH_REDIRECT_URIS`
+    は `/` 付き）は `readExchangeConfig` で形まで確かめ、崩れていれば 503 にしてどの変数かを
+    ログに出す（取り違えると全員が黙って 403 / 400 になる）。失敗の画面には状態コードと理由コード
+    （`origin_not_allowed` など）を出す。切り分けの表は `docs/github-app-setup.md` §2。
   - バックエンドは原稿・ルール・リポジトリの内容を受け取らない。本文はブラウザから
-    api.github.com へ直接取りに行く。
+    api.github.com へ直接取りに行く。Function も交換に要る3項目以外のキーがあれば 400 にし、
+    本文は読みながら数えて 4KB を超えた時点で打ち切る（Content-Length が無くても読み切らない）。
   - api.github.com へのリクエストは **GitHub の CORS 方針**に従う。送る要求ヘッダは
     `githubRequestHeaders`（`Accept` と `Authorization`）だけで、`X-GitHub-Api-Version` など
     許可リスト（`GITHUB_CORS_ALLOWED_REQUEST_HEADERS`）に無いものは付けない（preflight で止まる）。
@@ -162,6 +183,16 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   - 取り込み元の同一性は `repositoryId + ref + path`（`sourceIdentity`）。タイトルでは判定しない。
     同じ取り込み元が複数あるときに更新先を推測しない。
   - 対応拡張子は `ACCEPTED_EXTENSIONS`、文字コードは `decodeText` をローカルと共有する。
+- **配信時のヘッダ**は `vercel.json` の `headers`（`frame-ancestors 'none'`・`X-Frame-Options`・
+  `nosniff`・`Referrer-Policy: strict-origin`）。`vite preview` も同じ値を返すので、E2E は
+  このヘッダの下で走る（共有するのは値だけで、`/api/` を除くパス条件は Preview で確かめる）。
+  `Referrer-Policy` は `strict-origin` から動かさない。既定の `strict-origin-when-cross-origin`
+  は同一オリジンの要求に URL 全体を送るので、認可から戻った直後の `/assets/*.js` の Referer に
+  code / state が載る。`no-referrer` は Origin ヘッダにも効き、`null` になる経路がある
+  （Origin を照合するトークン交換が 403 で止まる）。`strict-origin` が防ぐのは code / state が
+  その後の要求へ伝わることまでで、戻りの `GET /?code=…` 自体は配信基盤に届く（そう書き広げない）。
+  トークン交換の回数制限は Vercel Firewall（`/api/` の前方一致）で行い、Function にメモリ上の
+  カウンタを置かない（`docs/github-app-setup.md`）。
 - **配信物とユーザーのテキストは別のレイヤー**として扱う。アプリの HTML / CSS / JS は
   不要物を落として軽くしてよい（`index.html` に開発者向けコメントを残さない、
   sourcemap を配らない、JS/CSS の minify は Vite 既定に任せる）。一方、
