@@ -673,7 +673,6 @@ test('NovelText 型の深いパスで同名 body.md が複数あり、同じ blo
   // blobCache は再試行用で、同時進行中の同一 SHA リクエストを coalesce する契約ではない。
 });
 
-
 test('NovelText 実構成相当の36個の body.md を一括で別入力として保持し、出力名だけ重複解決する', async ({
   page,
 }) => {
@@ -718,9 +717,7 @@ test('NovelText 実構成相当の36個の body.md を一括で別入力とし�
   await expect(paths.last()).toHaveText('A用/body (36).md');
 });
 
-test('既存workspaceに body.md があっても、別pathのGitHub body.mdは追加できる', async ({
-  page,
-}) => {
+test('既存workspaceに body.md があっても、別pathのGitHub body.mdは追加できる', async ({ page }) => {
   const repository = novelRepository({
     branches: {
       main: [{ path: '作品/texts/CT-0001/body.md', content: 'GitHub本文\\n' }],
@@ -750,9 +747,7 @@ test('既存workspaceに body.md があっても、別pathのGitHub body.mdは�
   await expect(page.locator('.input-card')).toHaveCount(2);
   await expect(page.locator('.input-card__title')).toHaveValue(['body.md', 'body.md']);
   await expect(page.locator('.input-card__source')).toHaveCount(1);
-  await expect(page.locator('.input-card__source')).toContainText(
-    '作品/texts/CT-0001/body.md',
-  );
+  await expect(page.locator('.input-card__source')).toContainText('作品/texts/CT-0001/body.md');
 });
 
 test('未展開のフォルダを選ぶと、blob を取る前に正確な件数と容量を見せ、戻れば選択は残る', async ({
