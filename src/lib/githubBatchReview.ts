@@ -47,15 +47,31 @@ export function needsDecision(match: BatchSourceMatch): boolean {
 }
 
 /**
- * 最初の取り込み方法。同じ取り込み元が無い候補は「追加」に決め、ある候補は未決定から
- * 始める（更新先を推測しない。仕様 §9）。
+ * いまの照合結果に対して有効な取り込み方法。
+ *
+ * 同じ取り込み元が無い候補は「追加」に決まる。ある候補は、利用者が決めた内容（`stored`）が
+ * 今も成り立つときだけそれを使い、無ければ未決定のままにする（更新先を推測しない。仕様 §9）。
+ * 決めた内容はダイアログを閉じても残るので、その間に入力が消えたり増えたりしていることがある。
+ * 更新先が今の同じ取り込み元に無ければ、その決定は捨てて選び直してもらう。
  */
-export function initialBatchChoices(
+export function effectiveBatchChoices(
   matches: readonly BatchSourceMatch[],
+  stored: BatchChoices,
 ): Map<string, BatchChoice> {
   const choices = new Map<string, BatchChoice>();
   for (const match of matches) {
-    if (!needsDecision(match)) choices.set(match.path, { action: 'add' });
+    if (!needsDecision(match)) {
+      choices.set(match.path, { action: 'add' });
+      continue;
+    }
+    const choice = stored.get(match.path);
+    if (!choice) continue;
+    if (
+      choice.action === 'add' ||
+      match.sameSource.some((target) => target.id === choice.inputId)
+    ) {
+      choices.set(match.path, choice);
+    }
   }
   return choices;
 }
@@ -142,24 +158,26 @@ export function toBatchDecisions(
 }
 
 /**
- * 1つの候補の選択欄に並べる更新先の上限。
+ * 1つの候補の選択欄に一度に並べる更新先の数。
  *
  * 「別の入力として追加」を繰り返せるので、同じ取り込み元の入力の数に上限は無い。
  * 全部を `<option>` にすると、行数を抑えても1行だけで数千の要素になり得る。並べるのは
- * 先頭だけにし、残りは一覧の番号で指定できるようにする（どの更新先も選べることは保つ）。
+ * この数ずつにし、ページを送ってどの更新先も番号と名前を見て選べるようにする。
  */
 export const UPDATE_TARGET_OPTION_LIMIT = 50;
 
 /**
- * 選択欄に並べる更新先。先頭の `limit` 件に加え、いま選んでいる更新先が範囲外なら
+ * 選択欄に並べる更新先。`page` 番目の `limit` 件に加え、いま選んでいる更新先が範囲外なら
  * それも含める（選んだ値が選択欄に無いと、表示が「未決定」に戻ったように見えるため）。
  */
 export function visibleUpdateTargets(
   targets: readonly BatchUpdateTarget[],
   chosenId: string | null,
+  page = 0,
   limit = UPDATE_TARGET_OPTION_LIMIT,
 ): BatchUpdateTarget[] {
-  const shown = targets.slice(0, limit);
+  const range = listPage(targets.length, page, limit);
+  const shown = targets.slice(range.start, range.end);
   const chosen = chosenId === null ? undefined : targets.find((target) => target.id === chosenId);
   return chosen && !shown.includes(chosen) ? [...shown, chosen] : shown;
 }

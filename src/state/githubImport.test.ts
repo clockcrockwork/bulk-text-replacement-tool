@@ -464,7 +464,38 @@ describe('一括取り込みの段階', () => {
     expect(
       githubImportReducer(PLANNED, { type: 'candidate/set', candidate: candidate() }).batchPlan,
     ).toBeNull();
-    expect(githubImportReducer(PLANNED, { type: 'close' }).batchPlan).toBeNull();
+  });
+
+  it('閉じても計画・取得済みの候補・決めた取り込み方法は残す（取り直させない）', () => {
+    const fetching = githubImportReducer(PLANNED, {
+      type: 'busy',
+      label: '選択したファイルを取得しています',
+    });
+    const closedWhileFetching = githubImportReducer(fetching, { type: 'close' });
+    expect(closedWhileFetching.batchPlan).toBe(PLANNED.batchPlan);
+    expect(closedWhileFetching.busy).toBeNull();
+
+    const fetched = githubImportReducer(PLANNED, {
+      type: 'batch/set',
+      selection: SELECTED.selection,
+      candidates: [candidate()],
+    });
+    const choices = new Map([[ENTRY.path, { action: 'add' as const }]]);
+    const decided = githubImportReducer(fetched, { type: 'batch/choose', choices });
+    expect(decided.batchChoices).toBe(choices);
+    const reopened = githubImportReducer(githubImportReducer(decided, { type: 'close' }), {
+      type: 'open',
+    });
+    expect(reopened.batchCandidates).toBe(decided.batchCandidates);
+    expect(reopened.batchChoices).toBe(choices);
+
+    // 選択へ戻れば、候補と一緒に決めた内容も捨てる。
+    expect(githubImportReducer(decided, { type: 'batch/clear' }).batchChoices.size).toBe(0);
+  });
+
+  it('確認画面でないときに届いた決定は受け取らない', () => {
+    const choices = new Map([[ENTRY.path, { action: 'add' as const }]]);
+    expect(githubImportReducer(PLANNED, { type: 'batch/choose', choices })).toBe(PLANNED);
   });
 });
 

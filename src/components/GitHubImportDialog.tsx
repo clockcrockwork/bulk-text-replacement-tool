@@ -18,8 +18,8 @@ import {
   chooseAddForUndecided,
   chooseSingleUpdates,
   countUndecided,
+  effectiveBatchChoices,
   type GitHubBatchDecision,
-  initialBatchChoices,
   listPage,
   needsDecision,
   orderForReview,
@@ -69,6 +69,7 @@ export interface GitHubDialogHandlers {
   clearCandidate: () => void;
   prepareSelection: () => void;
   fetchBatch: () => void;
+  chooseBatch: (choices: BatchChoices) => void;
   clearBatch: () => void;
   close: () => void;
 }
@@ -934,8 +935,12 @@ function BatchCandidateView({
       ),
     [batchMatches, candidateByPath],
   );
-  // 同じ取り込み元が既にある候補は未決定から始め、利用者に選ばせる。
-  const [choices, setChoices] = useState<BatchChoices>(() => initialBatchChoices(batchMatches));
+  // 同じ取り込み元が既にある候補は未決定から始め、利用者に選ばせる。決めた内容は hook 側に
+  // 持つので、ダイアログを閉じて開き直しても残る（取り直しと決め直しをさせない）。
+  const choices = useMemo(
+    () => effectiveBatchChoices(batchMatches, state.batchChoices),
+    [batchMatches, state.batchChoices],
+  );
   const undecided = countUndecided(batchMatches, choices);
   const needingDecision = batchMatches.filter(needsDecision);
   const singleTargets = needingDecision.filter(
@@ -962,17 +967,15 @@ function BatchCandidateView({
 
   /** まとめて決める。押したボタンは件数が 0 になると消えるので、フォーカスを見出しへ戻す。 */
   const decideAll = (decide: (current: BatchChoices) => BatchChoices): void => {
-    setChoices(decide);
+    handlers.chooseBatch(decide(choices));
     headingRef.current?.focus();
   };
 
   const choose = (path: string, choice: BatchChoice | null): void => {
-    setChoices((current) => {
-      const next = new Map(current);
-      if (choice) next.set(path, choice);
-      else next.delete(path);
-      return next;
-    });
+    const next = new Map(choices);
+    if (choice) next.set(path, choice);
+    else next.delete(path);
+    handlers.chooseBatch(next);
   };
 
   return (
@@ -1098,9 +1101,10 @@ function BatchCandidateView({
 /**
  * 同じ取り込み元がある候補1件の取り込み方法。
  *
- * 更新先は「別の入力として追加」を繰り返した数だけあり得るので、選択欄に並べるのは先頭の
- * `UPDATE_TARGET_OPTION_LIMIT` 件だけにする。それを超える候補では、入力の一覧の番号でも
- * 更新先を指定できるようにし、どの更新先も選べることは保つ。
+ * 更新先は「別の入力として追加」を繰り返した数だけあり得るので、選択欄に並べるのは
+ * `UPDATE_TARGET_OPTION_LIMIT` 件ずつにし、それを超える候補ではページを送れるようにする。
+ * モーダルの背後にある入力の一覧は見られないので、どの更新先も、この中で番号と名前を
+ * 見て選べる必要がある。番号が分かっていれば直接指定もできる（近道）。
  */
 function BatchDecision({
   match,
@@ -1111,9 +1115,12 @@ function BatchDecision({
   choice: BatchChoice | undefined;
   onChoose: (choice: BatchChoice | null) => void;
 }): JSX.Element {
+  const [targetPage, setTargetPage] = useState(0);
+  const targets = match.sameSource;
+  const range = listPage(targets.length, targetPage, UPDATE_TARGET_OPTION_LIMIT);
   const chosenId = choice?.action === 'update' ? choice.inputId : null;
-  const options = visibleUpdateTargets(match.sameSource, chosenId);
-  const hidden = Math.max(0, match.sameSource.length - UPDATE_TARGET_OPTION_LIMIT);
+  const options = visibleUpdateTargets(targets, chosenId, range.index);
+  const paged = range.count > 1;
   return (
     <div className="github__batch-decision">
       <label className="github__batch-decision-field">
@@ -1132,11 +1139,35 @@ function BatchDecision({
           ))}
         </select>
       </label>
-      {hidden > 0 ? (
+      {paged ? (
+        <div className="github__batch-targets">
+          <button
+            type="button"
+            className="btn btn--small"
+            aria-label={`${match.path} の更新先: 前の${UPDATE_TARGET_OPTION_LIMIT}件`}
+            disabled={range.index === 0}
+            onClick={() => setTargetPage(range.index - 1)}
+          >
+            前の{UPDATE_TARGET_OPTION_LIMIT}件
+          </button>
+          <p className="github__list-more" aria-live="polite">
+            更新先 {range.start + 1}〜{range.end}件目 / 全{targets.length}件を選択欄に並べています
+          </p>
+          <button
+            type="button"
+            className="btn btn--small"
+            aria-label={`${match.path} の更新先: 次の${UPDATE_TARGET_OPTION_LIMIT}件`}
+            disabled={range.index === range.count - 1}
+            onClick={() => setTargetPage(range.index + 1)}
+          >
+            次の{UPDATE_TARGET_OPTION_LIMIT}件
+          </button>
+        </div>
+      ) : null}
+      {paged ? (
         <UpdateTargetByNumber
           path={match.path}
-          targets={match.sameSource}
-          hidden={hidden}
+          targets={targets}
           onChoose={(target) => onChoose({ action: 'update', inputId: target.id })}
         />
       ) : null}
@@ -1148,12 +1179,10 @@ function BatchDecision({
 function UpdateTargetByNumber({
   path,
   targets,
-  hidden,
   onChoose,
 }: {
   path: string;
   targets: readonly BatchUpdateTarget[];
-  hidden: number;
   onChoose: (target: BatchUpdateTarget) => void;
 }): JSX.Element {
   const [value, setValue] = useState('');
@@ -1175,7 +1204,7 @@ function UpdateTargetByNumber({
       }}
     >
       <label className="github__batch-target-field">
-        <span>ほかに{hidden}件あります。入力の番号で更新先を指定できます</span>
+        <span>番号が分かっていれば、入力の番号で直接指定できます</span>
         <input
           type="text"
           inputMode="numeric"

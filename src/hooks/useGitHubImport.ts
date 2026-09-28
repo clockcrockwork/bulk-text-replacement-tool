@@ -28,6 +28,7 @@ import {
   TOKEN_EXCHANGE_PATH,
   validateCallback,
 } from '../lib/githubAuth';
+import type { BatchChoices } from '../lib/githubBatchReview';
 import {
   type GitHubTreeSelection,
   hasAnySelection,
@@ -189,6 +190,8 @@ export interface GitHubImport {
   prepareSelection: () => void;
   /** 確かめた計画の全件を取得・検証する。 */
   fetchBatch: () => void;
+  /** 確認画面で決めた取り込み方法を覚える。ダイアログを閉じても残る。 */
+  chooseBatch: (choices: BatchChoices) => void;
   clearBatch: () => void;
   /** 1件の取り込みを確定したあとに呼ぶ。ダイアログを閉じ、複数選択は残す。 */
   finish: () => void;
@@ -706,6 +709,7 @@ export function useGitHubImport(): GitHubImport {
     clearCandidate: () => dispatch({ type: 'candidate/clear' }),
     prepareSelection,
     fetchBatch,
+    chooseBatch: (choices) => dispatch({ type: 'batch/choose', choices }),
     clearBatch: () => {
       // 取得の途中で戻ったら、残りの取得も止める（GitHub の利用上限を使い続けない）。
       abortRef.current?.abort();

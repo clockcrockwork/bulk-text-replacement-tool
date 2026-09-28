@@ -529,7 +529,7 @@ test('大きな選択は、取得の前にブラウザへ保存できない可�
   expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(0);
 });
 
-test('数えている間はチェックを変えられず、取得の途中で閉じれば残りの取得を中断する', async ({
+test('数えている間はチェックを変えられず、取得の途中で閉じれば残りの取得を中断し、計画の画面から続けられる', async ({
   page,
 }) => {
   const mock = new GitHubMock([REPO]);
@@ -558,9 +558,124 @@ test('数えている間はチェックを変えられず、取得の途中で�
   await expect.poll(() => blobs.failed.length).toBe(2);
   await blobs.release();
   await expect(page.locator('.input-card')).toHaveCount(1);
+
+  // 数え終えた計画は残るので、開き直せば数え直さずに取得からやり直せる。
+  const treeCalls = mock.apiCalls(/\/git\/trees\//).length;
   await page.getByRole('button', { name: 'GitHubから追加' }).click();
-  await expect(dialog(page).getByRole('heading', { name: 'ファイルを選ぶ' })).toBeVisible();
-  await expect(chapters).toBeChecked();
+  await expect(plan.getByRole('heading', { name: '2ファイルが見つかりました' })).toBeVisible();
+  await plan.getByRole('button', { name: '2ファイルを取得' }).click();
+  await dialog(page)
+    .getByRole('region', { name: '複数ファイルの取り込み確認' })
+    .getByRole('button', { name: '2ファイルを取り込む' })
+    .click();
+  await expect(page.locator('.input-card')).toHaveCount(3);
+  expect(mock.apiCalls(/\/git\/trees\//)).toHaveLength(treeCalls);
+});
+
+test('確認画面で決めた内容は、Escape・背景のクリック・「閉じる」で閉じても残る', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  const head = mock.headOf(REPO.id, 'main');
+  const sourceOf = (path: string) => ({
+    kind: 'github' as const,
+    repositoryId: REPO.id,
+    owner: REPO.owner,
+    repo: REPO.name,
+    ref: 'main',
+    commitSha: head,
+    path,
+    blobSha: 'b'.repeat(40),
+  });
+  // どちらの候補にも同じ取り込み元の入力が2件ずつある（1件ずつ決める必要がある）。
+  await mock.install(page);
+  await seedWorkspace(page, {
+    inputs: [
+      { id: 'a1', title: 'a1.md', text: '古い\n', source: sourceOf('chapters/ch1.md') },
+      { id: 'a2', title: 'a2.md', text: '古い\n', source: sourceOf('chapters/ch1.md') },
+      { id: 'b1', title: 'b1.md', text: '古い\n', source: sourceOf('chapters/ch2.txt') },
+      { id: 'b2', title: 'b2.md', text: '古い\n', source: sourceOf('chapters/ch2.txt') },
+    ],
+    groups: [{ id: 'g1', name: 'A用' }],
+    rules: [],
+  });
+  await openApp(page);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  const batch = await fetchSelection(page, 2);
+  const blobCalls = mock.apiCalls(/\/git\/blobs\//).length;
+  const first = batch.getByRole('combobox', { name: 'chapters/ch1.md の取り込み方法' });
+  const second = batch.getByRole('combobox', { name: 'chapters/ch2.txt の取り込み方法' });
+  await first.selectOption('update:a2');
+  const reopen = () => page.getByRole('button', { name: 'GitHubから追加' }).click();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog(page)).toHaveCount(0);
+  await reopen();
+  await expect(first).toHaveValue('update:a2');
+  await second.selectOption('add');
+
+  // 背景（ダイアログの外側）をクリックして閉じる。
+  await page.mouse.click(2, 2);
+  await expect(dialog(page)).toHaveCount(0);
+  await reopen();
+  await expect(first).toHaveValue('update:a2');
+  await expect(second).toHaveValue('add');
+
+  await dialog(page).getByRole('button', { name: '閉じる' }).click();
+  await reopen();
+  await batch.getByRole('button', { name: '2ファイルを取り込む' }).click();
+
+  // 取り直していない。1件は更新、1件は追加。
+  expect(mock.apiCalls(/\/git\/blobs\//)).toHaveLength(blobCalls);
+  await expect(page.locator('.input-card')).toHaveCount(5);
+  await expect(page.locator('.input-card__title').nth(1)).toHaveValue('a2.md');
+  await expect(page.locator('.input-card__preview').nth(1)).toHaveValue(
+    'アリスは川辺に座っていた。\n',
+  );
+});
+
+test('閉じている間に更新先の入力が消えたら、その決定は捨てて選び直してもらう', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  const head = mock.headOf(REPO.id, 'main');
+  const source = {
+    kind: 'github' as const,
+    repositoryId: REPO.id,
+    owner: REPO.owner,
+    repo: REPO.name,
+    ref: 'main',
+    commitSha: head,
+    path: 'chapters/ch1.md',
+    blobSha: 'b'.repeat(40),
+  };
+  await mock.install(page);
+  await seedWorkspace(page, {
+    inputs: [
+      { id: 'a1', title: 'a1.md', text: '古い\n', source },
+      { id: 'a2', title: 'a2.md', text: '古い\n', source },
+      { id: 'a3', title: 'a3.md', text: '古い\n', source },
+    ],
+    groups: [{ id: 'g1', name: 'A用' }],
+    rules: [],
+  });
+  await openApp(page);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  const batch = await fetchSelection(page, 2);
+  const first = batch.getByRole('combobox', { name: 'chapters/ch1.md の取り込み方法' });
+  await first.selectOption('update:a3');
+  await dialog(page).getByRole('button', { name: '閉じる' }).click();
+
+  await page.locator('.input-card').nth(2).getByRole('button', { name: '削除' }).click();
+  await expect(page.locator('.input-card')).toHaveCount(2);
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await expect(first).toHaveValue('');
+  await expect(batch.getByRole('button', { name: '2ファイルを取り込む' })).toBeDisabled();
 });
 
 test('取得の途中で「選択へ戻る」を押すと、取得を中断して選択の画面に戻る', async ({ page }) => {
@@ -770,7 +885,7 @@ test('同じ取り込み元の候補は、更新先が1件のものをまとめ�
   );
 });
 
-test('更新先が選択欄に並べきれないほどあっても、入力の番号で指定して更新できる', async ({
+test('更新先が選択欄に並べきれないほどあっても、ページを送るか入力の番号で選んで更新できる', async ({
   page,
 }) => {
   const mock = new GitHubMock([REPO]);
@@ -803,7 +918,19 @@ test('更新先が選択欄に並べきれないほどあっても、入力の�
   const decision = batch.getByRole('combobox', { name: 'chapters/ch1.md の取り込み方法' });
   // 「選ぶ」「追加」と、先頭の 50 件だけを並べる。
   await expect(decision.locator('option')).toHaveCount(52);
-  await expect(batch).toContainText('ほかに5件あります');
+  await expect(batch).toContainText('更新先 1〜50件目 / 全55件');
+
+  // 残りの更新先も、ページを送れば番号と名前を見て選べる。
+  await batch.getByRole('button', { name: 'chapters/ch1.md の更新先: 次の50件' }).click();
+  await expect(decision.locator('option')).toHaveCount(7);
+  await decision.selectOption({ label: '54 copy-53.md を更新' });
+  await expect(decision).toHaveValue('update:copy53');
+  await batch.getByRole('button', { name: 'chapters/ch1.md の更新先: 前の50件' }).click();
+  // 別のページに戻っても、選んだ更新先は選択欄に残る。
+  await expect(decision.locator('option')).toHaveCount(53);
+  await expect(decision).toHaveValue('update:copy53');
+
+  // 番号が分かっていれば直接指定もできる（近道）。
 
   const number = batch.getByRole('textbox', { name: 'chapters/ch1.md の更新先の入力の番号' });
   await number.fill('999');
@@ -811,7 +938,8 @@ test('更新先が選択欄に並べきれないほどあっても、入力の�
   await expect(batch.getByRole('alert')).toContainText(
     '999 はこのファイルから取り込んだ入力の番号ではありません',
   );
-  await expect(decision).toHaveValue('');
+  // 受け付けなかった番号では、選んでいた更新先を変えない。
+  await expect(decision).toHaveValue('update:copy53');
 
   // 全角数字でも番号として読む。
   await number.fill('５５');

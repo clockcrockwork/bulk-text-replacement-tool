@@ -5,7 +5,7 @@ import {
   chooseAddForUndecided,
   chooseSingleUpdates,
   countUndecided,
-  initialBatchChoices,
+  effectiveBatchChoices,
   listPage,
   needsDecision,
   orderForReview,
@@ -33,9 +33,26 @@ const NOTABLE = match('d.md', [], true);
 describe('一括取り込みの確認', () => {
   it('同じ取り込み元がある候補だけが判断を要し、最初は未決定になる', () => {
     expect([PLAIN, SINGLE, MULTI].map(needsDecision)).toEqual([false, true, true]);
-    const choices = initialBatchChoices([PLAIN, SINGLE, MULTI]);
+    const choices = effectiveBatchChoices([PLAIN, SINGLE, MULTI], new Map());
     expect(choices).toEqual(new Map([['a.md', { action: 'add' }]]));
     expect(countUndecided([PLAIN, SINGLE, MULTI], choices)).toBe(2);
+  });
+
+  it('決めた内容は、今も成り立つものだけを使う（閉じている間に入力が変わり得る）', () => {
+    const stored = new Map<string, BatchChoice>([
+      ['a.md', { action: 'update', inputId: 'gone' }],
+      ['b.md', { action: 'update', inputId: 'in1' }],
+      ['c.md', { action: 'update', inputId: 'deleted' }],
+    ]);
+    const choices = effectiveBatchChoices([PLAIN, SINGLE, MULTI], stored);
+    // 同じ取り込み元が無くなった候補は「追加」に決まる。
+    expect(choices.get('a.md')).toEqual({ action: 'add' });
+    expect(choices.get('b.md')).toEqual({ action: 'update', inputId: 'in1' });
+    // 更新先が消えていれば、推測せず未決定に戻す。
+    expect(choices.has('c.md')).toBe(false);
+    expect(
+      effectiveBatchChoices([MULTI], new Map([['c.md', { action: 'add' }]])).get('c.md'),
+    ).toEqual({ action: 'add' });
   });
 
   it('判断が要るもの、注意が要るもの、それ以外の順に並べ、同じ段では元の順を保つ', () => {
@@ -112,8 +129,14 @@ describe('更新先の選択肢', () => {
     position: index + 1,
   }));
 
-  it('並べるのは先頭の上限件まで', () => {
+  it('上限件ずつ区切って並べ、ページを送ればどの更新先にも届く', () => {
     expect(visibleUpdateTargets(targets, null)).toHaveLength(UPDATE_TARGET_OPTION_LIMIT);
+    const second = visibleUpdateTargets(targets, null, 1);
+    expect(second.map((target) => target.id)).toEqual(
+      Array.from({ length: 10 }, (_, index) => `in${UPDATE_TARGET_OPTION_LIMIT + index}`),
+    );
+    // 範囲外のページは端に寄せる。
+    expect(visibleUpdateTargets(targets, null, 9)).toEqual(second);
   });
 
   it('範囲外の更新先を選んでいれば、それも並べる（選んだ値を選択欄に残す）', () => {
@@ -121,6 +144,8 @@ describe('更新先の選択肢', () => {
     expect(shown).toHaveLength(UPDATE_TARGET_OPTION_LIMIT + 1);
     expect(shown.at(-1)?.id).toBe('in55');
     expect(visibleUpdateTargets(targets, 'in3')).toHaveLength(UPDATE_TARGET_OPTION_LIMIT);
+    // 別のページを見ているときも、選んだ更新先は残す。
+    expect(visibleUpdateTargets(targets, 'in3', 1).at(-1)?.id).toBe('in3');
   });
 
   it('一覧の番号で更新先を探し、この候補の更新先でなければ null', () => {

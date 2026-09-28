@@ -231,9 +231,10 @@ Blob fetch concurrency starts at 4 or fewer concurrent requests.
 
 Respect rate-limit signals the browser can actually read: `x-ratelimit-remaining` / `x-ratelimit-reset` (exposed through CORS) and the error `message` in the response body. `retry-after` is **not** in GitHub's `Access-Control-Expose-Headers`, so browser code cannot read it; when a secondary rate limit is detected from the status and message, wait at least one minute as GitHub's rate-limit documentation advises. Do not retry continuously.
 
-The error message shows when a rate limit is expected to lift (`x-ratelimit-reset`, or at least one minute for a secondary limit). Until that time **no request is sent to GitHub from any path**:
+The error message shows when a rate limit is expected to lift (`x-ratelimit-reset`, or at least one minute for a secondary limit). Until that time, **while the same page stays loaded, no request is sent to GitHub from any path**:
 
-- The deadline is kept in the picker state, separate from the error message. Dismissing the error, changing the selection, closing and reopening, or reconnecting does not clear it.
+- The deadline is kept in the picker state, separate from the error message. Dismissing the error, changing the selection, closing and reopening the dialog, or disconnecting in the tab does not clear it.
+- The guarantee ends with the document. Reloading the page, or reconnecting through the OAuth redirect (which reloads the app), starts without a deadline. The first request after that learns the limit again from GitHub's response and restores the wait, so at most one request leaks per page load. The deadline is not persisted: `sessionStorage` holds only the OAuth `state` and PKCE verifier across the redirect, and one extra request does not justify another stored value.
 - Every GitHub request goes through one entry point in the hook. Before the deadline, that entry point does not send the request; it shows the rate-limit message again instead.
 - The buttons that would send requests are disabled until the deadline: **再試行**, **選択したファイルを確認**, and the plan step's fetch button. When the error message is gone, a status line still says why they are disabled.
 
@@ -289,11 +290,13 @@ Neither list renders more than 100 rows at a time. There is no hard cap on the s
 - The confirmation list is paged in steps of 100, with previous/next controls. Same-source candidates must be decided row by row, so every row has to stay reachable; a list that showed only the first 100 would leave the 101st undecidable. It shows candidates that need a decision first, then candidates with a warning (same basename, Shift_JIS guess), then the rest. The order does not change as choices are made, so the row being edited never moves away.
 - Moving to another page scrolls the list back to its top (the pager sits below the list, so it is usually pressed after scrolling to the end) and moves focus to the range text (for example 「101〜120件目 / 全120件」), which is also a polite live region. The pressed button may become disabled at the first or last page, so focus must not stay on it.
 - A bulk action (§9) removes its own button once nothing is left for it to decide, so focus moves to the step heading.
-- The update-target `<select>` of one candidate lists at most the first 50 same-source inputs (plus the chosen one when it lies beyond them). Same-source inputs have no upper bound (**add as another input** can be repeated), so without this a single row could hold thousands of options. When there are more, the row also accepts the input's list number, so every target remains choosable.
+- The update-target `<select>` of one candidate lists at most 50 same-source inputs at a time (plus the chosen one when it lies outside that range). Same-source inputs have no upper bound (**add as another input** can be repeated), so without this a single row could hold thousands of options. When there are more, the row has its own previous/next controls, so every target can be chosen by its list number and title inside the modal (the input list behind the modal cannot be consulted). The row also accepts an input's list number directly, as a shortcut.
 
 The batch confirmation does not preview file contents. For Shift_JIS guesses it says so and points to going back and opening files one by one (the single-file view shows the text).
 
 **選択へ戻る** on the plan step also cancels a fetch that is in progress. The remaining blob requests are aborted and the busy state is cleared.
+
+Closing the dialog (the close button, Escape, or a click on the backdrop) does **not** discard a multi-file import in progress. The plan, the fetched and validated candidates, and the add/update choices made so far stay in memory, and reopening the dialog returns to the same step. Fetching again costs rate limit and choosing again costs manual work, and Escape or a backdrop click is easy to trigger by accident. A fetch that was running when the dialog closed is aborted; reopening shows the plan step so it can be started again without re-enumerating. Only **選択へ戻る**, changing the selection, pinning another snapshot, disconnecting, or committing the import discards the batch. Choices are rechecked against the current workspace when shown: an update choice whose target input no longer has the same source is dropped and must be made again (never guessed).
 
 Any fetch/decode/validation failure leaves the workspace unchanged.
 
@@ -608,7 +611,9 @@ Implemented:
 - 選択へ戻る during a fetch aborts the remaining blob requests and clears the busy state
 - bulk same-source decisions (update single-target candidates / add all undecided) that never guess
 - paging resets the list scroll and moves focus to the range text (a live region); bulk actions move focus to the heading
-- a candidate's update-target list is bounded to 50 options, with selection by input number beyond that
+- a candidate's update-target list shows 50 options at a time with its own paging, plus selection by input number as a shortcut
+- closing the dialog keeps the plan, fetched candidates, and choices; only 選択へ戻る (or a selection/snapshot change, disconnect, or commit) discards them
+- the rate-limit wait holds while the page stays loaded; a reload or OAuth round-trip re-learns it from the first response
 - the filename collision warning follows the output-name rules and ignores an untouched sample
 - a single-file import keeps the checkbox selection; a multi-file import clears it
 - during a rate limit no request is sent to GitHub from any path (the deadline lives in state, is checked at the single request entry point, and disables 再試行 / 確認 / 取得); the reset time is kept between 1 minute and 1 hour on the device clock

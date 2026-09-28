@@ -1,4 +1,5 @@
 import type { GitHubCandidate } from '../lib/githubApi';
+import type { BatchChoices } from '../lib/githubBatchReview';
 import {
   emptyTreeSelection,
   type GitHubTreeSelection,
@@ -89,6 +90,11 @@ export interface GitHubImportState {
   /** 複数選択を全件取得・検証したあとの候補。null は確認画面ではない。 */
   batchCandidates: GitHubCandidate[] | null;
   /**
+   * 確認画面で利用者が決めた取り込み方法（キーはパス）。候補と同じく、ダイアログを
+   * 閉じても残す。取得し直すと利用上限を使い、手で決めた内容も失うため。
+   */
+  batchChoices: BatchChoices;
+  /**
    * 遅延読み込みする tree の選択。未展開のディレクトリの選択も規則として持つ。
    * 変わるたびに別のオブジェクトになるので、同一性で「その選択から作った結果か」を照合できる。
    */
@@ -145,8 +151,12 @@ export type GitHubImportAction =
   /** 計画した全件を取得・検証し終えた。`selection` は計画を作ったときの選択。 */
   | { type: 'batch/set'; selection: GitHubTreeSelection; candidates: GitHubCandidate[] }
   | { type: 'batch/clear' }
+  | { type: 'batch/choose'; choices: BatchChoices }
   | { type: 'selection/set'; path: string; selected: boolean }
   | { type: 'selection/clear' };
+
+/** 決めた取り込み方法が無い状態。読み取り専用なので、同じインスタンスを共有してよい。 */
+const NO_CHOICES: BatchChoices = new Map();
 
 export const initialGitHubImportState: GitHubImportState = {
   open: false,
@@ -163,6 +173,7 @@ export const initialGitHubImportState: GitHubImportState = {
   candidate: null,
   batchPlan: null,
   batchCandidates: null,
+  batchChoices: NO_CHOICES,
   selection: emptyTreeSelection(),
   busy: null,
   error: null,
@@ -187,6 +198,7 @@ const CLEARED_SELECTION = {
   candidate: null,
   batchPlan: null,
   batchCandidates: null,
+  batchChoices: NO_CHOICES,
   selection: emptyTreeSelection(),
 } satisfies Partial<GitHubImportState>;
 
@@ -208,15 +220,16 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
 
     case 'close':
       // 接続と選んでいた場所は残す。続けてもう1件取り込むときに辿り直さなくて済む。
-      // 取得待ちは呼び出し側が中断するので、待ち表示とエラーは片付ける。
+      // 一括取り込みの計画・取得済みの候補・決めた取り込み方法も残す。取り直すと利用上限を
+      // 使い、手で決めた内容も失う（Escape や背景のクリックでも閉じるので、誤操作で失わせない）。
+      // 捨てるのは「選択へ戻る」だけ。取得待ちは呼び出し側が中断するので、待ち表示と
+      // エラーは片付ける（取得の途中なら計画の画面に戻り、もう一度取得できる）。
       return {
         ...state,
         open: false,
         busy: null,
         error: null,
         candidate: null,
-        batchPlan: null,
-        batchCandidates: null,
       };
 
     case 'connect/start':
@@ -288,6 +301,7 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
         candidate: null,
         batchPlan: null,
         batchCandidates: null,
+        batchChoices: NO_CHOICES,
         selection: emptyTreeSelection(),
         busy: null,
         error: null,
@@ -338,6 +352,7 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
         candidate: action.candidate,
         batchPlan: null,
         batchCandidates: null,
+        batchChoices: NO_CHOICES,
         busy: null,
         error: null,
       };
@@ -351,9 +366,21 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
     case 'batch/set':
       return acceptBatchCandidates(state, action);
 
+    case 'batch/choose':
+      // 確認画面にいるときだけ受け取る（候補が片付いたあとに届いた決定は使い道が無い）。
+      if (!state.batchCandidates) return state;
+      return { ...state, batchChoices: action.choices };
+
     case 'batch/clear':
       // 取得の途中で戻ったときも、呼び出し側が取得を中断するので待ち表示を片付ける。
-      return { ...state, batchPlan: null, batchCandidates: null, busy: null, error: null };
+      return {
+        ...state,
+        batchPlan: null,
+        batchCandidates: null,
+        batchChoices: NO_CHOICES,
+        busy: null,
+        error: null,
+      };
 
     case 'selection/set':
       if (!state.snapshot) return state;
@@ -363,6 +390,7 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
         candidate: null,
         batchPlan: null,
         batchCandidates: null,
+        batchChoices: NO_CHOICES,
         error: null,
       };
 
@@ -373,6 +401,7 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
         candidate: null,
         batchPlan: null,
         batchCandidates: null,
+        batchChoices: NO_CHOICES,
         error: null,
       };
   }
@@ -390,6 +419,7 @@ function acceptBatchPlan(
     candidate: null,
     batchPlan: { entries: action.entries, selection: action.selection },
     batchCandidates: null,
+    batchChoices: NO_CHOICES,
     busy: null,
     error: null,
   };
@@ -416,6 +446,7 @@ function acceptBatchCandidates(
     candidate: null,
     batchPlan: null,
     batchCandidates: action.candidates,
+    batchChoices: NO_CHOICES,
     busy: null,
     error: null,
   };

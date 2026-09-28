@@ -1728,6 +1728,14 @@ button.github__entry:hover {
   gap: 8px;
 }
 
+/* 更新先が選択欄に並べきれないときのページ送り。 */
+.github__batch-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 /* 更新先が選択欄に並べきれないとき、入力の番号で指定する欄。 */
 .github__batch-target {
   display: flex;
@@ -1777,6 +1785,7 @@ button.github__entry:hover {
    * ダイアログの幅を超えないよう、ここでは1行に1つ並べて折り返しを許す。
    */
   .github__batch-bulk .btn,
+  .github__batch-targets .btn,
   .github__list-pager .btn {
     flex: 1 1 100%;
     width: 100%;
