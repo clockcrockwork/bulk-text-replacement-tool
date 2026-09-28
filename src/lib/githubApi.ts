@@ -86,6 +86,31 @@ export const GITHUB_FETCH_INIT = {
 /** Git blob API が扱える上限。これを超えるファイルは取得を試みない。 */
 export const MAX_BLOB_BYTES = 100 * 1024 * 1024;
 
+// ---- 待ち時間の方針（issue #20） ------------------------------------------------
+//
+// どれも「利用者の操作1回」ではなく「1リクエスト」に掛ける。ページ送りは1ページずつ、
+// 一括取り込みは blob 1件ずつなので、一覧が長い・件数が多いといった正常に長い操作は切らない。
+// 値は保守的な初期値で、実機で正常な利用を切っていると分かったら調整する。
+
+/** 利用者に見える進みがこの時間なければ「時間がかかっています」と添える。 */
+export const SLOW_NOTICE_MS = 8_000;
+
+/**
+ * 一覧・ref・commit・非再帰の tree の1リクエスト（ヘッダと本文の合計）。
+ * 応答が小さく、大きさで時間が伸びないもの。
+ */
+export const METADATA_TIMEOUT_MS = 30_000;
+
+/** 再帰の tree の1リクエスト。GitHub 側の生成に時間がかかり、応答も数 MB になり得る。 */
+export const RECURSIVE_TREE_TIMEOUT_MS = 60_000;
+
+/**
+ * blob を1バイトも受け取れていない時間（ヘッダ待ちを含む）。blob は大きさで正常な所要時間が
+ * 変わるので、合計ではなく「受信が止まっている時間」で見る。何 MB まで受け入れるかは
+ * 別の方針（`MAX_BLOB_BYTES`・issue #19）で、ここでは決めない。
+ */
+export const BLOB_STALL_TIMEOUT_MS = 30_000;
+
 /** 1回で取れる件数の上限。ページ数を減らして rate limit を節約する。 */
 export const PER_PAGE = 100;
 
@@ -143,6 +168,12 @@ export type GitHubErrorKind =
   | 'emptyRepository'
   | 'server'
   | 'network'
+  /** 端末がオフライン（`navigator.onLine` が false）。 */
+  | 'offline'
+  /** 決めた時間のあいだ応答がない、または受信が止まった。 */
+  | 'timeout'
+  /** 受け取った本文が取得の上限（`MAX_BLOB_BYTES`）を超えた。 */
+  | 'tooLarge'
   /** 期待した形の応答ではない。 */
   | 'invalidResponse'
   /** 一覧が長すぎて、辿れる上限までに終わらなかった（途中までの一覧は使わない）。 */
@@ -153,6 +184,26 @@ export interface GitHubError {
   status: number | null;
   /** rate limit が解ける時刻（ミリ秒）。分からなければ null。 */
   resetAt: number | null;
+  /**
+   * `timeout` のとき、待った時間と、何を待っていたか。`stall` は blob の受信が止まった
+   * （合計時間ではなく、データが途切れている時間で切った）。
+   */
+  timeout?: { ms: number; stall: boolean };
+}
+
+/**
+ * fetch 自体が失敗した（応答が無い）ときの分類。
+ *
+ * `navigator.onLine` は false のときだけ信用する（true でも通じていないことはよくある）。
+ * 失敗した時点で1回読むだけにし、`online` イベントで自動の再試行はしない。
+ */
+export function classifyFetchFailure(online: boolean | undefined): GitHubError {
+  return { kind: online === false ? 'offline' : 'network', status: null, resetAt: null };
+}
+
+/** 時間切れの失敗。`stall` は受信が止まったこと（blob）を表す。 */
+export function timeoutError(ms: number, stall: boolean): GitHubError {
+  return { kind: 'timeout', status: null, resetAt: null, timeout: { ms, stall } };
 }
 
 interface HeaderReader {
@@ -256,7 +307,9 @@ export type GitHubRecovery = 'retry' | 'dismiss' | 'reselect' | 'chooseBranch';
 export function recoveryFor(error: GitHubError, stage: GitHubFetchStage): GitHubRecovery {
   switch (error.kind) {
     case 'listTooLong':
-      // やり直しても同じ結果で、rate limit を食うだけ。
+    case 'tooLarge':
+      // やり直しても同じ結果で、rate limit を食うだけ（tooLarge は固定した blob を同じ上限で
+      // 取り直すことになるので、何度やっても超える）。
       return 'dismiss';
     case 'emptyRepository':
       // コミットが増えるまで何度やっても同じ。別のリポジトリを選んでもらう。
@@ -270,6 +323,14 @@ export function recoveryFor(error: GitHubError, stage: GitHubFetchStage): GitHub
     default:
       return 'retry';
   }
+}
+
+/**
+ * 取得の上限を画面に出す形にする。上限の値（`MAX_BLOB_BYTES`）を変えたときに、
+ * 文言の数字だけ古いまま残らないよう、定数から作る。
+ */
+export function formatBlobLimit(bytes: number = MAX_BLOB_BYTES): string {
+  return `${Math.floor(bytes / (1024 * 1024))}MB`;
 }
 
 /** 失敗を利用者向けの文にする。 */
@@ -293,6 +354,16 @@ export function describeGitHubError(error: GitHubError): string {
       return 'GitHub 側でエラーが起きました。しばらくしてから再試行してください。';
     case 'network':
       return 'GitHub に接続できませんでした。ネットワークを確認して再試行してください。';
+    case 'offline':
+      return '端末がオフラインのため、GitHub に接続できませんでした。接続が戻ったら再試行してください。';
+    case 'timeout': {
+      const seconds = Math.round((error.timeout?.ms ?? 0) / 1000);
+      return error.timeout?.stall
+        ? `GitHub からの受信が ${seconds} 秒止まったため中断しました。通信状況を確認して再試行してください。`
+        : `GitHub から ${seconds} 秒応答がなかったため中断しました。通信状況を確認して再試行してください。`;
+    }
+    case 'tooLarge':
+      return `取得の上限（${formatBlobLimit()}）を超えたため取り込めません。`;
     case 'invalidResponse':
       return 'GitHub から想定外の応答が返りました。再試行してください。';
     case 'listTooLong':
@@ -484,7 +555,7 @@ export function describeEntryStatus(status: GitHubEntryStatus): string | null {
     case 'unsupported':
       return '非対応の形式';
     case 'tooLarge':
-      return '100MB を超えるため取得できません';
+      return `${formatBlobLimit()} を超えるため取得できません`;
     case 'symlink':
       return 'シンボリックリンク';
     case 'submodule':
@@ -547,7 +618,7 @@ export function buildCandidate(
   if (buffer.byteLength > MAX_BLOB_BYTES) {
     return {
       kind: 'error',
-      message: `${revealUnsafeChars(entry.path)} は 100MB を超えるため取り込めません。`,
+      message: `${revealUnsafeChars(entry.path)} は取得の上限（${formatBlobLimit()}）を超えるため取り込めません。`,
     };
   }
   if (isLfsPointer(new Uint8Array(buffer))) {

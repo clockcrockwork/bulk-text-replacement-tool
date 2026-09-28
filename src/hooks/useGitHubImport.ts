@@ -1,14 +1,17 @@
 import { useEffect, useReducer, useRef } from 'react';
 import { createGitHubClient, type GitHubClient, GitHubRequestError } from '../github/client';
+import { createDeadline, createWatchdog, type Watchdog } from '../github/deadline';
 import { mapWithConcurrency } from '../lib/concurrency';
 import {
   buildCandidate,
   compareCodePoints,
   describeGitHubError,
+  type GitHubError,
   type GitHubFetchStage,
   type NormalizedTree,
   orderBranches,
   recoveryFor,
+  SLOW_NOTICE_MS,
 } from '../lib/githubApi';
 import {
   base64UrlEncode,
@@ -17,6 +20,8 @@ import {
   codeChallengeS256,
   describeCallbackFailure,
   describeTokenExchangeFailure,
+  describeTokenExchangeNetworkFailure,
+  describeTokenExchangeTimeout,
   type GitHubAppConfig,
   type GitHubToken,
   installationUrl,
@@ -31,6 +36,7 @@ import {
   serializePendingAuth,
   stripCallbackParams,
   TOKEN_EXCHANGE_PATH,
+  TOKEN_EXCHANGE_TIMEOUT_MS,
   validateCallback,
 } from '../lib/githubAuth';
 import type { BatchChoices } from '../lib/githubBatchReview';
@@ -70,6 +76,35 @@ class GitHubBatchRequestError extends Error {
   ) {
     super(`${path}: ${requestError.message}`);
   }
+}
+
+/** 一時的な失敗の種類。一括取り込みでは、再試行しても取れた分は取り直さない。 */
+const RESUMABLE_KINDS: ReadonlySet<GitHubError['kind']> = new Set([
+  'timeout',
+  'network',
+  'offline',
+]);
+
+/**
+ * GitHub への要求の失敗を、画面に出す文にする。要求の失敗でなければ null。
+ * 一括取り込みでは、どのファイルで失敗したかを添える。再試行は取れていた分を取り直さない
+ * （`blobCache`）ので、やり直しの手間を見積もれるよう、一時的な失敗ではそう添える。
+ */
+function describeRequestFailure(error: unknown): { detail: GitHubError; message: string } | null {
+  if (error instanceof GitHubBatchRequestError) {
+    const detail = error.requestError.detail;
+    const resumable = RESUMABLE_KINDS.has(detail.kind)
+      ? '取得済みのファイルは、再試行で取り直しません。'
+      : '';
+    return {
+      detail,
+      message: `${revealUnsafeChars(error.path)}: ${describeGitHubError(detail)}${resumable}`,
+    };
+  }
+  if (error instanceof GitHubRequestError) {
+    return { detail: error.detail, message: describeGitHubError(error.detail) };
+  }
+  return null;
 }
 
 async function loadBatchTree(
@@ -292,6 +327,12 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
   const tokenRef = useRef<GitHubToken | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   /**
+   * 走っている取得の「時間がかかっています」の見張り。利用者に見える進み（一括取り込みの
+   * 件数）があったときに数え直す。通信の受信（blob のチャンク）では数え直さない。通信は
+   * 少しずつ進んでいても、画面が変わらなければ利用者には固まって見えるため。
+   */
+  const slowRef = useRef<Watchdog | null>(null);
+  /**
    * tree は SHA で内容が決まるので、一度取ったものは使い回す（戻る操作で取り直さない）。
    * キーはリポジトリ・tree SHA・パスの組（`loadListing` を参照）。
    */
@@ -383,6 +424,14 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
     }
     const controller = begin();
     dispatch({ type: 'busy', label });
+    // 時間切れは1リクエストごとに `client.ts` が子の中断口で表す。この中断口（`controller`）は
+    // 閉じる・置き換わるときだけ中断する。時間切れで中断すると、下の catch が黙って捨てて、
+    // 読み込み中でもエラーでもない画面に残ってしまう。
+    const slow = createWatchdog(SLOW_NOTICE_MS, () => {
+      if (!controller.signal.aborted) dispatch({ type: 'busy/slow' });
+    });
+    slowRef.current = slow;
+    controller.signal.addEventListener('abort', () => slow.dispose(), { once: true });
     task(api, controller.signal)
       .then((value) => {
         if (!controller.signal.aborted) onDone(value);
@@ -393,15 +442,9 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
           dispatch({ type: 'fail', error: { message: error.message, recover: 'dismiss' } });
           return;
         }
-        const requestFailure =
-          error instanceof GitHubBatchRequestError
-            ? { detail: error.requestError.detail, prefix: `${revealUnsafeChars(error.path)}: ` }
-            : error instanceof GitHubRequestError
-              ? { detail: error.detail, prefix: '' }
-              : null;
+        const requestFailure = describeRequestFailure(error);
         if (requestFailure) {
-          const { detail, prefix } = requestFailure;
-          const message = `${prefix}${describeGitHubError(detail)}`;
+          const { detail, message } = requestFailure;
           if (detail.kind === 'unauthorized') {
             dropConnection(message);
             return;
@@ -432,6 +475,8 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
         });
       })
       .finally(() => {
+        slow.dispose();
+        if (slowRef.current === slow) slowRef.current = null;
         if (abortRef.current === controller) abortRef.current = null;
       });
   };
@@ -514,6 +559,8 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
               type: 'busy',
               label: `選択したファイルを取得しています（${done} / ${total}）`,
             });
+            // 件数が進んだのは画面で分かる進みなので、「時間がかかっています」を数え直す。
+            slowRef.current?.restart();
           }
           return result.candidate;
         }),
@@ -642,6 +689,12 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       pageLeft.current !== startedPage || attempt.current !== started;
     // 交換は中断口を共有しない。コードは1回しか使えないので、他の操作や
     // （開発時の Strict Mode による）effect の片付けで止めると、やり直せなくなる。
+    // 止めるのは自前の上限（`TOKEN_EXCHANGE_TIMEOUT_MS`）だけ。時間切れは「諦める契機」
+    // （`superseded`）ではなく失敗の種類として扱い、同じコードでは再試行させない。
+    const deadline = createDeadline(new AbortController().signal, TOKEN_EXCHANGE_TIMEOUT_MS);
+    const slow = createWatchdog(SLOW_NOTICE_MS, () => {
+      if (!superseded()) dispatch({ type: 'busy/slow' });
+    });
     try {
       const response = await fetch(new URL(TOKEN_EXCHANGE_PATH, window.location.origin), {
         method: 'POST',
@@ -654,13 +707,21 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
         }),
         cache: 'no-store',
         credentials: 'same-origin',
+        signal: deadline.signal,
       });
       // 失敗の本文は理由コードだけを読む（読めなくても状態コードで知らせる）。
       const payload: unknown = await response.json().catch(() => null);
+      // 読み終えたら見張りを止める（このあとに上限が来ても、取れたトークンを捨てない）。
+      deadline.dispose();
       const token = response.ok ? parseTokenResponse(payload, Date.now()) : null;
       // 交換の途中でページを離れたか閉じられていたら、返ってきたトークンは捨てる
       // （接続は解除・取り消し済み）。
       if (superseded()) return;
+      // 本文を読んでいる途中で上限に達した（読めなかったのは時間切れのせい）。
+      if (!token && deadline.timedOut) {
+        dropConnection(describeTokenExchangeTimeout());
+        return;
+      }
       if (!token) {
         dropConnection(
           describeTokenExchangeFailure(
@@ -675,10 +736,15 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       loadRepositories();
     } catch (error) {
       if (superseded()) return;
+      if (deadline.timedOut) {
+        dropConnection(describeTokenExchangeTimeout());
+        return;
+      }
       console.error('GitHub のトークン交換に失敗しました', error);
-      dropConnection(
-        'GitHub との接続に失敗しました。ネットワークを確認して、もう一度接続してください。',
-      );
+      dropConnection(describeTokenExchangeNetworkFailure(navigator.onLine));
+    } finally {
+      deadline.dispose();
+      slow.dispose();
     }
   };
 

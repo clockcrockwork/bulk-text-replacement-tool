@@ -562,6 +562,31 @@ describe('知らせ', () => {
   });
 });
 
+describe('時間がかかっているときの案内', () => {
+  it('待っている間だけ案内を出し、進み（busy の更新）があれば消す', () => {
+    const busy = githubImportReducer(PINNED, { type: 'busy', label: '取得しています' });
+    const slow = githubImportReducer(busy, { type: 'busy/slow' });
+    expect(slow.slow).toBe(true);
+    expect(githubImportReducer(slow, { type: 'busy', label: '取得しています（2 / 3）' }).slow).toBe(
+      false,
+    );
+  });
+
+  it('待ち終わったあとに遅れて届いた知らせでは、案内を出さない', () => {
+    const idle = { ...PINNED, busy: null };
+    expect(githubImportReducer(idle, { type: 'busy/slow' })).toBe(idle);
+  });
+
+  it('トークン交換の待ち（接続中）にも案内を出し、接続できたら消す', () => {
+    const connecting = githubImportReducer(initialGitHubImportState, { type: 'connect/start' });
+    const slow = githubImportReducer(connecting, { type: 'busy/slow' });
+    expect(slow.slow).toBe(true);
+    expect(githubImportReducer(slow, { type: 'connect/done' }).slow).toBe(false);
+    // 接続し直すときは、前の案内を持ち越さない。
+    expect(githubImportReducer(slow, { type: 'connect/start' }).slow).toBe(false);
+  });
+});
+
 describe('rate limit の待ち', () => {
   const limited = {
     message: 'GitHub API の利用上限に達しました。',

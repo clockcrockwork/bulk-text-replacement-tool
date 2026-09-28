@@ -1,10 +1,14 @@
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { TOKEN_EXCHANGE_TIMEOUT_MS } from '../../src/lib/githubAuth';
 import {
   GITHUB_TOKEN_URL,
   handleTokenExchange,
   MAX_BODY_BYTES,
   MAX_TOKEN_LIFETIME_SECONDS,
   readExchangeConfig,
+  UPSTREAM_TIMEOUT_MS,
 } from './githubTokenExchange.js';
 
 const ORIGIN = 'https://bulk.example';
@@ -438,5 +442,60 @@ describe('handleTokenExchange', () => {
         expect(response.headers.get('cache-control')).toBe('no-store');
       }
     });
+  });
+});
+
+describe('GitHub が遅いとき', () => {
+  /**
+   * 本物の fetch（undici）で確かめる。signal が本文の読み取りにも効くかは fetch の実装の
+   * 振る舞いなので、差し替えた fetch では確かめられない。`stall` はヘッダを返したあと
+   * 本文の途中で止まる。どちらも応答を最後まで返さない。
+   */
+  let server: Server | null = null;
+  afterEach(async () => {
+    server?.closeAllConnections();
+    await new Promise<void>((resolve) => server?.close(() => resolve()) ?? resolve());
+    server = null;
+  });
+
+  async function slowUpstream(mode: 'noHeaders' | 'stall'): Promise<typeof fetch> {
+    server = createServer((_request, response) => {
+      if (mode === 'noHeaders') return;
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.write('{"access_token":');
+    });
+    await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    // 宛先だけをこのサーバーへ向け、送る内容と signal はそのまま本物の fetch に渡す。
+    return ((_url: string | URL | Request, init?: RequestInit) =>
+      fetch(`http://127.0.0.1:${port}/`, init)) as typeof fetch;
+  }
+
+  it('応答ヘッダが来なければ、上限で 504 upstream_timeout を返す', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const fetchImpl = await slowUpstream('noHeaders');
+    const started = Date.now();
+    const response = await handleTokenExchange(request(VALID), CONFIG, fetchImpl, {
+      upstreamTimeoutMs: 200,
+    });
+    expect(response.status).toBe(504);
+    expect(await body(response)).toEqual({ error: 'upstream_timeout' });
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it('ヘッダのあと本文の途中で止まっても、同じ上限で切れる（upstream_invalid にしない）', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const fetchImpl = await slowUpstream('stall');
+    const started = Date.now();
+    const response = await handleTokenExchange(request(VALID), CONFIG, fetchImpl, {
+      upstreamTimeoutMs: 200,
+    });
+    expect(response.status).toBe(504);
+    expect(await body(response)).toEqual({ error: 'upstream_timeout' });
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it('ブラウザ側の上限は、この上限の結果が先に届くよう十分長い', () => {
+    expect(TOKEN_EXCHANGE_TIMEOUT_MS).toBeGreaterThanOrEqual(UPSTREAM_TIMEOUT_MS * 2);
   });
 });

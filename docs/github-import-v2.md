@@ -508,6 +508,50 @@ Handle at least:
 
 Rate-limit errors must be distinguishable from generic network failures.
 
+### Network stalls and timeouts
+
+Decided in issue #20. No request may leave the user looking at a busy state indefinitely, but a slow network must not cut off normal use. The token exchange and the GitHub REST API are handled **differently on purpose**: the OAuth code is one-time, while every REST call is an idempotent GET against a pinned commit.
+
+The values are conservative initial policy values (`src/lib/githubApi.ts`, `src/lib/githubAuth.ts`). They are not derived from averages of normal requests. Real-device and Vercel measurements are used afterwards to check that normal use is not being cut off, not as a gate before implementing.
+
+| Request | What is measured | Abort after |
+| --- | --- | --- |
+| Token exchange (`POST /api/github/token`) | whole request, including the response body | 25 s |
+| Installations, repositories, and branches (per page), ref, commit, non-recursive tree | whole request, including the response body | 30 s |
+| Recursive tree | whole request, including the response body | 60 s |
+| Blob | time without receiving any byte (stall), including the wait for headers | 30 s without data |
+
+- Every limit applies to **one request**, not to one user action. Pagination is limited per page, and multi-file import per blob, so long lists and large selections are not cut off.
+- The limit lasts until the response body has been read, not only until the headers arrive. A body that stalls after the headers must hit the same limit. The Function's upstream limit (10 s, `UPSTREAM_TIMEOUT_MS`) already covers the body, because a fetch signal also aborts body reads.
+- The blob limit is a transport policy: it looks at stalls, not total time, because the normal duration depends on the file size. How large a file the app accepts is a separate resource policy (issue #19). The blob reader counts received bytes and stops as soon as `MAX_BLOB_BYTES` is exceeded (error kind `tooLarge`, next step: close only). A response without a body stream falls back to `arrayBuffer()`, where the stall limit acts as a total limit.
+- **Slow notice**: when nothing visible to the user has changed for 8 s, the busy line gets "時間がかかっています。閉じると中断できます（作業データはそのまま残ります）。" The notice does not assume the user knows that closing cancels. Only progress the user can see (the `n / total` counter in multi-file import) restarts the 8 s. Blob chunks restart only the transport stall timer, so a download that trickles but looks frozen still gets the notice.
+- **Hidden pages**: while `document.hidden` is true, the user cannot watch the wait, so that time does not count towards any limit. When the page becomes visible again, counting starts over. This is product policy. It does not depend on how a browser throttles background timers or networking.
+- `AbortSignal.timeout` and `AbortSignal.any` are not used. `AbortSignal.any` needs Safari 17.4. `AbortSignal.timeout` would be available, but the stall reset, the slow notice, and the hidden-page rule need our own timer. Controllers are chained by hand (`src/github/deadline.ts`).
+- A timeout aborts a **per-request child controller**, never the controller of `run` in `useGitHubImport`. `run` silently drops results when its own controller is aborted (the dialog was closed or a newer fetch replaced it). Aborting it on timeout would leave a screen that is neither loading nor showing an error.
+
+After a timeout:
+
+| Situation | Next step |
+| --- | --- |
+| GitHub REST API timeout (`timeout`) | **Retry** at every stage. Retrying is safe because the request is a GET on a pinned commit. In multi-file import, blobs that were already fetched are not fetched again. |
+| Token exchange timeout | **Reconnect only**: authorization starts again with a new state, verifier, and code. The same code is never sent again, and nothing is retried automatically. |
+| Close | Aborts the running fetch. For the exchange, the result is discarded (`superseded()`: `attempt` and `pageLeft`). |
+
+After the browser gives up on the exchange, the exchange may still succeed at the Function and at GitHub. The code is then consumed, and an expiring token remains that nobody received. It is not revoked. It never reached the browser and is not logged, and it expires on its own (8 h). Revoking it would need a second GitHub call made with the client secret, triggered by a disconnect that Vercel does not reliably pass to the Function. It would also widen the "the backend only exchanges" boundary.
+
+How failures are shown:
+
+| Kind | Detected by | Next step |
+| --- | --- | --- |
+| offline | fetch rejects and `navigator.onLine === false` (only `false` is trusted) | retry / reconnect |
+| network | fetch rejects otherwise | retry / reconnect |
+| timeout | our own limits above | retry (REST) / reconnect (exchange) |
+| server | 5xx | retry |
+| rate limit | `x-ratelimit-*` or the body `message` | retry after the reset time |
+| too large | received bytes over `MAX_BLOB_BYTES` | close only |
+
+The Function reports its own upstream timeout as `504 upstream_timeout`, whether the stall happens before the headers or in the middle of the body. This keeps it apart from `502 upstream_invalid` (a broken response) and `502 upstream_unreachable`.
+
 ## 13. Test requirements
 
 ### Unit
@@ -525,6 +569,8 @@ Rate-limit errors must be distinguishable from generic network failures.
 - tree truncation fallback
 - partial failure leaves workspace unchanged
 - storage migration with missing `source`
+- timeouts: per-request limit separate from the caller's abort, a body stall after the headers, a blob stall that resets on every chunk, the byte cap on a streamed blob, hidden-page pause, and `recoveryFor(timeout) = retry`
+- the Function times out with `504 upstream_timeout` both before the headers and in the middle of the body (real Node fetch)
 - backup v1 → v2 migration
 - backup v2 round-trip
 
@@ -555,6 +601,9 @@ Cover:
 - manuscript/rule sentinels never leave allowed boundaries
 - GitHub-fetched content is not POSTed to the Vercel backend
 - keyboard and mobile behavior
+- a held token exchange shows the slow notice and then times out to reconnect: the code is not resent, and a late response does not connect
+- a held list shows the slow notice, times out, and recovers with retry. Closing while slow aborts the request without showing an error
+- offline is distinguished from a generic network failure
 
 ### Manual smoke test
 

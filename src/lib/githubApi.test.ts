@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { GitHubSnapshot } from '../types';
 import {
+  BLOB_STALL_TIMEOUT_MS,
   buildCandidate,
   classifyErrorResponse,
+  classifyFetchFailure,
   classifyTreeEntry,
   describeEntryStatus,
   describeGitHubError,
   encodePath,
+  formatBlobLimit,
   formatBytes,
   GITHUB_CORS_ALLOWED_REQUEST_HEADERS,
   GITHUB_CORS_EXPOSED_RESPONSE_HEADERS,
@@ -16,6 +19,7 @@ import {
   isLfsPointer,
   joinPath,
   MAX_BLOB_BYTES,
+  METADATA_TIMEOUT_MS,
   mergeRepositories,
   normalizeBranches,
   normalizeCommitTreeSha,
@@ -26,8 +30,11 @@ import {
   normalizeTree,
   orderBranches,
   parseNextLink,
+  RECURSIVE_TREE_TIMEOUT_MS,
   readErrorMessage,
   recoveryFor,
+  SLOW_NOTICE_MS,
+  timeoutError,
 } from './githubApi';
 import { BOM } from './text';
 
@@ -224,11 +231,23 @@ describe('recoveryFor', () => {
     for (const stage of stages) expect(recoveryFor(error('listTooLong'), stage)).toBe('dismiss');
   });
 
+  it('上限を超える本文は、固定した blob を同じ上限で取り直しても変わらないので閉じるだけ', () => {
+    for (const stage of stages) expect(recoveryFor(error('tooLarge'), stage)).toBe('dismiss');
+  });
+
+  it('時間切れは、どの段階でも同じ GET をやり直せる（コミットは固定済み）', () => {
+    for (const stage of stages) {
+      expect(recoveryFor(timeoutError(METADATA_TIMEOUT_MS, false), stage)).toBe('retry');
+      expect(recoveryFor(timeoutError(BLOB_STALL_TIMEOUT_MS, true), stage)).toBe('retry');
+    }
+  });
+
   it('一時的な失敗は、どの段階でも再試行する', () => {
     const kinds: GitHubErrorKind[] = [
       'rateLimited',
       'server',
       'network',
+      'offline',
       'invalidResponse',
       'forbidden',
       'sso',
@@ -263,12 +282,48 @@ describe('describeGitHubError', () => {
       'emptyRepository',
       'server',
       'network',
+      'offline',
+      'timeout',
+      'tooLarge',
       'invalidResponse',
       'listTooLong',
     ];
     for (const kind of kinds) {
       expect(describeGitHubError({ kind, status: null, resetAt: null })).not.toBe('');
     }
+  });
+
+  it('時間切れは、待った秒数と、応答が無かったのか受信が止まったのかを伝える', () => {
+    expect(describeGitHubError(timeoutError(30_000, false))).toContain('30 秒応答がなかった');
+    expect(describeGitHubError(timeoutError(30_000, true))).toContain('受信が 30 秒止まった');
+  });
+
+  it('オフラインは、ネットワーク障害一般と区別して伝える', () => {
+    expect(describeGitHubError(classifyFetchFailure(false))).toContain('オフライン');
+    expect(describeGitHubError(classifyFetchFailure(true))).not.toContain('オフライン');
+  });
+
+  it('上限を超えた本文は、上限の値を定数から出す', () => {
+    expect(describeGitHubError({ kind: 'tooLarge', status: null, resetAt: null })).toContain(
+      formatBlobLimit(MAX_BLOB_BYTES),
+    );
+    expect(formatBlobLimit(MAX_BLOB_BYTES)).toBe('100MB');
+  });
+});
+
+describe('classifyFetchFailure', () => {
+  it('navigator.onLine が false のときだけオフラインとする（true や不明は信用しない）', () => {
+    expect(classifyFetchFailure(false).kind).toBe('offline');
+    expect(classifyFetchFailure(true).kind).toBe('network');
+    expect(classifyFetchFailure(undefined).kind).toBe('network');
+  });
+});
+
+describe('待ち時間の方針', () => {
+  it('案内は中断より先に出し、再帰の tree は一覧より長く待つ', () => {
+    expect(SLOW_NOTICE_MS).toBeLessThan(METADATA_TIMEOUT_MS);
+    expect(SLOW_NOTICE_MS).toBeLessThan(BLOB_STALL_TIMEOUT_MS);
+    expect(RECURSIVE_TREE_TIMEOUT_MS).toBeGreaterThan(METADATA_TIMEOUT_MS);
   });
 });
 
@@ -495,7 +550,7 @@ describe('buildCandidate', () => {
     const huge = { byteLength: MAX_BLOB_BYTES + 1 } as ArrayBuffer;
     expect(buildCandidate(SNAPSHOT, entry, huge)).toEqual({
       kind: 'error',
-      message: 'chapters/ch1.md は 100MB を超えるため取り込めません。',
+      message: 'chapters/ch1.md は取得の上限（100MB）を超えるため取り込めません。',
     });
   });
 });

@@ -208,6 +208,15 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
     編集欄（`<input>`）は値を変えられないので、入力カードに見える形の名前を別に添える。
   - トークン交換の 429 は Vercel Firewall のレート制限。`describeTokenExchangeFailure` で
     「待ってから接続し直す」と伝える。
+  - **通信が止まったとき**（issue #20。詳細は `docs/github-import-v2.md` の Network stalls and
+    timeouts）: 期限は操作ではなく**1リクエスト**に掛ける（一覧 30 秒・再帰 tree 60 秒・blob は
+    受信が 30 秒止まったら・交換 25 秒）。期限は本文を読み終えるまで効かせる（ヘッダで解除しない）。
+    **時間切れで `run` の中断口を abort しない**（`run` は自分の中断を黙って捨てるので、失敗が
+    出ないまま待ちの画面に残る）。時間切れは `src/github/deadline.ts` の子の中断口で表す。
+    交換の時間切れは失敗の種類であって `superseded()` ではない。**同じ code で再試行させず**
+    「もう一度接続」（認可から）だけを出す。8 秒進みが無ければ「時間がかかっています。閉じると
+    中断できます」を添える（数え直すのは画面で見える進みだけ）。`document.hidden` の間は数えない。
+    Function 側の上限（`UPSTREAM_TIMEOUT_MS` 10 秒）を変えたら、ブラウザ側の 25 秒も見直す。
 - **配信時のヘッダ**は `vercel.json` の `headers`（`frame-ancestors 'none'`・`X-Frame-Options`・
   `nosniff`・`Referrer-Policy: strict-origin`・`Cross-Origin-Opener-Policy: same-origin`・
   `Permissions-Policy`）。COOP の下でも OAuth の往復で sessionStorage が残ることは E2E が
