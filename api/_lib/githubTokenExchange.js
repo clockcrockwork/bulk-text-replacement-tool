@@ -29,6 +29,14 @@ export const GITHUB_TOKEN_URL = 'https://github.com/login/oauth/access_token';
 /** 受け付ける本文の上限。3つの短い文字列しか来ないので、大きなものは読まずに断る。 */
 export const MAX_BODY_BYTES = 4096;
 
+/**
+ * 受け付けるトークンの有効期限（秒）の上限。GitHub App のユーザートークンは現在 8 時間
+ * （28800）固定。GitHub 側の変更に少し余裕を持たせて 1 日までにし、それより長いものは
+ * 想定外の応答として断る。巨大な値を通すと、ブラウザでミリ秒に直した時点で `Infinity` になり、
+ * 「期限は必須」にしたのに実質無期限のトークンとして扱われてしまう。
+ */
+export const MAX_TOKEN_LIFETIME_SECONDS = 24 * 60 * 60;
+
 /** GitHub の応答を待つ上限。 */
 const UPSTREAM_TIMEOUT_MS = 10_000;
 
@@ -188,8 +196,10 @@ export async function handleTokenExchange(request, config, fetchImpl) {
   const origin = request.headers.get('origin');
   if (!origin || !config.allowedOrigins.has(origin)) return fail(403, 'origin_not_allowed');
 
+  // `application/json` そのもの（後ろにパラメータが付くのは可）だけを受け付ける。前方一致だと
+  // `application/jsonx` のような別の型も通ってしまう。
   const contentType = request.headers.get('content-type') ?? '';
-  if (!contentType.toLowerCase().startsWith('application/json')) {
+  if (!/^application\/json\s*(?:;|$)/i.test(contentType)) {
     return fail(415, 'unsupported_media_type');
   }
 
@@ -276,9 +286,15 @@ export async function handleTokenExchange(request, config, fetchImpl) {
   // 期限付きのユーザートークンだけを通す。GitHub App の「Expire user authorization tokens」を
   // 切ると `expires_in` そのものが返らなくなる。設定の取り違えで、期限の無いトークンを
   // 黙って「期限情報なし」として配らない（ブラウザはそれを無期限として使い続けてしまう）。
+  // 期限は正の整数（秒）で、上限（MAX_TOKEN_LIFETIME_SECONDS）以内であること。
   const expiresIn = payload.expires_in;
-  if (typeof expiresIn !== 'number' || !Number.isFinite(expiresIn) || expiresIn <= 0) {
-    console.error('github token exchange: upstream token has no expiry');
+  if (
+    typeof expiresIn !== 'number' ||
+    !Number.isSafeInteger(expiresIn) ||
+    expiresIn <= 0 ||
+    expiresIn > MAX_TOKEN_LIFETIME_SECONDS
+  ) {
+    console.error('github token exchange: upstream token has no valid expiry');
     return fail(502, 'upstream_invalid');
   }
   // GitHub のユーザートークンは bearer。違う種類が返ったら、想定外の応答として扱う。

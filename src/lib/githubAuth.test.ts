@@ -8,6 +8,7 @@ import {
   describeTokenExchangeFailure,
   installationUrl,
   isTokenUsable,
+  MAX_TOKEN_LIFETIME_SECONDS,
   nonCanonicalTarget,
   normalizeCanonicalOrigin,
   PENDING_AUTH_TTL_MS,
@@ -275,29 +276,44 @@ describe('コールバック', () => {
 });
 
 describe('トークン', () => {
+  const VALID_TOKEN = { access_token: 'ghu_x', token_type: 'bearer', expires_in: 28800 };
+
   it('access_token と有効期限を読む', () => {
-    expect(parseTokenResponse({ access_token: 'ghu_x', expires_in: 28800 }, 1000)).toEqual({
+    expect(parseTokenResponse(VALID_TOKEN, 1000)).toEqual({
       accessToken: 'ghu_x',
       expiresAt: 1000 + 28_800_000,
     });
+    // token_type の大文字小文字は問わない。上限ちょうどの期限は受け付ける。
+    expect(parseTokenResponse({ ...VALID_TOKEN, token_type: 'Bearer' }, 0)).not.toBeNull();
+    expect(
+      parseTokenResponse({ ...VALID_TOKEN, expires_in: MAX_TOKEN_LIFETIME_SECONDS }, 0),
+    ).not.toBeNull();
   });
 
-  it('有効期限の無い・壊れたトークンは受け付けない（期限なしとして使い続けない）', () => {
-    expect(parseTokenResponse({ access_token: 'ghu_x' }, 0)).toBeNull();
-    expect(parseTokenResponse({ access_token: 'ghu_x', expires_in: 0 }, 0)).toBeNull();
-    expect(parseTokenResponse({ access_token: 'ghu_x', expires_in: -60 }, 0)).toBeNull();
-    expect(parseTokenResponse({ access_token: 'ghu_x', expires_in: '28800' }, 0)).toBeNull();
-    expect(parseTokenResponse({ access_token: 'ghu_x', expires_in: Number.NaN }, 0)).toBeNull();
-    expect(
-      parseTokenResponse({ access_token: 'ghu_x', expires_in: Number.POSITIVE_INFINITY }, 0),
-    ).toBeNull();
+  it.each([
+    ['期限が無い', { expires_in: undefined }],
+    ['期限が 0', { expires_in: 0 }],
+    ['期限が負', { expires_in: -60 }],
+    ['期限が文字列', { expires_in: '28800' }],
+    ['期限が NaN', { expires_in: Number.NaN }],
+    ['期限が Infinity', { expires_in: Number.POSITIVE_INFINITY }],
+    ['期限が整数でない', { expires_in: 28800.5 }],
+    ['期限が上限を超える', { expires_in: MAX_TOKEN_LIFETIME_SECONDS + 1 }],
+    // 有限だが、ミリ秒に直すと Infinity になる値。通すと実質無期限になる。
+    ['期限が有限だが巨大（Number.MAX_VALUE）', { expires_in: Number.MAX_VALUE }],
+    ['期限が有限だが巨大（1e308）', { expires_in: 1e308 }],
+    ['token_type が無い', { token_type: undefined }],
+    ['token_type が bearer でない', { token_type: 'mac' }],
+  ])('%s トークンは受け付けない（期限なし・想定外の応答として扱う）', (_, override) => {
+    expect(parseTokenResponse({ ...VALID_TOKEN, ...override }, 0)).toBeNull();
+  });
+
+  it('計算した失効時刻が有限でなければ受け付けない', () => {
+    expect(parseTokenResponse(VALID_TOKEN, Number.POSITIVE_INFINITY)).toBeNull();
   });
 
   it('refresh token が紛れ込んでも読まない', () => {
-    const token = parseTokenResponse(
-      { access_token: 'ghu_x', expires_in: 28800, refresh_token: 'ghr_y' },
-      0,
-    );
+    const token = parseTokenResponse({ ...VALID_TOKEN, refresh_token: 'ghr_y' }, 0);
     expect(token).not.toBeNull();
     expect(JSON.stringify(token)).not.toContain('ghr_y');
   });

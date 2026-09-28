@@ -286,6 +286,13 @@ export interface GitHubToken {
 }
 
 /**
+ * 受け付けるトークンの有効期限（秒）の上限。Function（`MAX_TOKEN_LIFETIME_SECONDS`）と同じ値。
+ * GitHub App のユーザートークンは現在 8 時間固定で、変更に少し余裕を持たせて 1 日までにする。
+ * 巨大な値を通すとミリ秒に直した時点で `Infinity` になり、実質無期限になってしまう。
+ */
+export const MAX_TOKEN_LIFETIME_SECONDS = 24 * 60 * 60;
+
+/**
  * 交換エンドポイントの応答を検証する。
  *
  * refresh token は Function 側で捨てているので、ここでも読まない
@@ -294,14 +301,24 @@ export interface GitHubToken {
  * 有効期限（`expires_in`）の無い応答は受け付けない。期限付きのユーザートークンを使うのが
  * 前提で、GitHub App の設定でトークンの期限切れがオフにされると `expires_in` が返らなくなる。
  * そのとき「期限なし」として使い続けると、設定の取り違えで安全側の前提が黙って外れる。
- * Function でも同じ確認をしているが、ここでも重ねて確かめる。
+ * Function でも同じ確認（bearer・期限の範囲）をしているが、ここでも重ねて確かめる。
  */
 export function parseTokenResponse(value: unknown, now: number): GitHubToken | null {
   if (!isRecord(value)) return null;
-  const { access_token: accessToken, expires_in: expiresIn } = value;
+  const { access_token: accessToken, expires_in: expiresIn, token_type: tokenType } = value;
   if (typeof accessToken !== 'string' || accessToken === '') return null;
-  if (typeof expiresIn !== 'number' || !Number.isFinite(expiresIn) || expiresIn <= 0) return null;
-  return { accessToken, expiresAt: now + expiresIn * 1000 };
+  // Function と同じ契約を重ねて確かめる（bearer・正の整数・上限以内の期限）。
+  if (typeof tokenType !== 'string' || tokenType.toLowerCase() !== 'bearer') return null;
+  if (
+    typeof expiresIn !== 'number' ||
+    !Number.isSafeInteger(expiresIn) ||
+    expiresIn <= 0 ||
+    expiresIn > MAX_TOKEN_LIFETIME_SECONDS
+  ) {
+    return null;
+  }
+  const expiresAt = now + expiresIn * 1000;
+  return Number.isFinite(expiresAt) ? { accessToken, expiresAt } : null;
 }
 
 /**

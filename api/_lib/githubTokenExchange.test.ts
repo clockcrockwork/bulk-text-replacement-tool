@@ -3,6 +3,7 @@ import {
   GITHUB_TOKEN_URL,
   handleTokenExchange,
   MAX_BODY_BYTES,
+  MAX_TOKEN_LIFETIME_SECONDS,
   readExchangeConfig,
 } from './githubTokenExchange.js';
 
@@ -136,6 +137,27 @@ describe('handleTokenExchange', () => {
       { access_token: 'ghu_access', token_type: 'mac', expires_in: 28800 },
     ],
     ['token_type が無い', { access_token: 'ghu_access', expires_in: 28800 }],
+    [
+      '有効期限が整数でない',
+      { access_token: 'ghu_access', token_type: 'bearer', expires_in: 28800.5 },
+    ],
+    [
+      '有効期限が上限を超える',
+      {
+        access_token: 'ghu_access',
+        token_type: 'bearer',
+        expires_in: MAX_TOKEN_LIFETIME_SECONDS + 1,
+      },
+    ],
+    // 有限だが、ブラウザでミリ秒に直すと Infinity になる値。通すと実質無期限になる。
+    [
+      '有効期限が有限だが巨大（Number.MAX_VALUE）',
+      { access_token: 'ghu_access', token_type: 'bearer', expires_in: Number.MAX_VALUE },
+    ],
+    [
+      '有効期限が有限だが巨大（1e308）',
+      { access_token: 'ghu_access', token_type: 'bearer', expires_in: 1e308 },
+    ],
   ])('%s トークンは渡さず 502（期限の無いトークンを配らない）', async (_, payload) => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const { fetchImpl } = upstream(payload);
@@ -171,14 +193,30 @@ describe('handleTokenExchange', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('JSON 以外は 415', async () => {
-    const { fetchImpl } = upstream({});
-    const response = await handleTokenExchange(
-      request('code=abc', { contentType: 'application/x-www-form-urlencoded' }),
-      CONFIG,
-      fetchImpl,
-    );
+  it.each([
+    ['フォーム', 'application/x-www-form-urlencoded'],
+    ['application/json で始まる別の型', 'application/jsonx'],
+    ['application/json+ で始まる別の型', 'application/json-patch+json'],
+    ['空', ''],
+  ])('JSON 以外（%s）は 415', async (_, contentType) => {
+    const { fetchImpl, calls } = upstream({});
+    const response = await handleTokenExchange(request(VALID, { contentType }), CONFIG, fetchImpl);
     expect(response.status).toBe(415);
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    'application/json; charset=utf-8',
+    'Application/JSON',
+    'application/json ;charset=UTF-8',
+  ])('application/json（%s）は受け付ける', async (contentType) => {
+    const { fetchImpl } = upstream({
+      access_token: 'ghu_access',
+      token_type: 'bearer',
+      expires_in: 28800,
+    });
+    const response = await handleTokenExchange(request(VALID, { contentType }), CONFIG, fetchImpl);
+    expect(response.status).toBe(200);
   });
 
   it('大きすぎる本文は読まずに断る（原稿などを受け取る口にしない）', async () => {

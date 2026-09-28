@@ -149,9 +149,11 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
     （`page/persisted`）。戻るとヒープごと復元され、メモリのトークンも生き返るため
     （共用の端末で次の人が「戻る」で前の利用者の権限を使える）。交換の途中で離れた場合も、
     あとから返った交換の結果で接続し直さない（`pageLeft`）。タブの切り替えでは切らない。
-  - トークンは**期限付きだけ**を使う。`expires_in` の無い（0 以下の）応答は Function が 502 にし、
-    ブラウザ（`parseTokenResponse`）も受け付けない。GitHub App の期限切れ設定がオフにされると
-    `expires_in` が返らなくなり、「期限なし」として使い続けてしまうため。
+  - トークンは**期限付きだけ**を使う。`expires_in` は正の整数で 1 日（`MAX_TOKEN_LIFETIME_SECONDS`）
+    以内、`token_type` は bearer であること。外れた応答は Function が 502 にし、ブラウザ
+    （`parseTokenResponse`）も受け付けない。GitHub App の期限切れ設定がオフにされると
+    `expires_in` が返らなくなり、「期限なし」として使い続けてしまうため。巨大な値もミリ秒に
+    直すと `Infinity` になり実質無期限になるので、上限で断る。
   - 接続の途中（`connecting`）で閉じたら取り消す（`attempt` の世代を進める）。トークン交換の
     fetch はコードが1回しか使えないので止めないが、閉じたあとに返った結果は捨てる。
     **`attempt`（閉じる）と `pageLeft`（bfcache）は契機が別なので、交換の結果は両方を見て捨てる**
