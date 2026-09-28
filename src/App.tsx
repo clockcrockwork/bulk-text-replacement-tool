@@ -14,7 +14,12 @@ import { CellEditor } from './components/CellEditor';
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog';
 import { DropOverlay } from './components/DropOverlay';
 import { EditorOverlay } from './components/EditorOverlay';
-import { GitHubImportDialog, type SameSourceInput } from './components/GitHubImportDialog';
+import {
+  type GitHubBatchDecision,
+  type GitHubBatchMatch,
+  GitHubImportDialog,
+  type SameSourceInput,
+} from './components/GitHubImportDialog';
 import { ImportDialog } from './components/ImportDialog';
 import { InputPanel } from './components/InputPanel';
 import { OutputPanel } from './components/OutputPanel';
@@ -37,7 +42,7 @@ import { copyText, downloadBlob } from './lib/browser';
 import { collectRuleErrors, findUnmatchedRules } from './lib/diagnostics';
 import { formatFallbackTitle, formatIndex, timestampForFileName } from './lib/format';
 import { readInputFiles } from './lib/inputFiles';
-import { findSameSource, sourceIdentity } from './lib/inputSource';
+import { findSameSource, matchBatchSources, sourceIdentity } from './lib/inputSource';
 import { runConversion } from './lib/replace';
 import { revealUnsafeChars } from './lib/revealText';
 import {
@@ -53,11 +58,12 @@ import {
   createEmptyRule,
   createGroup,
   createInput,
+  createSampleReset,
   initWorkspace,
   workspaceReducer,
   workspaceSignature,
 } from './state/workspace';
-import type { PersistedWorkspace, ResultFile, RuleOrder } from './types';
+import type { InputText, PersistedWorkspace, ResultFile, RuleOrder } from './types';
 
 /** エディタを閉じたとき、元のカードがヘッダーに隠れないよう空ける余白。 */
 const SCROLL_BACK_OFFSET = 130;
@@ -190,12 +196,12 @@ export function App(): JSX.Element {
       theme: state.theme,
       isSample: true,
     };
-    dispatch({ type: 'sample/clear' });
+    dispatch({ type: 'sample/clear', reset: createSampleReset() });
     // 呼び出し側が自分のトーストを出すので、ここでは出さずに取り消し手段だけ返す。
     // 別々に出すと、あとから出た方が前のトーストを消してしまう。
     return {
       label: '元に戻す',
-      onClick: () => dispatch({ type: 'sample/restore', workspace: snapshot }),
+      onClick: () => dispatch({ type: 'workspace/restore', workspace: snapshot }),
     };
   };
 
@@ -287,6 +293,16 @@ export function App(): JSX.Element {
       )
     : false;
 
+  // 手つかずのサンプルは一括取り込みの action の中で片付くので、同名や同じ取り込み元の
+  // 判定には含めない（消える入力との衝突を警告しても意味が無い）。
+  const githubBatchMatches: GitHubBatchMatch[] = github.state.batchCandidates
+    ? matchBatchSources(
+        state.isSample ? [] : state.inputs,
+        github.state.batchCandidates,
+        (input, index) => `${formatIndex(index)} ${input.title || formatFallbackTitle(index)}`,
+      )
+    : [];
+
   /** Shift_JIS は推測なので、黙って取り込まず知らせる（ローカルのファイルと同じ扱い）。 */
   const shiftJisNote = (encoding: 'utf-8' | 'shift_jis'): string =>
     encoding === 'shift_jis'
@@ -330,6 +346,102 @@ export function App(): JSX.Element {
           shiftJisNote(candidate.encoding),
       );
     });
+  };
+
+  const applyGitHubBatch = (decisions: readonly GitHubBatchDecision[]): void => {
+    const candidates = github.state.batchCandidates;
+    if (!candidates || candidates.length === 0) return;
+    const byPath = new Map(decisions.map((decision) => [decision.path, decision]));
+    const updates: Array<{
+      id: string;
+      text: string;
+      source: NonNullable<InputText['source']>;
+    }> = [];
+    const adds: InputText[] = [];
+
+    // 取り込み方法は画面で全件決めてから呼ばれるはずだが、決まっていない候補があれば
+    // 「追加」とみなさずに止める。同じ取り込み元の更新先を推測しない（仕様 §9）ことを、
+    // 画面側のボタンの無効化だけに任せない。
+    // 更新先は ID で引く。候補ごとに入力を全走査すると、大量の更新で確定の1クリックが固まる。
+    const inputsById = new Map(state.inputs.map((input) => [input.id, input]));
+    for (const candidate of candidates) {
+      const decision = byPath.get(candidate.source.path);
+      if (!decision) {
+        flash('取り込み方法が決まっていないファイルがあります');
+        return;
+      }
+      if (decision.action === 'add') {
+        adds.push({ ...createInput(candidate.title, candidate.text), source: candidate.source });
+        continue;
+      }
+      const target = inputsById.get(decision.inputId);
+      if (!target?.source || sourceIdentity(target.source) !== sourceIdentity(candidate.source)) {
+        flash('更新先が変わったため、取り込み方法を選び直してください');
+        return;
+      }
+      updates.push({ id: target.id, text: candidate.text, source: candidate.source });
+    }
+
+    guard('GitHub からの一括取り込み', () => {
+      // 「元に戻す」は、取り込む前の内容（片付けたサンプルを含む）へ戻し、一括の確認画面も
+      // 決めた内容ごと開き直す。取得済みの候補を使うので取り直しにならず、違うフォルダや
+      // 押し間違い、置き換えた本文を1手で戻せる（docs/github-import-v2.md §7）。
+      const before: PersistedWorkspace = {
+        inputs: state.inputs,
+        groups: state.groups,
+        rules: state.rules,
+        theme: state.theme,
+        isSample: state.isSample,
+      };
+      const clearedSample = state.isSample;
+      dispatch({
+        type: 'inputs/applyGitHubBatch',
+        updates,
+        adds,
+        sampleReset: createSampleReset(),
+      });
+      github.finishBatch();
+      const shiftJis = candidates.filter((candidate) => candidate.encoding === 'shift_jis').length;
+      flash(
+        `GitHub から ${candidates.length}ファイルを取り込みました` +
+          (updates.length > 0 ? ` · ${updates.length}件を更新` : '') +
+          (shiftJis > 0 ? ` · ${shiftJis}件は Shift_JIS` : '') +
+          (clearedSample ? ' · サンプルを片付けました' : ''),
+        {
+          label: '元に戻す',
+          onClick: () => {
+            dispatch({ type: 'workspace/restore', workspace: before });
+            github.restoreBatch();
+          },
+        },
+      );
+    });
+  };
+
+  /**
+   * 接続の解除。一括取り込みの途中なら、取得した内容と決めた取り込み方法も捨てることになる。
+   * ダイアログを閉じても残すようにした分、足元の「接続を解除」で黙って失わせない。
+   */
+  const disconnectGitHub = (): void => {
+    const { batchPlan, batchCandidates } = github.state;
+    if (!batchPlan && !batchCandidates) {
+      github.disconnect();
+      return;
+    }
+    void confirmThen(
+      {
+        title: 'GitHub との接続を解除する',
+        message:
+          '進行中の一括取り込みも破棄します。もう一度取り込むには、接続し直して取得からやり直します。',
+        details: [
+          batchCandidates
+            ? `取得済みの ${batchCandidates.length}ファイルと、決めた取り込み方法`
+            : `数え終えた ${batchPlan?.entries.length ?? 0}ファイルの計画`,
+        ],
+        confirmLabel: '接続を解除する',
+      },
+      github.disconnect,
+    );
   };
 
   const openEditor = (id: string, caret: number, scrollRatio: number): void => {
@@ -756,15 +868,17 @@ export function App(): JSX.Element {
       {github.state.open ? (
         <GitHubImportDialog
           state={github.state}
-          handlers={github}
+          handlers={{ ...github, disconnect: disconnectGitHub }}
           installUrl={github.installUrl}
           canonicalUrl={github.canonicalUrl}
           onExportBackup={exportBackup}
           saveFailed={saveFailed}
           sameSource={githubSameSource}
           titleCollision={githubTitleCollision}
+          batchMatches={githubBatchMatches}
           onAdd={addFromGitHub}
           onUpdate={updateFromGitHub}
+          onApplyBatch={applyGitHubBatch}
         />
       ) : null}
 

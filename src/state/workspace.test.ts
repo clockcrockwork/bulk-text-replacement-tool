@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Group, InputText, Rule } from '../types';
+import type { GitHubInputSource, Group, InputText, Rule } from '../types';
 import {
   createEmptyRule,
   createGroup,
   createInput,
+  createSampleReset,
   initWorkspace,
   type WorkspaceState,
   workspaceReducer,
@@ -20,6 +21,25 @@ function input(id: string, text = ''): InputText {
 function rule(id: string, src = 'a'): Rule {
   return { id, src, regex: false, cs: true, order: 'sim', values: {} };
 }
+
+function source(path: string): GitHubInputSource {
+  return {
+    kind: 'github',
+    repositoryId: 42,
+    owner: 'octo',
+    repo: 'novel',
+    ref: 'main',
+    commitSha: 'a'.repeat(40),
+    path,
+    blobSha: 'b'.repeat(40),
+  };
+}
+
+/** reducer の外で作る想定の、サンプルを片付けたあとの初期状態（ID は固定値）。 */
+const RESET = {
+  group: { id: 'g-reset', name: 'グループ1' },
+  rule: { id: 'r-reset', src: '', regex: false, cs: true, order: 'sim', values: {} },
+} satisfies ReturnType<typeof createSampleReset>;
 
 function state(overrides: Partial<WorkspaceState> = {}): WorkspaceState {
   return {
@@ -64,6 +84,83 @@ describe('workspaceReducer', () => {
       inputs: [input('f1', 'x')],
     });
     expect(next.inputs.map((item) => item.id)).toEqual(['i1', 'f1']);
+  });
+
+  it('GitHub batch は更新と追加を1 actionで反映し、更新先のタイトルを残す', () => {
+    const existing: InputText = {
+      ...input('old', 'old text'),
+      title: 'renamed.md',
+      source: source('chapters/ch1.md'),
+    };
+    const added: InputText = {
+      ...input('new', 'new file'),
+      source: source('chapters/ch2.md'),
+    };
+    const next = workspaceReducer(state({ inputs: [existing] }), {
+      type: 'inputs/applyGitHubBatch',
+      updates: [
+        {
+          id: 'old',
+          text: 'updated text',
+          source: { ...source('chapters/ch1.md'), commitSha: 'c'.repeat(40) },
+        },
+      ],
+      adds: [added],
+      sampleReset: RESET,
+    });
+
+    expect(next.inputs).toHaveLength(2);
+    expect(next.inputs[0]).toMatchObject({
+      id: 'old',
+      title: 'renamed.md',
+      text: 'updated text',
+      source: { path: 'chapters/ch1.md', commitSha: 'c'.repeat(40) },
+    });
+    expect(next.inputs[1]).toEqual(added);
+  });
+
+  it('GitHub batch は未編集サンプルを同じ mutation 内で置き換える', () => {
+    const added: InputText = {
+      ...input('new', 'real text'),
+      source: source('chapter.md'),
+    };
+    const next = workspaceReducer(
+      state({ isSample: true, inputs: [input('sample', 'sample text')] }),
+      { type: 'inputs/applyGitHubBatch', updates: [], adds: [added], sampleReset: RESET },
+    );
+    expect(next.inputs).toEqual([added]);
+    // ID は action で受け取ったものを使う（reducer の中で作らない）。
+    expect(next.groups).toEqual([RESET.group]);
+    expect(next.rules).toEqual([RESET.rule]);
+    expect(next.result).toBeNull();
+    expect(next.isSample).toBe(false);
+  });
+
+  it('GitHub batch はサンプルでなければ既存のグループとルールに触れない', () => {
+    const before = state({ inputs: [input('mine', 'my text')] });
+    const added: InputText = { ...input('new', 'real text'), source: source('chapter.md') };
+    const next = workspaceReducer(before, {
+      type: 'inputs/applyGitHubBatch',
+      updates: [],
+      adds: [added],
+      sampleReset: RESET,
+    });
+    expect(next.inputs.map((item) => item.id)).toEqual(['mine', 'new']);
+    expect(next.groups).toBe(before.groups);
+    expect(next.rules).toBe(before.rules);
+  });
+
+  it('GitHub batch は反映するものが無ければ、サンプルの中身を片付けない', () => {
+    const before = state({ isSample: true, inputs: [input('sample')] });
+    const next = workspaceReducer(before, {
+      type: 'inputs/applyGitHubBatch',
+      updates: [],
+      adds: [],
+      sampleReset: RESET,
+    });
+    expect(next.inputs).toBe(before.inputs);
+    expect(next.groups).toBe(before.groups);
+    expect(next.rules).toBe(before.rules);
   });
 
   it('編集中の入力を消したらエディタも閉じる', () => {
@@ -370,6 +467,17 @@ describe('workspaceSignature', () => {
   });
 });
 
+describe('createSampleReset', () => {
+  it('既定名のグループ1つと、置換元が空のルール1行を毎回新しい ID で作る', () => {
+    const first = createSampleReset();
+    const second = createSampleReset();
+    expect(first.group.name).toBe('グループ1');
+    expect(first.rule).toMatchObject({ src: '', values: {} });
+    expect(second.group.id).not.toBe(first.group.id);
+    expect(second.rule.id).not.toBe(first.rule.id);
+  });
+});
+
 describe('createEmptyRule', () => {
   it('同時適用・大小区別ありの空行を作る', () => {
     expect(createEmptyRule()).toMatchObject({ src: '', regex: false, cs: true, order: 'sim' });
@@ -439,11 +547,10 @@ describe('サンプル状態', () => {
   });
 
   it('片付けると空のグループ1つと空行だけが残る', () => {
-    const cleared = workspaceReducer(sample(), { type: 'sample/clear' });
+    const cleared = workspaceReducer(sample(), { type: 'sample/clear', reset: RESET });
     expect(cleared.inputs).toEqual([]);
-    expect(cleared.groups).toHaveLength(1);
-    expect(cleared.rules).toHaveLength(1);
-    expect(cleared.rules[0]?.src).toBe('');
+    expect(cleared.groups).toEqual([RESET.group]);
+    expect(cleared.rules).toEqual([RESET.rule]);
     expect(cleared.isSample).toBe(false);
     // 古い変換結果は別データのものなので捨てる。
     expect(cleared.result).toBeNull();
@@ -451,9 +558,9 @@ describe('サンプル状態', () => {
 
   it('片付けたあと元に戻せる', () => {
     const before = sample();
-    const cleared = workspaceReducer(before, { type: 'sample/clear' });
+    const cleared = workspaceReducer(before, { type: 'sample/clear', reset: RESET });
     const restored = workspaceReducer(cleared, {
-      type: 'sample/restore',
+      type: 'workspace/restore',
       workspace: {
         inputs: before.inputs,
         groups: before.groups,

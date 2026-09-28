@@ -103,6 +103,10 @@ export class GitHubMock {
   secondaryRateLimitedResponses = 0;
   /** パスに含まれると失敗させる（blob の取得失敗など）。 */
   failPaths: string[] = [];
+  /** recursive tree 応答をこの回数だけ truncated にする。fallback E2E 用。 */
+  recursiveTreeTruncations = 0;
+  /** true の間、tree 応答から blob の size を省く（大きさ不明の項目の E2E 用）。 */
+  omitTreeSizes = false;
   /** 200 以外なら、トークン交換がその状態コードで失敗する（429 は Vercel Firewall の制限）。 */
   tokenStatus = 200;
 
@@ -204,6 +208,18 @@ export class GitHubMock {
     return sha;
   }
 
+  private recursiveTree(treeSha: string, prefix = ''): TreeItem[] {
+    const object = this.objects.get(treeSha);
+    if (!object || !('tree' in object)) return [];
+    const result: TreeItem[] = [];
+    for (const item of object.tree) {
+      const path = prefix ? `${prefix}/${item.path}` : item.path;
+      result.push({ ...item, path });
+      if (item.type === 'tree') result.push(...this.recursiveTree(item.sha, path));
+    }
+    return result;
+  }
+
   /** ページに GitHub の代わりを差し込む。`openApp` より前に呼ぶ。 */
   async install(page: Page): Promise<void> {
     page.on('request', (request) => this.record(request));
@@ -276,6 +292,28 @@ export class GitHubMock {
       status,
       headers: { ...CORS_HEADERS, 'content-type': 'application/json', ...headers },
       body: JSON.stringify(body),
+    });
+  }
+
+  private handleTree(route: Route, treeSha: string, recursive: boolean): Promise<void> {
+    const object = this.objects.get(treeSha);
+    if (!object || !('tree' in object)) return this.json(route, 404, { message: 'Not Found' });
+    const withoutSizes = (items: TreeItem[]): TreeItem[] =>
+      this.omitTreeSizes ? items.map(({ size: _size, ...rest }) => rest) : items;
+    if (recursive) {
+      const entries = withoutSizes(this.recursiveTree(treeSha));
+      const truncated = this.recursiveTreeTruncations > 0;
+      if (truncated) this.recursiveTreeTruncations -= 1;
+      return this.json(route, 200, {
+        sha: treeSha,
+        tree: truncated ? entries.slice(0, Math.max(1, Math.ceil(entries.length / 2))) : entries,
+        truncated,
+      });
+    }
+    return this.json(route, 200, {
+      sha: treeSha,
+      tree: withoutSizes(object.tree),
+      truncated: false,
     });
   }
 
@@ -390,9 +428,7 @@ export class GitHubMock {
 
     const tree = /^git\/trees\/([0-9a-f]{40})$/.exec(rest);
     if (tree?.[1]) {
-      const object = this.objects.get(tree[1]);
-      if (!object || !('tree' in object)) return this.json(route, 404, { message: 'Not Found' });
-      return this.json(route, 200, { sha: tree[1], tree: object.tree, truncated: false });
+      return this.handleTree(route, tree[1], url.searchParams.get('recursive') === '1');
     }
 
     const blob = /^git\/blobs\/([0-9a-f]{40})$/.exec(rest);

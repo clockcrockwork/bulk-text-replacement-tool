@@ -20,6 +20,7 @@ import {
   normalizeBranches,
   normalizeCommitTreeSha,
   normalizeInstallations,
+  normalizeRecursiveTree,
   normalizeRefCommitSha,
   normalizeRepositories,
   normalizeTree,
@@ -143,6 +144,20 @@ describe('classifyErrorResponse', () => {
     expect(
       classifyErrorResponse(429, headers({ 'x-ratelimit-remaining': '0' }), '', now).resetAt,
     ).toBe(now + 60_000);
+  });
+
+  it('端末の時計がずれていても、待たせるのは1分から1時間の範囲に収める', () => {
+    const at = (resetSeconds: number) =>
+      classifyErrorResponse(
+        403,
+        headers({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(resetSeconds) }),
+        '',
+        now,
+      ).resetAt;
+    // 端末が遅れていて、解除が30日先に見える。
+    expect(at(now / 1000 + 30 * 24 * 60 * 60)).toBe(now + 60 * 60 * 1000);
+    // 端末が進んでいて、解除がもう過ぎたように見える。
+    expect(at(now / 1000 - 600)).toBe(now + 60_000);
   });
 
   it('secondary rate limit は本文で見分け、最低1分待つよう案内する（retry-after は読めない）', () => {
@@ -361,6 +376,32 @@ describe('tree の分類', () => {
 
   it('打ち切られた一覧はそうと分かるように返す', () => {
     expect(normalizeTree({ tree: [], truncated: true }, '')?.truncated).toBe(true);
+  });
+
+  it('recursive tree はネストした path を起点ディレクトリからの完全パスにする', () => {
+    const tree = normalizeRecursiveTree(
+      {
+        tree: [
+          { path: 'a', mode: '040000', type: 'tree', sha: SHA_A },
+          { path: 'a/ch1.md', mode: '100644', type: 'blob', sha: SHA_B, size: 12 },
+          { path: 'a/deep/ch2.txt', mode: '100644', type: 'blob', sha: SHA_C, size: 4 },
+          { path: '../escape.md', mode: '100644', type: 'blob', sha: SHA_A, size: 1 },
+        ],
+        truncated: false,
+      },
+      'chapters',
+    );
+
+    expect(tree?.entries.map((entry) => [entry.path, entry.status])).toEqual([
+      ['chapters/a', 'dir'],
+      ['chapters/a/ch1.md', 'importable'],
+      ['chapters/a/deep/ch2.txt', 'importable'],
+    ]);
+    expect(tree?.truncated).toBe(false);
+  });
+
+  it('recursive tree の truncated を保持する', () => {
+    expect(normalizeRecursiveTree({ tree: [], truncated: true }, '')?.truncated).toBe(true);
   });
 
   it('形の違う項目は落とす', () => {

@@ -1,4 +1,5 @@
 import { type JSX, useEffect, useRef } from 'react';
+import { useBackdropClose } from '../hooks/useBackdropClose';
 
 interface CellEditorProps {
   /** 何を編集しているかの見出し（例: 「3行目の置換先（A用）」）。 */
@@ -19,6 +20,7 @@ interface CellEditorProps {
  */
 export function CellEditor({ label, value, onChange, onClose }: CellEditorProps): JSX.Element {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const backdrop = useBackdropClose(dialogRef, () => onClose());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -29,7 +31,7 @@ export function CellEditor({ label, value, onChange, onClose }: CellEditorProps)
   }, []);
 
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: キーボードでの閉じる操作は <dialog> 標準の Escape（onCancel）が担う
+    // 背景のクリックで閉じる（useBackdropClose）。キーボードでは <dialog> 標準の Escape（onCancel）で閉じる
     <dialog
       ref={dialogRef}
       className="dialog dialog--cell"
@@ -38,9 +40,7 @@ export function CellEditor({ label, value, onChange, onClose }: CellEditorProps)
         event.preventDefault();
         onClose();
       }}
-      onClick={(event) => {
-        if (event.target === dialogRef.current) onClose();
-      }}
+      {...backdrop}
     >
       <div className="dialog__inner">
         <h2 className="dialog__title">{label}</h2>

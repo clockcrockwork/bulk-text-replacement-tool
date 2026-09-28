@@ -1,4 +1,5 @@
 import type { GitHubInputSource, InputText } from '../types';
+import { nameCollisionKey, outputFileName } from './fileName';
 import { revealUnsafeChars } from './revealText';
 
 /**
@@ -66,6 +67,87 @@ export function findSameSource(
 ): InputText[] {
   const key = sourceIdentity(source);
   return inputs.filter((input) => input.source && sourceIdentity(input.source) === key);
+}
+
+/** 更新先の候補になる既存の入力。 */
+export interface BatchUpdateTarget {
+  id: string;
+  label: string;
+  /** 入力の一覧での番号（1 始まり）。更新先が多いとき、番号で指定するのに使う。 */
+  position: number;
+  /** その入力を取り込んだときの blob。候補と同じなら、GitHub 側は前回から変わっていない。 */
+  blobSha: string;
+}
+
+export interface BatchSourceMatch {
+  path: string;
+  /** 候補（今回取得した内容）の blob。 */
+  blobSha: string;
+  /** 同じ取り込み元を持つ既存の入力。2件以上なら更新先を推測しない。 */
+  sameSource: ReadonlyArray<BatchUpdateTarget>;
+  /**
+   * 出力ファイル名が、別の取り込み元の入力（既存または同じ一括の中）とぶつかるか。
+   * 実際の出力名と同じ規則（`outputFileName` と `nameCollisionKey`）で比べる。
+   */
+  titleCollision: boolean;
+}
+
+/**
+ * 一括取り込みの候補それぞれについて、同じ取り込み元の入力と、ファイル名の衝突を調べる。
+ *
+ * 候補は数千件になり得るので、候補ごとに入力を全走査せず、先に索引を作って引く。
+ * `label` は入力の表示名（何番目の入力か、など画面の都合）を呼び出し側が決める。
+ */
+export function matchBatchSources(
+  inputs: readonly InputText[],
+  candidates: ReadonlyArray<{ title: string; source: GitHubInputSource }>,
+  label: (input: InputText, index: number) => string,
+): BatchSourceMatch[] {
+  const bySource = new Map<string, BatchUpdateTarget[]>();
+  /**
+   * 出力名の衝突キー → その入力の取り込み元（出自の無い入力は null）。
+   * タイトルの完全一致ではなく、実際の出力名の規則で比べる（`A.md` と `a.md`、`a?.md` と
+   * `a*.md` は出力では同じ名前になり、後の方に ` (2)` が付く）。
+   */
+  const byOutputName = new Map<string, Array<string | null>>();
+  const outputKey = (title: string, index: number): string =>
+    nameCollisionKey(outputFileName(title, index));
+  inputs.forEach((input, index) => {
+    const identity = input.source ? sourceIdentity(input.source) : null;
+    if (identity !== null) {
+      const list = bySource.get(identity) ?? [];
+      list.push({
+        id: input.id,
+        label: label(input, index),
+        position: index + 1,
+        blobSha: input.source?.blobSha ?? '',
+      });
+      bySource.set(identity, list);
+    }
+    const key = outputKey(input.title, index);
+    const owners = byOutputName.get(key) ?? [];
+    owners.push(identity);
+    byOutputName.set(key, owners);
+  });
+  const candidateKeys = candidates.map((candidate, index) =>
+    outputKey(candidate.title, inputs.length + index),
+  );
+  const batchNames = new Map<string, number>();
+  for (const key of candidateKeys) batchNames.set(key, (batchNames.get(key) ?? 0) + 1);
+
+  return candidates.map((candidate, index) => {
+    const identity = sourceIdentity(candidate.source);
+    const key = candidateKeys[index] ?? '';
+    const titleCollision =
+      (byOutputName.get(key) ?? []).some((other) => other !== identity) ||
+      (batchNames.get(key) ?? 0) > 1;
+    return {
+      path: candidate.source.path,
+      blobSha: candidate.source.blobSha,
+      sameSource: bySource.get(identity) ?? [],
+      titleCollision,
+    };
+  });
 }
 
 /** パスの末尾（ファイル名）。取り込んだ入力のタイトルの初期値に使う。 */

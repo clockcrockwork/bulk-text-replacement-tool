@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { GitHubCandidate } from '../lib/githubApi';
-import type { GitHubRepository, GitHubSnapshot } from '../types';
+import { isPathSelected, selectionMark } from '../lib/githubSelection';
+import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types';
 import {
   currentStep,
   type GitHubImportAction,
@@ -8,6 +9,7 @@ import {
   githubImportReducer,
   initialGitHubImportState,
   PAGE_LEFT_NOTICE,
+  rateLimitWaitMs,
 } from './githubImport';
 
 const SHA_A = 'a'.repeat(40);
@@ -51,6 +53,14 @@ function candidate(commitSha = SHA_A, repositoryId = REPO.id): GitHubCandidate {
     size: 6,
   };
 }
+
+const ENTRY: GitHubTreeEntry = {
+  name: 'ch1.md',
+  path: 'chapters/ch1.md',
+  sha: SHA_D,
+  status: 'importable',
+  size: 6,
+};
 
 function run(actions: GitHubImportAction[], from = initialGitHubImportState): GitHubImportState {
   return actions.reduce(githubImportReducer, from);
@@ -308,6 +318,240 @@ describe('ディレクトリの移動', () => {
   });
 });
 
+describe('複数選択', () => {
+  it('未展開フォルダの選択を移動しても保持し、snapshot を固定し直すと捨てる', () => {
+    const selected = githubImportReducer(PINNED, {
+      type: 'selection/set',
+      path: 'chapters',
+      selected: true,
+    });
+    expect(isPathSelected(selected.selection, 'chapters/deep/ch1.md')).toBe(true);
+
+    const inside = githubImportReducer(selected, {
+      type: 'dir/enter',
+      step: { path: 'other', treeSha: SHA_C },
+    });
+    expect(isPathSelected(inside.selection, 'chapters/deep/ch1.md')).toBe(true);
+
+    const repinned = githubImportReducer(inside, { type: 'snapshot/pinned', snapshot: MOVED });
+    expect(isPathSelected(repinned.selection, 'chapters/deep/ch1.md')).toBe(false);
+  });
+
+  it('親選択から子を外すと mixed になり、選び直すと配下を再選択する', () => {
+    let selected = githubImportReducer(PINNED, {
+      type: 'selection/set',
+      path: 'chapters',
+      selected: true,
+    });
+    selected = githubImportReducer(selected, {
+      type: 'selection/set',
+      path: 'chapters/drafts',
+      selected: false,
+    });
+    expect(selectionMark(selected.selection, 'chapters')).toBe('mixed');
+
+    selected = githubImportReducer(selected, {
+      type: 'selection/set',
+      path: 'chapters',
+      selected: true,
+    });
+    expect(selectionMark(selected.selection, 'chapters')).toBe('checked');
+    expect(isPathSelected(selected.selection, 'chapters/drafts/old.md')).toBe(true);
+  });
+
+  it('読み込んだ項目は場所を跨いで覚え、__proto__ のような名前もパスとして持つ', () => {
+    const entry: GitHubTreeEntry = {
+      name: '__proto__',
+      path: '__proto__',
+      sha: SHA_C,
+      status: 'dir',
+      size: null,
+    };
+    const loaded = githubImportReducer(PINNED, {
+      type: 'listing/loaded',
+      commitSha: SHA_A,
+      listing: { treeSha: SHA_B, path: '', entries: [entry], truncated: false },
+    });
+    expect(loaded.knownEntries.get('__proto__')).toEqual(entry);
+    expect(loaded.knownEntries.size).toBe(1);
+  });
+});
+
+describe('一括取り込みの段階', () => {
+  const SELECTED = githubImportReducer(PINNED, {
+    type: 'selection/set',
+    path: 'chapters',
+    selected: true,
+  });
+  const PLANNED = githubImportReducer(SELECTED, {
+    type: 'batch/planned',
+    commitSha: SHA_A,
+    selection: SELECTED.selection,
+    entries: [ENTRY],
+    excluded: [],
+  });
+
+  it('列挙の結果は、始めたときと同じ選択・同じコミットのときだけ計画にする', () => {
+    expect(PLANNED.batchPlan).toEqual({
+      entries: [ENTRY],
+      excluded: [],
+      selection: SELECTED.selection,
+    });
+    expect(PLANNED.busy).toBeNull();
+  });
+
+  it('列挙の途中で選択を変えていたら、遅れて返った一覧は捨てる', () => {
+    const changed = githubImportReducer(SELECTED, {
+      type: 'selection/set',
+      path: 'chapters/drafts',
+      selected: false,
+    });
+    expect(
+      githubImportReducer(changed, {
+        type: 'batch/planned',
+        commitSha: SHA_A,
+        selection: SELECTED.selection,
+        entries: [ENTRY],
+        excluded: [],
+      }),
+    ).toBe(changed);
+  });
+
+  it('列挙の途中で固定し直していたら、古いコミットの一覧は捨てる', () => {
+    expect(
+      githubImportReducer(SELECTED, {
+        type: 'batch/planned',
+        commitSha: SHA_C,
+        selection: SELECTED.selection,
+        entries: [ENTRY],
+        excluded: [],
+      }),
+    ).toBe(SELECTED);
+  });
+
+  it('計画を確かめたあとの取得結果だけを、確認画面の候補にする', () => {
+    const fetched = githubImportReducer(PLANNED, {
+      type: 'batch/set',
+      selection: SELECTED.selection,
+      candidates: [candidate()],
+    });
+    expect(fetched.batchCandidates).toHaveLength(1);
+    expect(fetched.batchPlan).toBeNull();
+  });
+
+  it('計画が無い（選択へ戻った）あとに届いた取得結果は捨てる', () => {
+    const back = githubImportReducer(PLANNED, { type: 'batch/clear' });
+    expect(back.batchPlan).toBeNull();
+    expect(
+      githubImportReducer(back, {
+        type: 'batch/set',
+        selection: SELECTED.selection,
+        candidates: [candidate()],
+      }),
+    ).toBe(back);
+  });
+
+  it('別の選択から作った取得結果は捨てる', () => {
+    expect(
+      githubImportReducer(PLANNED, {
+        type: 'batch/set',
+        selection: PINNED.selection,
+        candidates: [candidate()],
+      }),
+    ).toBe(PLANNED);
+  });
+
+  it('固定中と違うコミットやリポジトリの候補が混じっていたら、全体を捨てる', () => {
+    expect(
+      githubImportReducer(PLANNED, {
+        type: 'batch/set',
+        selection: SELECTED.selection,
+        candidates: [candidate(), candidate(SHA_C)],
+      }),
+    ).toBe(PLANNED);
+    expect(
+      githubImportReducer(PLANNED, {
+        type: 'batch/set',
+        selection: SELECTED.selection,
+        candidates: [candidate(SHA_A, OTHER_REPO.id)],
+      }),
+    ).toBe(PLANNED);
+  });
+
+  it('取得の途中で選択へ戻ると、待ち表示も片付ける（呼び出し側が取得を中断する）', () => {
+    const fetching = githubImportReducer(PLANNED, {
+      type: 'busy',
+      label: '選択したファイルを取得しています',
+    });
+    const back = githubImportReducer(fetching, { type: 'batch/clear' });
+    expect(back.batchPlan).toBeNull();
+    expect(back.busy).toBeNull();
+    // 選択は残す（選び直してから、もう一度確かめられる）。
+    expect(back.selection).toBe(SELECTED.selection);
+  });
+
+  it('選択を変えたり1ファイルの確認へ進んだりすると、計画は捨てる', () => {
+    expect(
+      githubImportReducer(PLANNED, { type: 'selection/set', path: 'x', selected: true }).batchPlan,
+    ).toBeNull();
+    expect(
+      githubImportReducer(PLANNED, { type: 'candidate/set', candidate: candidate() }).batchPlan,
+    ).toBeNull();
+  });
+
+  it('閉じても計画・取得済みの候補・決めた取り込み方法は残す（取り直させない）', () => {
+    const fetching = githubImportReducer(PLANNED, {
+      type: 'busy',
+      label: '選択したファイルを取得しています',
+    });
+    const closedWhileFetching = githubImportReducer(fetching, { type: 'close' });
+    expect(closedWhileFetching.batchPlan).toBe(PLANNED.batchPlan);
+    expect(closedWhileFetching.busy).toBeNull();
+
+    const fetched = githubImportReducer(PLANNED, {
+      type: 'batch/set',
+      selection: SELECTED.selection,
+      candidates: [candidate()],
+    });
+    const choices = new Map([[ENTRY.path, { action: 'add' as const }]]);
+    const decided = githubImportReducer(fetched, { type: 'batch/choose', choices });
+    expect(decided.batchChoices).toBe(choices);
+    const reopened = githubImportReducer(githubImportReducer(decided, { type: 'close' }), {
+      type: 'open',
+    });
+    expect(reopened.batchCandidates).toBe(decided.batchCandidates);
+    expect(reopened.batchChoices).toBe(choices);
+
+    // 選択へ戻れば、候補と一緒に決めた内容も捨てる。
+    expect(githubImportReducer(decided, { type: 'batch/clear' }).batchChoices.size).toBe(0);
+  });
+
+  it('取り消した一括は、同じスナップショットのあいだだけ確認画面へ決めた内容ごと戻す', () => {
+    const cleared = githubImportReducer(PINNED, { type: 'selection/clear' });
+    const choices = new Map([[ENTRY.path, { action: 'add' as const }]]);
+    const batch = { selection: SELECTED.selection, candidates: [candidate()], choices };
+    const restored = githubImportReducer(cleared, { type: 'batch/restore', batch });
+    expect(restored.batchCandidates).toBe(batch.candidates);
+    expect(restored.batchChoices).toBe(choices);
+    expect(restored.selection).toBe(SELECTED.selection);
+
+    // 別のコミットの候補や、別の一括を始めているときは戻さない（今の作業を上書きしない）。
+    const otherCommit = { ...batch, candidates: [candidate(SHA_C)] };
+    expect(githubImportReducer(cleared, { type: 'batch/restore', batch: otherCommit })).toBe(
+      cleared,
+    );
+    expect(githubImportReducer(PLANNED, { type: 'batch/restore', batch })).toBe(PLANNED);
+    expect(
+      githubImportReducer(cleared, { type: 'batch/restore', batch: { ...batch, candidates: [] } }),
+    ).toBe(cleared);
+  });
+
+  it('確認画面でないときに届いた決定は受け取らない', () => {
+    const choices = new Map([[ENTRY.path, { action: 'add' as const }]]);
+    expect(githubImportReducer(PLANNED, { type: 'batch/choose', choices })).toBe(PLANNED);
+  });
+});
+
 describe('知らせ', () => {
   it('出した直後だけ残り、次の操作で消える', () => {
     const informed = githubImportReducer(PINNED, { type: 'info', message: '最新です' });
@@ -315,5 +559,62 @@ describe('知らせ', () => {
     expect(githubImportReducer(informed, { type: 'busy', label: 'x' }).info).toBeNull();
     // 何も変わらない action では消さない。
     expect(githubImportReducer(informed, { type: 'dir/goTo', index: 0 }).info).toBe('最新です');
+  });
+});
+
+describe('rate limit の待ち', () => {
+  const limited = {
+    message: 'GitHub API の利用上限に達しました。',
+    recover: 'retry' as const,
+  };
+
+  it('解除時刻までは残り時間を返し、過ぎたら 0 にする', () => {
+    expect(rateLimitWaitMs(10_000, 4_000)).toBe(6_000);
+    expect(rateLimitWaitMs(10_000, 10_000)).toBe(0);
+    expect(rateLimitWaitMs(10_000, 12_000)).toBe(0);
+    expect(rateLimitWaitMs(null, 0)).toBe(0);
+  });
+
+  it('失敗の知らせとは別に持ち、知らせが消えても待ちは残る', () => {
+    const failed = githubImportReducer(PINNED, {
+      type: 'fail',
+      error: limited,
+      rateLimitedUntil: 10_000,
+    });
+    expect(failed.rateLimitedUntil).toBe(10_000);
+
+    const dismissed = githubImportReducer(failed, { type: 'error/dismiss' });
+    const reselected = githubImportReducer(dismissed, {
+      type: 'selection/set',
+      path: 'chapters',
+      selected: true,
+    });
+    const closed = githubImportReducer(reselected, { type: 'close' });
+    expect(closed.error).toBeNull();
+    expect(closed.rateLimitedUntil).toBe(10_000);
+  });
+
+  it('rate limit でない失敗は、待ちを変えない', () => {
+    const failed = githubImportReducer(PINNED, {
+      type: 'fail',
+      error: limited,
+      rateLimitedUntil: 10_000,
+    });
+    const other = githubImportReducer(failed, {
+      type: 'fail',
+      error: { message: '見つかりませんでした。', recover: 'retry' },
+    });
+    expect(other.rateLimitedUntil).toBe(10_000);
+  });
+
+  it('rate limit は利用者ごとなので、接続し直しても待ちは残る', () => {
+    const failed = githubImportReducer(PINNED, {
+      type: 'fail',
+      error: limited,
+      rateLimitedUntil: 10_000,
+    });
+    expect(githubImportReducer(failed, { type: 'disconnect', notice: null }).rateLimitedUntil).toBe(
+      10_000,
+    );
   });
 });

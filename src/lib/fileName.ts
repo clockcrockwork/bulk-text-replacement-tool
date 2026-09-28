@@ -83,8 +83,9 @@ export function sanitizeName(name: string, allowSlash: boolean): string {
  * NFD（`か` + 濁点）で来ることが多く、NFC の `が` と ZIP の中では別エントリになるが、
  * macOS（APFS）は正規化の差を無視して名前を比べるので、展開すると衝突して片方が失われ得る。
  * 揃えるのは比べるキーだけで、名前そのものは正規化しない（コードポイントの差も利用者の名前）。
+ * 重複の解消（`dedupeNames`）と、取り込み時の同名の警告で同じ規則を使う。
  */
-function collisionKey(name: string): string {
+export function nameCollisionKey(name: string): string {
   return name.toLowerCase().normalize('NFC');
 }
 
@@ -98,7 +99,7 @@ function collisionKey(name: string): string {
 export function dedupeNames(names: readonly string[]): string[] {
   const seen = new Map<string, number>();
   return names.map((name) => {
-    const key = collisionKey(name);
+    const key = nameCollisionKey(name);
     const count = seen.get(key);
     if (count === undefined) {
       seen.set(key, 1);
@@ -110,11 +111,11 @@ export function dedupeNames(names: readonly string[]): string[] {
     let next = count + 1;
     seen.set(key, next);
     let candidate = `${base} (${next})${ext}`;
-    while (seen.has(collisionKey(candidate))) {
+    while (seen.has(nameCollisionKey(candidate))) {
       next += 1;
       candidate = `${base} (${next})${ext}`;
     }
-    seen.set(collisionKey(candidate), 1);
+    seen.set(nameCollisionKey(candidate), 1);
     return candidate;
   });
 }
@@ -146,19 +147,23 @@ function hasGuaranteedExtension(name: string): boolean {
  * 変えるのはファイル名だけで、本文・ルール・変換結果の文字列には一切触らない。
  */
 export function resolveFileNames(titles: readonly string[]): string[] {
-  return dedupeNames(
-    titles.map((title, index) => {
-      // 区切りは階層ではなく名前の一部として残すが、`.` と `..` だけの断片は落とす。
-      // 先に `_` へ置き換えてしまうと `../../evil.txt` が `.._.._evil.txt` になり、
-      // 無害ではあるものの読めない名前が残る。
-      const flattened = (title ?? '')
-        .split('/')
-        .filter((segment) => segment !== '' && segment !== '.' && segment !== '..')
-        .join('_');
-      const cleaned = sanitizeName(flattened, false) || `text-${index + 1}.txt`;
-      return hasGuaranteedExtension(cleaned) ? cleaned : `${cleaned}.txt`;
-    }),
-  );
+  return dedupeNames(titles.map((title, index) => outputFileName(title, index)));
+}
+
+/**
+ * タイトル1件から、重複を解消する前の出力ファイル名を作る（規則は `resolveFileNames`）。
+ * `index` はタイトルが空になったときの仮の名前にだけ使う。
+ */
+export function outputFileName(title: string, index: number): string {
+  // 区切りは階層ではなく名前の一部として残すが、`.` と `..` だけの断片は落とす。
+  // 先に `_` へ置き換えてしまうと `../../evil.txt` が `.._.._evil.txt` になり、
+  // 無害ではあるものの読めない名前が残る。
+  const flattened = (title ?? '')
+    .split('/')
+    .filter((segment) => segment !== '' && segment !== '.' && segment !== '..')
+    .join('_');
+  const cleaned = sanitizeName(flattened, false) || `text-${index + 1}.txt`;
+  return hasGuaranteedExtension(cleaned) ? cleaned : `${cleaned}.txt`;
 }
 
 /** グループ名から ZIP 内のディレクトリ名を決める。 */

@@ -6,7 +6,8 @@ import type {
   GitHubTreeEntry,
 } from '../types';
 import { isAcceptedFile } from './inputFiles';
-import { baseName, isGitSha } from './inputSource';
+import { baseName, isGitSha, isRepositoryPath } from './inputSource';
+import { revealUnsafeChars } from './revealText';
 import { type DecodedText, decodeText } from './text';
 
 /**
@@ -161,6 +162,22 @@ interface HeaderReader {
 /** secondary rate limit を待つ目安。解除時刻が分からないときは最低1分待つよう案内されている。 */
 const SECONDARY_RATE_LIMIT_WAIT_MS = 60 * 1000;
 
+/** primary rate limit の窓。解除は長くてもこの長さの先に来る。 */
+const PRIMARY_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * `x-ratelimit-reset`（サーバーの時計での時刻）を、この端末の時計での待ち時間に直す。
+ *
+ * 端末の時計がずれていると、そのまま使った解除時刻もずれる。遅れていれば待ちが不当に
+ * 伸び（数十日ずれると、待ちを測るタイマーそのものが働かなくなる）、進んでいれば
+ * 解除前に再試行させてしまう。GitHub の窓の長さを超えて待たせず、解除時刻が過去に
+ * 見えても最低限（secondary と同じ1分）は待たせる。
+ */
+function rateLimitResetAt(resetSeconds: number, now: number): number {
+  const wait = resetSeconds * 1000 - now;
+  return now + Math.min(Math.max(wait, SECONDARY_RATE_LIMIT_WAIT_MS), PRIMARY_RATE_LIMIT_WINDOW_MS);
+}
+
 /** 失敗した応答の本文から `message` を取り出す。読めなければ空文字。 */
 export function readErrorMessage(body: string): string {
   try {
@@ -195,7 +212,7 @@ export function classifyErrorResponse(
       const reset = Number(headers.get('x-ratelimit-reset'));
       const resetAt =
         headers.get('x-ratelimit-reset') !== null && Number.isFinite(reset) && reset > 0
-          ? reset * 1000
+          ? rateLimitResetAt(reset, now)
           : now + SECONDARY_RATE_LIMIT_WAIT_MS;
       return { kind: 'rateLimited', status, resetAt };
     }
@@ -362,7 +379,7 @@ export function normalizeCommitTreeSha(value: unknown): string | null {
 }
 
 /** 名前順。ロケールに依らず毎回同じ並びにするため、コードポイントで比べる。 */
-function compareCodePoints(a: string, b: string): number {
+export function compareCodePoints(a: string, b: string): number {
   if (a === b) return 0;
   return a < b ? -1 : 1;
 }
@@ -411,30 +428,51 @@ export interface NormalizedTree {
   truncated: boolean;
 }
 
+function normalizeTreeResponse(
+  value: unknown,
+  dir: string,
+  recursive: boolean,
+): NormalizedTree | null {
+  if (!isRecord(value) || !Array.isArray(value.tree)) return null;
+  const entries = value.tree.flatMap((item): GitHubTreeEntry[] => {
+    if (!isRecord(item)) return [];
+    const { path: relativePath, mode, type, sha } = item;
+    if (!nonEmptyString(relativePath) || !isGitSha(sha)) return [];
+    if (!recursive && relativePath.includes('/')) return [];
+    if (recursive && !isRepositoryPath(relativePath)) return [];
+    if (typeof mode !== 'string' || typeof type !== 'string') return [];
+    const size =
+      typeof item.size === 'number' && Number.isSafeInteger(item.size) && item.size >= 0
+        ? item.size
+        : null;
+    const name = baseName(relativePath);
+    const status = classifyTreeEntry(mode, type, name, size);
+    if (!status) return [];
+    return [{ name, path: joinPath(dir, relativePath), sha, status, size }];
+  });
+  entries.sort(
+    (a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || compareCodePoints(a.path, b.path),
+  );
+  return { entries, truncated: value.truncated === true };
+}
+
 /**
  * `GET /repos/{owner}/{repo}/git/trees/{sha}`（非再帰）を1階層分の一覧にする。
  *
  * `dir` はこの tree が置かれているディレクトリのパス（ルートなら空文字）。
  */
 export function normalizeTree(value: unknown, dir: string): NormalizedTree | null {
-  if (!isRecord(value) || !Array.isArray(value.tree)) return null;
-  const entries = value.tree.flatMap((item): GitHubTreeEntry[] => {
-    if (!isRecord(item)) return [];
-    const { path: name, mode, type, sha } = item;
-    if (!nonEmptyString(name) || name.includes('/') || !isGitSha(sha)) return [];
-    if (typeof mode !== 'string' || typeof type !== 'string') return [];
-    const size =
-      typeof item.size === 'number' && Number.isSafeInteger(item.size) && item.size >= 0
-        ? item.size
-        : null;
-    const status = classifyTreeEntry(mode, type, name, size);
-    if (!status) return [];
-    return [{ name, path: joinPath(dir, name), sha, status, size }];
-  });
-  entries.sort(
-    (a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || compareCodePoints(a.name, b.name),
-  );
-  return { entries, truncated: value.truncated === true };
+  return normalizeTreeResponse(value, dir, false);
+}
+
+/**
+ * `GET /repos/{owner}/{repo}/git/trees/{sha}?recursive=1` を、同じ path 形式へ正規化する。
+ *
+ * GitHub の recursive 応答内の path は起点 tree からの相対パスなので、`dir` を前置きする。
+ * `truncated` が true の応答は呼び出し側で部分結果を捨て、非再帰 traversal へ fallback する。
+ */
+export function normalizeRecursiveTree(value: unknown, dir: string): NormalizedTree | null {
+  return normalizeTreeResponse(value, dir, true);
 }
 
 /** 選べない項目の理由。一覧に並べるときに添える。 */
@@ -501,15 +539,21 @@ export function buildCandidate(
   buffer: ArrayBuffer,
 ): CandidateResult {
   if (entry.status !== 'importable') {
-    return { kind: 'error', message: `${entry.path} は取り込めない種類のファイルです。` };
+    return {
+      kind: 'error',
+      message: `${revealUnsafeChars(entry.path)} は取り込めない種類のファイルです。`,
+    };
   }
   if (buffer.byteLength > MAX_BLOB_BYTES) {
-    return { kind: 'error', message: `${entry.path} は 100MB を超えるため取り込めません。` };
+    return {
+      kind: 'error',
+      message: `${revealUnsafeChars(entry.path)} は 100MB を超えるため取り込めません。`,
+    };
   }
   if (isLfsPointer(new Uint8Array(buffer))) {
     return {
       kind: 'error',
-      message: `${entry.path} は Git LFS のポインタです。本文は LFS 側にあり、この画面からは取り込めません。`,
+      message: `${revealUnsafeChars(entry.path)} は Git LFS のポインタです。本文は LFS 側にあり、この画面からは取り込めません。`,
     };
   }
   const { text, encoding } = decodeText(buffer);

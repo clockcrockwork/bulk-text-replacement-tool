@@ -7,6 +7,7 @@ import {
   formatSourceLabel,
   isGitSha,
   isRepositoryPath,
+  matchBatchSources,
   normalizeInputSource,
   shortSha,
   sourceIdentity,
@@ -125,5 +126,78 @@ describe('表示', () => {
       'octo/novel の fix⟨U+202E⟩（aaaaaaa）: a/invoice⟨U+202E⟩txt.md',
     );
     expect(source.path).toBe('a/invoice\u202etxt.md');
+  });
+});
+
+describe('matchBatchSources', () => {
+  const label = (item: InputText, index: number): string => `${index + 1}:${item.title}`;
+  const at = (path: string): GitHubInputSource => ({ ...SOURCE, path });
+  const candidate = (path: string) => ({ title: baseName(path), source: at(path) });
+
+  it('同じ取り込み元の入力をすべて挙げ、ラベルは呼び出し側の関数で作る', () => {
+    const inputs: InputText[] = [
+      { id: 'one', title: 'custom-one.md', text: '', source: at('chapters/ch1.md') },
+      {
+        id: 'two',
+        title: 'custom-two.md',
+        text: '',
+        source: { ...at('chapters/ch1.md'), commitSha: SHA_B },
+      },
+      { id: 'other', title: 'ch2.md', text: '', source: at('chapters/ch2.md') },
+    ];
+    const [match] = matchBatchSources(inputs, [candidate('chapters/ch1.md')], label);
+    expect(match).toEqual({
+      path: 'chapters/ch1.md',
+      blobSha: SHA_B,
+      sameSource: [
+        // 取り込んだときの blob を持つ（GitHub 側が変わったかの判定に使う）。
+        { id: 'one', label: '1:custom-one.md', position: 1, blobSha: SHA_B },
+        { id: 'two', label: '2:custom-two.md', position: 2, blobSha: SHA_B },
+      ],
+      titleCollision: false,
+    });
+  });
+
+  it('同じファイル名の、出自の無い入力や別の取り込み元の入力があれば衝突として知らせる', () => {
+    const local: InputText = { id: 'local', title: 'ch1.md', text: '' };
+    const elsewhere: InputText = { id: 'b', title: 'ch1.md', text: '', source: at('b/ch1.md') };
+    expect(matchBatchSources([local], [candidate('a/ch1.md')], label)[0]?.titleCollision).toBe(
+      true,
+    );
+    expect(matchBatchSources([elsewhere], [candidate('a/ch1.md')], label)[0]?.titleCollision).toBe(
+      true,
+    );
+  });
+
+  it('同じ取り込み元の入力と名前が同じなだけなら、衝突とはみなさない', () => {
+    const same: InputText = { id: 'a', title: 'ch1.md', text: '', source: at('a/ch1.md') };
+    expect(matchBatchSources([same], [candidate('a/ch1.md')], label)[0]?.titleCollision).toBe(
+      false,
+    );
+  });
+
+  it('同名かどうかは、実際の出力ファイル名の規則（大小文字・使えない記号）で比べる', () => {
+    // 出力では大文字小文字を区別せず、`?` や `*` は `_` に置き換わるので、どれも同じ名前になる。
+    const matches = matchBatchSources(
+      [],
+      [candidate('a/A.md'), candidate('b/a.md'), candidate('c/x?.md'), candidate('d/x*.md')],
+      label,
+    );
+    expect(matches.map((match) => match.titleCollision)).toEqual([true, true, true, true]);
+
+    const local: InputText = { id: 'local', title: 'CH1.MD', text: '' };
+    expect(matchBatchSources([local], [candidate('a/ch1.md')], label)[0]?.titleCollision).toBe(
+      true,
+    );
+  });
+
+  it('同じ一括の中で basename が重なる候補も、互いに衝突として知らせる', () => {
+    const matches = matchBatchSources(
+      [],
+      [candidate('a/ch1.md'), candidate('b/ch1.md'), candidate('c/ch2.md')],
+      label,
+    );
+    expect(matches.map((match) => match.titleCollision)).toEqual([true, true, false]);
+    expect(matches.every((match) => match.sameSource.length === 0)).toBe(true);
   });
 });

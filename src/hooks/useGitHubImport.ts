@@ -1,7 +1,9 @@
 import { useEffect, useReducer, useRef } from 'react';
 import { createGitHubClient, type GitHubClient, GitHubRequestError } from '../github/client';
+import { mapWithConcurrency } from '../lib/concurrency';
 import {
   buildCandidate,
+  compareCodePoints,
   describeGitHubError,
   type GitHubFetchStage,
   type NormalizedTree,
@@ -31,6 +33,14 @@ import {
   TOKEN_EXCHANGE_PATH,
   validateCallback,
 } from '../lib/githubAuth';
+import type { BatchChoices } from '../lib/githubBatchReview';
+import {
+  type GitHubTreeSelection,
+  hasAnySelection,
+  includedSelectionRoots,
+  isPathSelected,
+  selectionMayContainSelected,
+} from '../lib/githubSelection';
 import { shortSha } from '../lib/inputSource';
 import { revealUnsafeChars } from '../lib/revealText';
 import {
@@ -38,6 +48,8 @@ import {
   type GitHubImportState,
   githubImportReducer,
   initialGitHubImportState,
+  rateLimitWaitMs,
+  type SuspendedBatch,
   type TrailStep,
 } from '../state/githubImport';
 import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types';
@@ -46,6 +58,124 @@ import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types
 const APP_CONFIG: GitHubAppConfig | null = readGitHubAppConfig(import.meta.env);
 
 const EXPIRED_NOTICE = 'GitHub との接続の有効期限が切れました。もう一度接続してください。';
+
+const BLOB_CONCURRENCY = 4;
+
+export class GitHubBatchPreparationError extends Error {}
+
+class GitHubBatchRequestError extends Error {
+  constructor(
+    readonly path: string,
+    readonly requestError: GitHubRequestError,
+  ) {
+    super(`${path}: ${requestError.message}`);
+  }
+}
+
+async function loadBatchTree(
+  api: GitHubClient,
+  snapshot: GitHubSnapshot,
+  step: { path: string; treeSha: string },
+  signal: AbortSignal,
+  recursive: boolean,
+): Promise<NormalizedTree> {
+  try {
+    return recursive
+      ? await api.getTreeRecursive(snapshot, step.treeSha, step.path, signal)
+      : await api.getTree(snapshot, step.treeSha, step.path, signal);
+  } catch (error) {
+    if (error instanceof GitHubRequestError) {
+      throw new GitHubBatchRequestError(step.path || 'ルート', error);
+    }
+    throw error;
+  }
+}
+
+/** 選択範囲を列挙した結果。 */
+export interface SelectedEntries {
+  /** 取り込める（対応する）ファイル。パス順。 */
+  files: GitHubTreeEntry[];
+  /**
+   * 選択範囲にあったが取り込めない項目（非対応の形式・100MB 超・シンボリックリンク・
+   * サブモジュール）。開かずにフォルダごと選ぶと一覧で見えないので、計画画面で件数を出す。
+   */
+  excluded: GitHubTreeEntry[];
+}
+
+export async function enumerateSelectedEntries(
+  api: GitHubClient,
+  snapshot: GitHubSnapshot,
+  selection: GitHubTreeSelection,
+  knownEntries: ReadonlyMap<string, GitHubTreeEntry>,
+  signal: AbortSignal,
+): Promise<SelectedEntries> {
+  const queue: Array<{ path: string; treeSha: string }> = [];
+  const files: GitHubTreeEntry[] = [];
+  const excluded: GitHubTreeEntry[] = [];
+  const seen = new Set<string>();
+
+  const collect = (entries: readonly GitHubTreeEntry[]): void => {
+    for (const entry of entries) {
+      if (entry.status === 'dir' || seen.has(entry.path)) continue;
+      if (!isPathSelected(selection, entry.path)) continue;
+      seen.add(entry.path);
+      (entry.status === 'importable' ? files : excluded).push(entry);
+    }
+  };
+
+  for (const path of includedSelectionRoots(selection)) {
+    if (path === '') {
+      queue.push({ path: '', treeSha: snapshot.treeSha });
+      continue;
+    }
+    // 規則は画面に出たチェックボックスからしか作られないので、項目は読み込み済みのはず。
+    // 無ければ想定外の状態。黙って落とすのも、ルートから全体を辿り直して GitHub の
+    // 利用上限を使うのも避け、はっきり止める。
+    const entry = knownEntries.get(path);
+    if (!entry) {
+      throw new GitHubBatchPreparationError(
+        `${revealUnsafeChars(path)} の場所を確認できませんでした。フォルダを開き直して選び直してください。`,
+      );
+    }
+    if (entry.status === 'dir') {
+      queue.push({ path: entry.path, treeSha: entry.sha });
+    } else {
+      collect([entry]);
+    }
+  }
+
+  while (queue.length > 0) {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    const step = queue.shift();
+    if (!step) break;
+
+    // まず recursive API で subtree を1回で列挙する。partial response は絶対に使わない。
+    const recursiveTree = await loadBatchTree(api, snapshot, step, signal, true);
+    if (!recursiveTree.truncated) {
+      collect(recursiveTree.entries);
+      continue;
+    }
+
+    // GitHub が recursive 応答を打ち切ったら、その partial list は捨てる。
+    // 非再帰で1階層を取り直し、必要な子 tree だけを queue に積んで完全列挙する。
+    const directTree = await loadBatchTree(api, snapshot, step, signal, false);
+    if (directTree.truncated) {
+      throw new GitHubBatchPreparationError(
+        `${step.path ? revealUnsafeChars(step.path) : 'ルート'} の一覧が途中で打ち切られたため、安全に一括取り込みできません。`,
+      );
+    }
+    collect(directTree.entries);
+    for (const entry of directTree.entries) {
+      if (entry.status === 'dir' && selectionMayContainSelected(selection, entry.path)) {
+        queue.push({ path: entry.path, treeSha: entry.sha });
+      }
+    }
+  }
+
+  files.sort((a, b) => compareCodePoints(a.path, b.path));
+  excluded.sort((a, b) => compareCodePoints(a.path, b.path));
+  return { files, excluded };
+}
 
 const CANCELLED_NOTICE = 'GitHub への接続を取り消しました。';
 
@@ -82,9 +212,24 @@ export interface GitHubImport {
   enterDirectory: (entry: GitHubTreeEntry) => void;
   goTo: (index: number) => void;
   selectFile: (entry: GitHubTreeEntry) => void;
+  setSelected: (path: string, selected: boolean) => void;
   clearCandidate: () => void;
-  /** 取り込みを確定したあとに呼ぶ。ダイアログを閉じる。 */
+  /** 選択を列挙し、取得の前に件数・容量を確かめる画面へ進む。 */
+  prepareSelection: () => void;
+  /** 確かめた計画の全件を取得・検証する。 */
+  fetchBatch: () => void;
+  /** 確認画面で決めた取り込み方法を覚える。ダイアログを閉じても残る。 */
+  chooseBatch: (choices: BatchChoices) => void;
+  clearBatch: () => void;
+  /** 1件の取り込みを確定したあとに呼ぶ。ダイアログを閉じ、複数選択は残す。 */
   finish: () => void;
+  /** 一括取り込みを確定したあとに呼ぶ。選択を片付けてダイアログを閉じる。 */
+  finishBatch: () => void;
+  /**
+   * 確定した一括取り込みを「元に戻す」で取り消したとき、確認画面を決めた内容ごと開き直す。
+   * 取得済みの候補を使うので、GitHub へは要求しない。
+   */
+  restoreBatch: () => void;
 }
 
 /** 暗号学的な乱数を base64url にする。32 バイトで verifier は 43 文字になる。 */
@@ -131,6 +276,19 @@ export interface GitHubImportOptions {
  */
 export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport {
   const [state, dispatch] = useReducer(githubImportReducer, initialGitHubImportState);
+
+  // 一括取り込みの途中の内容（計画・取得した本文・決めた取り込み方法）はメモリにだけある。
+  // ダイアログを閉じても残すようにしたので、次に起きやすい取り違えは再読み込みやタブを閉じること。
+  // 対応するブラウザでは離れる前に確かめる（スマホでは出ないことがあるので、画面にも書いてある）。
+  const batchInProgress = state.batchPlan !== null || state.batchCandidates !== null;
+  useEffect(() => {
+    if (!batchInProgress) return;
+    const warn = (event: BeforeUnloadEvent): void => {
+      event.preventDefault();
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [batchInProgress]);
   const tokenRef = useRef<GitHubToken | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   /**
@@ -138,8 +296,16 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
    * キーはリポジトリ・tree SHA・パスの組（`loadListing` を参照）。
    */
   const treeCache = useRef(new Map<string, NormalizedTree>());
+  /**
+   * 一括取り込みで取れた blob（キーはリポジトリと blob SHA）。blob は内容で決まる SHA で
+   * 取るので中身は変わらない。1件の失敗や1件の選び直し、通信切れの再試行で、取れていた分まで
+   * 取り直して利用上限を使わないように持つ。固定し直し・切断・一括の確定で捨てる。
+   */
+  const blobCache = useRef(new Map<string, ArrayBuffer>());
   /** 直前に失敗した操作。「再試行」で同じことをやり直す。 */
   const lastTask = useRef<(() => void) | null>(null);
+  /** 直前に確定した一括取り込みの控え。「元に戻す」で確認画面へ戻すのに使う。 */
+  const suspendedBatch = useRef<SuspendedBatch | null>(null);
   const handledCallback = useRef(false);
   /**
    * ページを離れた（bfcache に入った）回数。トークン交換は中断口を共有しないので、
@@ -171,6 +337,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
     abortRef.current = null;
     tokenRef.current = null;
     treeCache.current.clear();
+    blobCache.current.clear();
     lastTask.current = null;
     dispatch({ type: 'disconnect', notice });
   };
@@ -201,6 +368,19 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
     if (!api) return;
     const again = (): void => run(stage, label, task, onDone, chooseBranch);
     lastTask.current = again;
+    // rate limit が解けるまでは、どの操作から来ても GitHub へ要求しない。止めるのが
+    // 「再試行」ボタンだけだと、計画画面の「取得」や開き直しから解除前に要求できてしまう。
+    const until = state.rateLimitedUntil;
+    if (until !== null && rateLimitWaitMs(until, Date.now()) > 0) {
+      dispatch({
+        type: 'fail',
+        error: {
+          message: describeGitHubError({ kind: 'rateLimited', status: null, resetAt: until }),
+          recover: 'retry',
+        },
+      });
+      return;
+    }
     const controller = begin();
     dispatch({ type: 'busy', label });
     task(api, controller.signal)
@@ -209,13 +389,25 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
-        if (error instanceof GitHubRequestError) {
-          if (error.detail.kind === 'unauthorized') {
-            dropConnection(describeGitHubError(error.detail));
+        if (error instanceof GitHubBatchPreparationError) {
+          dispatch({ type: 'fail', error: { message: error.message, recover: 'dismiss' } });
+          return;
+        }
+        const requestFailure =
+          error instanceof GitHubBatchRequestError
+            ? { detail: error.requestError.detail, prefix: `${revealUnsafeChars(error.path)}: ` }
+            : error instanceof GitHubRequestError
+              ? { detail: error.detail, prefix: '' }
+              : null;
+        if (requestFailure) {
+          const { detail, prefix } = requestFailure;
+          const message = `${prefix}${describeGitHubError(detail)}`;
+          if (detail.kind === 'unauthorized') {
+            dropConnection(message);
             return;
           }
           // やり直しても変わらない失敗に「再試行」を出さない（段階ごとに戻る先を決める）。
-          const recovery = recoveryFor(error.detail, stage);
+          const recovery = recoveryFor(detail, stage);
           if (recovery === 'chooseBranch' && chooseBranch) {
             chooseBranch();
             return;
@@ -223,9 +415,13 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
           dispatch({
             type: 'fail',
             error: {
-              message: describeGitHubError(error.detail),
+              message,
               recover: recovery === 'chooseBranch' ? 'retry' : recovery,
             },
+            // rate limit は解除時刻まで GitHub への要求そのものを止める（表示している時刻と一致させる）。
+            ...(detail.kind === 'rateLimited' && detail.resetAt !== null
+              ? { rateLimitedUntil: detail.resetAt }
+              : {}),
           });
           return;
         }
@@ -238,6 +434,91 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       .finally(() => {
         if (abortRef.current === controller) abortRef.current = null;
       });
+  };
+
+  const prepareSelection = (): void => {
+    const snapshot = state.snapshot;
+    const selection = state.selection;
+    if (!snapshot || !hasAnySelection(selection)) {
+      dispatch({
+        type: 'fail',
+        error: { message: '取り込むファイルまたはフォルダを選んでください。', recover: 'dismiss' },
+      });
+      return;
+    }
+    const knownEntries = state.knownEntries;
+
+    run(
+      'tree',
+      '選択範囲を確認しています（ファイルの本文はまだ取得していません）',
+      async (api, signal) => {
+        const found = await enumerateSelectedEntries(
+          api,
+          snapshot,
+          selection,
+          knownEntries,
+          signal,
+        );
+        if (found.files.length === 0) {
+          throw new GitHubBatchPreparationError(
+            found.excluded.length > 0
+              ? `選択範囲に取り込めるファイルがありません（対象外 ${found.excluded.length}件）。`
+              : '選択範囲に取り込めるファイルがありません。',
+          );
+        }
+        return found;
+      },
+      ({ files, excluded }) =>
+        dispatch({
+          type: 'batch/planned',
+          commitSha: snapshot.commitSha,
+          selection,
+          entries: files,
+          excluded,
+        }),
+    );
+  };
+
+  const fetchBatch = (): void => {
+    const snapshot = state.snapshot;
+    const plan = state.batchPlan;
+    if (!snapshot || !plan) return;
+
+    const total = plan.entries.length;
+    let done = 0;
+    run(
+      'blob',
+      '選択したファイルを取得しています',
+      (api, signal) =>
+        mapWithConcurrency(plan.entries, BLOB_CONCURRENCY, signal, async (entry, requestSignal) => {
+          const key = JSON.stringify([snapshot.repository.id, entry.sha]);
+          let buffer = blobCache.current.get(key);
+          if (!buffer) {
+            try {
+              buffer = await api.getBlob(snapshot, entry.sha, requestSignal);
+            } catch (error) {
+              if (error instanceof GitHubRequestError) {
+                throw new GitHubBatchRequestError(entry.path, error);
+              }
+              throw error;
+            }
+            blobCache.current.set(key, buffer);
+          }
+          const result = buildCandidate(snapshot, entry, buffer);
+          if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
+          // 件数が多いと長くかかるので、進んでいることを見せる。変わらない表示のままだと
+          // 固まったと思って閉じたりやり直したりしやすい。中断したあとは表示を戻さない。
+          done += 1;
+          if (!requestSignal.aborted) {
+            dispatch({
+              type: 'busy',
+              label: `選択したファイルを取得しています（${done} / ${total}）`,
+            });
+          }
+          return result.candidate;
+        }),
+      (candidates) => dispatch({ type: 'batch/set', selection: plan.selection, candidates }),
+    );
   };
 
   const loadRepositories = (): void => {
@@ -284,6 +565,9 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
   /**
    * ブランチの HEAD を解決して固定し、ルートを開く。
    *
+   * 固定し直すと選択は捨てる（古いコミットで選んだものを新しいコミットへ持ち越さない）ので、
+   * 捨てる選択があったときはそれも知らせる。黙って消えると、選び直しが要ることに気づけない。
+   *
    * `resume` は「最新に更新」で先頭が変わっていなかったときに開き直す場所。確認を始めた
    * 時点で一覧の取得が終わっていなかったなら、その取得は確認のために中断している
    * （`run` は前の取得を止める）。「最新です」とだけ言って戻ると、一覧の無い画面に残る。
@@ -291,9 +575,13 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
   const pin = (
     repository: GitHubRepository,
     ref: string,
-    previous?: GitHubSnapshot,
-    resume?: TrailStep,
+    options: {
+      previous?: GitHubSnapshot;
+      hadSelection?: boolean;
+      resume?: TrailStep | undefined;
+    } = {},
   ): void => {
+    const { previous, hadSelection = false, resume } = options;
     run(
       'snapshot',
       `${ref} の最新コミットを確認しています`,
@@ -305,11 +593,16 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
           else dispatch({ type: 'info', message });
           return;
         }
+        blobCache.current.clear();
         dispatch({ type: 'snapshot/pinned', snapshot });
+        const notes = [
+          previous ? `${shortSha(snapshot.commitSha)} に更新しました` : null,
+          hadSelection ? '選択は解除しました' : null,
+        ].filter((note) => note !== null);
         loadListing(
           snapshot,
           { path: '', treeSha: snapshot.treeSha },
-          previous ? `${shortSha(snapshot.commitSha)} に更新しました` : undefined,
+          notes.length > 0 ? notes.join('。') : undefined,
         );
       },
       // 一覧を取ったあとで既定ブランチが改名・削除されると、同じ ref は何度解決しても 404。
@@ -545,7 +838,11 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
     },
     connect,
     disconnect: () => dropConnection(null),
-    retry: () => lastTask.current?.(),
+    retry: () => {
+      // ボタンは解除時刻まで押せないが、手続きの側でも解除前の再試行を通さない。
+      if (rateLimitWaitMs(state.rateLimitedUntil, Date.now()) > 0) return;
+      lastTask.current?.();
+    },
     dismissError: () => dispatch({ type: 'error/dismiss' }),
     reloadRepositories: loadRepositories,
     selectRepository: (repository) => {
@@ -578,14 +875,20 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       if (state.snapshot && state.listing === null && step) loadListing(state.snapshot, step);
     },
     selectBranch: (ref) => {
-      if (state.repository) pin(state.repository, ref);
+      if (state.repository) {
+        pin(state.repository, ref, { hadSelection: hasAnySelection(state.selection) });
+      }
     },
     refreshSnapshot: () => {
       const snapshot = state.snapshot;
       if (!snapshot) return;
       // 一覧を待っている途中で押されたら、先頭が変わっていなくても今の場所を開き直す。
       const resume = state.listing === null ? currentStep(state) : undefined;
-      pin(snapshot.repository, snapshot.ref, snapshot, resume);
+      pin(snapshot.repository, snapshot.ref, {
+        previous: snapshot,
+        hadSelection: hasAnySelection(state.selection),
+        resume,
+      });
     },
     enterDirectory: (entry) => {
       const snapshot = state.snapshot;
@@ -601,6 +904,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       dispatch({ type: 'dir/goTo', index });
       loadListing(snapshot, step);
     },
+    setSelected: (path, selected) => dispatch({ type: 'selection/set', path, selected }),
     selectFile: (entry) => {
       const snapshot = state.snapshot;
       if (!snapshot || entry.status !== 'importable') return;
@@ -619,9 +923,43 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       );
     },
     clearCandidate: () => dispatch({ type: 'candidate/clear' }),
+    prepareSelection,
+    fetchBatch,
+    chooseBatch: (choices) => dispatch({ type: 'batch/choose', choices }),
+    clearBatch: () => {
+      // 取得の途中で戻ったら、残りの取得も止める（GitHub の利用上限を使い続けない）。
+      abortRef.current?.abort();
+      abortRef.current = null;
+      dispatch({ type: 'batch/clear' });
+    },
     finish: () => {
+      // 1件だけ確かめて取り込む操作は、複数選択を組んでいる途中でも自然に行う。
+      // 組んだ選択は黙って捨てず、開き直せば続けられるように残す。
       dispatch({ type: 'candidate/clear' });
       dispatch({ type: 'close' });
+    },
+    finishBatch: () => {
+      // 取り消されたら確認画面へ戻せるよう、候補と決めた内容を控えておく（取り直させない）。
+      suspendedBatch.current = state.batchCandidates
+        ? {
+            selection: state.selection,
+            candidates: state.batchCandidates,
+            choices: state.batchChoices,
+          }
+        : null;
+      // 一括で取り込んだ選択は役目を終えたので片付ける。取り消しで戻る確認画面は控えた候補を
+      // 使うので、blob の控えはもう要らない。
+      blobCache.current.clear();
+      dispatch({ type: 'batch/clear' });
+      dispatch({ type: 'selection/clear' });
+      dispatch({ type: 'close' });
+    },
+    restoreBatch: () => {
+      const batch = suspendedBatch.current;
+      suspendedBatch.current = null;
+      if (!batch) return;
+      dispatch({ type: 'batch/restore', batch });
+      dispatch({ type: 'open' });
     },
   };
 }
