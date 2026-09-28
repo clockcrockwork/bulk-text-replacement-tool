@@ -177,12 +177,15 @@ Normal browsing:
 - selection rules are keyed by repository path in a `Map`, never as plain-object keys, so names such as `__proto__` behave like any other path
 - while an enumeration or fetch is running, checkboxes are disabled; a result is accepted only if the selection is still the one it was computed from
 
-Show:
+Before enumeration, show:
 
-- selected supported-file count
-- known selected byte total
+- explicitly/known selected supported-file count
+- selected directory count that still requires enumeration
+- known selected byte total from loaded file entries
 - source path
 - branch and pinned commit identifier
+
+All summary counts are based on deduplicated repository paths; nested visible selections must not double-count a file already selected through an ancestor directory. After enumeration, the plan step replaces the provisional summary with the exact supported-file list/count and the known-size byte total plus unknown-size count before any blob fetch.
 
 Accessibility requirements:
 
@@ -190,6 +193,40 @@ Accessibility requirements:
 - screen-reader state for checkbox / mixed state (native `indeterminate`, not `aria-checked` on a native checkbox)
 - visible checkbox text is inside its `<label>`, so tapping the text toggles it and the accessible name matches the visible text
 - usable on mobile and Safari
+
+### Selection rule contract
+
+Selection is stored independently from which directories have already been expanded.
+
+Use path rules with two states:
+
+- `include`
+- `exclude`
+
+The repository default is `exclude`. For any path, the longest matching ancestor or exact rule wins. Ancestor matching is path-segment aware, never raw string-prefix matching: `docs → include` applies to `docs/ch1.md` but not to `docs2/ch1.md`. Root may be represented as an explicit empty-path rule.
+
+Examples:
+
+- selecting unopened directory `docs` adds `docs → include`
+- later expanding `docs` makes supported children selected without another network-dependent selection change
+- deselecting `docs/draft.md` adds `docs/draft.md → exclude`, so `docs` becomes mixed
+- selecting a child below an excluded directory adds a more-specific `include` rule
+
+When a file or directory is explicitly selected or deselected:
+
+1. remove every more-specific descendant rule under that path
+2. compare the requested state with the state inherited from the nearest remaining ancestor rule
+3. keep an exact rule only when it differs from the inherited state
+
+This keeps the rule set canonical. Clicking a mixed directory to select it means “select this whole directory”: descendant exclusions are cleared and the directory becomes checked. Unchecking a checked or mixed directory similarly clears descendant overrides and excludes the whole directory.
+
+Directory checkbox state:
+
+- **checked**: the path is effectively included and no descendant override makes it partial
+- **unchecked**: the path is effectively excluded and no descendant include makes it partial
+- **mixed**: a descendant rule differs from the directory's effective state
+
+A directory does not need to be expanded to be selected. The current-directory checkbox uses the same rule semantics, including at repository root.
 
 ### Supported entries
 
@@ -222,7 +259,15 @@ Known GitHub constraints that affect the implementation:
 
 Directory import may use recursive tree as a fast path only if `truncated === false`.
 
-If a recursive response is truncated, fall back to non-recursive subtree traversal. Never treat a truncated tree as a complete successful selection.
+For each effective include root:
+
+1. if it is a file, keep that file
+2. if it is a directory, request `?recursive=1` as a fast path
+3. if `truncated === false`, normalize descendants, apply include/exclude rules, and keep only supported files
+4. if `truncated === true`, discard that partial recursive result and traverse the directory non-recursively until complete
+5. deduplicate final files by repository path before blob fetch
+
+Never merge a truncated recursive result with fallback results and call it complete. The fallback traversal may use bounded concurrency, but it shares the same global GitHub-request concurrency budget as blob fetching and starts at 4 or fewer concurrent requests. More-specific exclusions and re-inclusions are applied after enumeration according to the longest-path-rule semantics.
 
 Paginated listings (installations, repositories, branches) follow `Link: rel="next"` up to a safety cap. If the cap is reached while a next page still exists, the listing fails explicitly instead of returning a partial list, so "does not exist" is never confused with "not loaded".
 
@@ -282,6 +327,8 @@ Before changing workspace state:
 7. show candidate summary
 8. require final confirmation when a decision is needed
 9. dispatch the workspace mutation only after all required candidates are ready
+
+The resolved multi-file plan is applied with **one workspace reducer action**, including untouched-sample cleanup when required. Preparation, incomplete conflict decisions, cancellation, and going back do not mutate the workspace.
 
 The plan step is always shown, even for a small selection. An unopened directory's contents are unknown until enumeration, so this is the first point where the real count and size can be shown, and fetching costs rate limit.
 
@@ -569,10 +616,16 @@ The Function reports its own upstream timeout as `504 upstream_timeout`, whether
 ### Unit
 
 - tree normalization
+- selection-rule longest-prefix resolution with path-segment boundaries (`docs` must not match `docs2`)
+- explicit directory select/deselect clears descendant overrides and canonicalizes the rule set
+- redundant exact-rule removal when inherited state already matches
+- repository/branch selection reset semantics and same-ref refresh revalidation
 - tri-state directory selection
 - select parent before expansion, then child inherits selection
 - deselect child → parent becomes mixed
+- excluded parent + re-included descendant
 - filter does not mutate selection
+- selected unopened directory reports pending enumeration instead of a fake exact count
 - extension filter
 - symlink / submodule exclusion
 - source identity
@@ -597,6 +650,15 @@ Cover:
 - authorized but not installed → install/configure → reconnect
 - repo → branch → pinned snapshot → tree → import
 - directory recursive selection
+- selected unopened directory inherits selection after expansion
+- selected directory with one deselected descendant
+- current-directory filter hides/restores rows without changing selection
+- recursive tree fast path
+- truncated recursive tree falls back and does not omit files
+- exact batch count/bytes appear after enumeration and before blob fetch
+- one blob failure leaves the whole workspace unchanged
+- unresolved same-source batch conflict disables final import
+- batch commit applies adds/updates in one visible workspace transition
 - same-source update/add/cancel
 - different-source same-basename import
 - OAuth state mismatch
@@ -644,9 +706,12 @@ With a real GitHub App:
 - [ ] branch selection pins a commit SHA
 - [ ] tree browsing and blob import use the same pinned SHA
 - [ ] directory/file checkbox selection works, including unopened directory inheritance
+- [ ] directory selection is independent of expansion/filter state and supports mixed descendants
 - [ ] only supported files are importable
 - [ ] recursive tree truncation cannot silently omit files
-- [ ] import is atomic
+- [ ] pre-enumeration summary distinguishes known files/bytes from unopened selected directories
+- [ ] exact count/bytes are shown after enumeration and before blob fetch/commit
+- [ ] import is atomic and the resolved batch is committed with one workspace reducer action
 - [ ] provenance is preserved
 - [ ] same basename from different sources is not treated as the same source
 - [ ] access token / refresh token / OAuth code are not persisted
