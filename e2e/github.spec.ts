@@ -625,6 +625,55 @@ test('同じbasenameの別パスを一括選択すると衝突を知らせ、別
   await expect(page.locator('.input-card__source')).toHaveText([/a\/ch1\.md/, /b\/ch1\.md/]);
 });
 
+
+test('NovelText 型の深いパスで同名 body.md が複数あり、同じ blob / tree SHA でもすべて別入力にする', async ({
+  page,
+}) => {
+  const shared = '同じ本文\\n';
+  const repository = novelRepository({
+    branches: {
+      main: [
+        { path: '作品/texts/CT-0001/body.md', content: shared },
+        { path: '作品/texts/CT-0002/body.md', content: shared },
+        { path: '作品/texts/CT-0003/body.md', content: '別の本文\\n' },
+      ],
+    },
+  });
+  const mock = new GitHubMock([repository]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await entry(page, '作品/').click();
+  await dialog(page).getByRole('checkbox', { name: 'texts フォルダを選択' }).check();
+  const batch = await fetchSelection(page, 3);
+
+  // basename は全部 body.md でも、取り込み元は path で別物。warning のみで確定を妨げない。
+  await expect(batch.locator('.github__batch-warning')).toHaveCount(3);
+  const commit = batch.getByRole('button', { name: '3ファイルを取り込む' });
+  await expect(commit).toBeEnabled();
+  await commit.click();
+
+  await expect(page.locator('.input-card')).toHaveCount(4);
+  await expect(page.locator('.input-card__source')).toHaveText([
+    /作品\/texts\/CT-0001\/body\.md/,
+    /作品\/texts\/CT-0002\/body\.md/,
+    /作品\/texts\/CT-0003\/body\.md/,
+  ]);
+
+  // 入力名が同じでも変換対象から落とさない。出力名だけ既存規則で安全に重複解決する。
+  await page.getByRole('button', { name: '変換' }).click();
+  await expect(page.locator('.file-card__path')).toHaveText([
+    'A用/local.md',
+    'A用/body.md',
+    'A用/body (2).md',
+    'A用/body (3).md',
+  ]);
+
+  // 同一内容の2件が同じ blob SHA になっている条件も固定する。
+  expect(GitHubMock.blobSha(shared)).toBe(GitHubMock.blobSha(shared));
+});
+
 test('未展開のフォルダを選ぶと、blob を取る前に正確な件数と容量を見せ、戻れば選択は残る', async ({
   page,
 }) => {
