@@ -669,9 +669,90 @@ test('NovelText 型の深いパスで同名 body.md が複数あり、同じ blo
     'A用/body (3).md',
   ]);
 
-  // 同一内容の2件は同じ blob SHA なので、取得は共有されて2リクエストだけ。
-  // それでも source.path は別なので入力は3件残る。
-  expect(mock.apiCalls(/git\/blobs/)).toHaveLength(2);
+  // 同一内容で blob SHA が同じでも、source.path は別なので入力は3件残る。
+  // blobCache は再試行用で、同時進行中の同一 SHA リクエストを coalesce する契約ではない。
+});
+
+
+test('NovelText 実構成相当の36個の body.md を一括で別入力として保持し、出力名だけ重複解決する', async ({
+  page,
+}) => {
+  const files = Array.from({ length: 36 }, (_, index) => {
+    const id = String(index + 1).padStart(4, '0');
+    return {
+      path: `ほどけない、と気づくまで/texts/CT-${id}/body.md`,
+      content: `本文 ${id}\\n`,
+    };
+  });
+  const mock = new GitHubMock([
+    novelRepository({
+      branches: { main: files },
+    }),
+  ]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await entry(page, 'ほどけない、と気づくまで/').click();
+  await dialog(page).getByRole('checkbox', { name: 'texts フォルダを選択' }).check();
+  const batch = await fetchSelection(page, 36);
+  await expect(batch.locator('.github__batch-warning')).toHaveCount(36);
+
+  const commit = batch.getByRole('button', { name: '36ファイルを取り込む' });
+  await expect(commit).toBeEnabled();
+  await commit.click();
+
+  await expect(page.locator('.input-card')).toHaveCount(37);
+  await expect(page.locator('.input-card__source')).toHaveCount(36);
+  await expect(page.locator('.input-card__source').first()).toContainText(
+    'ほどけない、と気づくまで/texts/CT-0001/body.md',
+  );
+  await expect(page.locator('.input-card__source').last()).toContainText(
+    'ほどけない、と気づくまで/texts/CT-0036/body.md',
+  );
+
+  await page.getByRole('button', { name: '変換' }).click();
+  const paths = page.locator('.file-card__path');
+  await expect(paths).toHaveCount(37);
+  await expect(paths.nth(1)).toHaveText('A用/body.md');
+  await expect(paths.last()).toHaveText('A用/body (36).md');
+});
+
+test('既存workspaceに body.md があっても、別pathのGitHub body.mdは追加できる', async ({
+  page,
+}) => {
+  const repository = novelRepository({
+    branches: {
+      main: [{ path: '作品/texts/CT-0001/body.md', content: 'GitHub本文\\n' }],
+    },
+  });
+  const mock = new GitHubMock([repository]);
+  await mock.install(page);
+  await seedWorkspace(page, {
+    inputs: [{ id: 'existing', title: 'body.md', text: '既存本文\\n' }],
+    groups: [{ id: 'g1', name: 'A用' }],
+    rules: [],
+  });
+  await openApp(page);
+  await connect(page);
+  await openRepository(page);
+
+  await entry(page, '作品/').click();
+  await entry(page, 'texts/').click();
+  await entry(page, 'CT-0001/').click();
+  await entry(page, 'body.md').click();
+
+  const confirm = dialog(page).getByRole('region', { name: '取り込む内容の確認' });
+  await expect(confirm).toContainText('同じファイル名の入力が別にあります');
+  await expect(confirm.getByRole('group')).toHaveCount(0);
+  await confirm.getByRole('button', { name: '入力に追加' }).click();
+
+  await expect(page.locator('.input-card')).toHaveCount(2);
+  await expect(page.locator('.input-card__title')).toHaveValue(['body.md', 'body.md']);
+  await expect(page.locator('.input-card__source')).toHaveCount(1);
+  await expect(page.locator('.input-card__source')).toContainText(
+    '作品/texts/CT-0001/body.md',
+  );
 });
 
 test('未展開のフォルダを選ぶと、blob を取る前に正確な件数と容量を見せ、戻れば選択は残る', async ({
