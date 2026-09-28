@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { createGitHubClient, GitHubRequestError, MAX_PAGES } from './client';
+import {
+  createGitHubClient,
+  GitHubBlobTooLargeError,
+  GitHubRequestError,
+  MAX_PAGES,
+} from './client';
 
 /**
  * 通信層のうち、ページ送りと送るヘッダだけをここで見る。画面の流れはモックした GitHub
@@ -83,6 +88,88 @@ describe('送るヘッダ', () => {
     expect(calls[0]?.headers).toEqual({
       Accept: 'application/vnd.github+json',
       Authorization: 'Bearer ghu_x',
+    });
+  });
+});
+
+describe('blob の上限', () => {
+  const SNAPSHOT = {
+    repository: REPO,
+    ref: 'main',
+    commitSha: 'a'.repeat(40),
+    treeSha: 'b'.repeat(40),
+  };
+  const SHA = 'c'.repeat(40);
+
+  /** `chunks` 個の `chunkSize` バイトを流す本文。読まれた回数と取り消しを記録する。 */
+  function streamed(chunkSize: number, chunks: number) {
+    const log = { pulled: 0, cancelled: false };
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (log.pulled >= chunks) {
+          controller.close();
+          return;
+        }
+        log.pulled += 1;
+        controller.enqueue(new Uint8Array(chunkSize).fill(log.pulled));
+      },
+      cancel() {
+        log.cancelled = true;
+      },
+    });
+    return { stream, log };
+  }
+
+  function blobFetch(body: BodyInit, headers: Record<string, string> = {}) {
+    return (async () => new Response(body, { status: 200, headers })) as typeof fetch;
+  }
+
+  const getBlob = (fetchImpl: typeof fetch, maxBytes: number) =>
+    createGitHubClient('t', fetchImpl).getBlob(
+      SNAPSHOT,
+      SHA,
+      new AbortController().signal,
+      maxBytes,
+    );
+
+  it('上限ちょうどまでは、分けて届いた本文をつないで返す', async () => {
+    const { stream } = streamed(4, 3);
+    const buffer = await getBlob(blobFetch(stream), 12);
+    expect([...new Uint8Array(buffer)]).toEqual([1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]);
+  });
+
+  it('大きさが分からなくても、読みながら数えて上限を超えた時点でやめる', async () => {
+    const { stream, log } = streamed(4, 1000);
+    await expect(getBlob(blobFetch(stream), 10)).rejects.toBeInstanceOf(GitHubBlobTooLargeError);
+    // 上限を超えた3つ目で取り消し、残りは受け取らない。
+    expect(log.cancelled).toBe(true);
+    expect(log.pulled).toBeLessThan(10);
+  });
+
+  it('Content-Length が上限を超えていれば、本文を読まずに断る', async () => {
+    const { stream, log } = streamed(4, 1000);
+    await expect(getBlob(blobFetch(stream, { 'content-length': '11' }), 10)).rejects.toBeInstanceOf(
+      GitHubBlobTooLargeError,
+    );
+    expect(log.cancelled).toBe(true);
+    expect(log.pulled).toBeLessThanOrEqual(1);
+  });
+
+  it('Content-Length が上限内でも信用せず、実際の長さで断る（圧縮されていれば展開前の長さ）', async () => {
+    const { stream } = streamed(4, 5);
+    await expect(getBlob(blobFetch(stream, { 'content-length': '8' }), 10)).rejects.toBeInstanceOf(
+      GitHubBlobTooLargeError,
+    );
+  });
+
+  it('本文の途中で切れたら、通信の失敗として分類する', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError('network'));
+      },
+    });
+    await expect(getBlob(blobFetch(stream), 10)).rejects.toMatchObject({
+      detail: { kind: 'network' },
     });
   });
 });

@@ -217,6 +217,12 @@ export function initWorkspace(): WorkspaceState {
 }
 
 /** 変換結果が現在の入力と一致しているか判定するための指紋。 */
+/** 永続化する範囲だけを取り出す（localStorage に書く形）。 */
+export function toPersisted(state: WorkspaceState): PersistedWorkspace {
+  const { inputs, groups, rules, theme, isSample } = state;
+  return { inputs, groups, rules, theme, isSample };
+}
+
 export function workspaceSignature(state: WorkspaceState): string {
   return JSON.stringify([
     state.inputs.map((input) => [input.title, input.text]),

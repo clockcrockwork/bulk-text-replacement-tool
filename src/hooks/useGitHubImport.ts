@@ -1,10 +1,17 @@
 import { useEffect, useReducer, useRef } from 'react';
-import { createGitHubClient, type GitHubClient, GitHubRequestError } from '../github/client';
+import {
+  createGitHubClient,
+  GitHubBlobTooLargeError,
+  type GitHubClient,
+  GitHubRequestError,
+} from '../github/client';
 import { mapWithConcurrency } from '../lib/concurrency';
 import {
+  blobTooLargeMessage,
   buildCandidate,
   compareCodePoints,
   describeGitHubError,
+  type GitHubCandidate,
   type GitHubFetchStage,
   type NormalizedTree,
   orderBranches,
@@ -41,6 +48,11 @@ import {
   isPathSelected,
   selectionMayContainSelected,
 } from '../lib/githubSelection';
+import {
+  describeImportTotalTooLarge,
+  MAX_IMPORT_TOTAL_BYTES,
+  MAX_INPUT_BYTES,
+} from '../lib/inputLimits';
 import { shortSha } from '../lib/inputSource';
 import { revealUnsafeChars } from '../lib/revealText';
 import {
@@ -61,6 +73,10 @@ const EXPIRED_NOTICE = 'GitHub との接続の有効期限が切れました。�
 
 const BLOB_CONCURRENCY = 4;
 
+/**
+ * やり直しても結果が変わらない失敗（「再試行」を出さずに閉じてもらう）。一括の準備で
+ * 使い始めたが、1件の取得で上限を超えたときも同じ扱いにする。
+ */
 export class GitHubBatchPreparationError extends Error {}
 
 class GitHubBatchRequestError extends Error {
@@ -96,7 +112,7 @@ export interface SelectedEntries {
   /** 取り込める（対応する）ファイル。パス順。 */
   files: GitHubTreeEntry[];
   /**
-   * 選択範囲にあったが取り込めない項目（非対応の形式・100MB 超・シンボリックリンク・
+   * 選択範囲にあったが取り込めない項目（非対応の形式・上限超え・シンボリックリンク・
    * サブモジュール）。開かずにフォルダごと選ぶと一覧で見えないので、計画画面で件数を出す。
    */
   excluded: GitHubTreeEntry[];
@@ -175,6 +191,73 @@ export async function enumerateSelectedEntries(
   files.sort((a, b) => compareCodePoints(a.path, b.path));
   excluded.sort((a, b) => compareCodePoints(a.path, b.path));
   return { files, excluded };
+}
+
+/**
+ * 1件の blob を上限付きで取る。上限を超えたら、どのファイルかを添えて「再試行」の無い
+ * 失敗にする（何度取っても大きさは変わらない）。
+ */
+async function getBlobWithinLimit(
+  api: GitHubClient,
+  snapshot: GitHubSnapshot,
+  entry: GitHubTreeEntry,
+  signal: AbortSignal,
+): Promise<ArrayBuffer> {
+  try {
+    return await api.getBlob(snapshot, entry.sha, signal, MAX_INPUT_BYTES);
+  } catch (error) {
+    if (error instanceof GitHubBlobTooLargeError) {
+      throw new GitHubBatchPreparationError(blobTooLargeMessage(entry.path));
+    }
+    throw error;
+  }
+}
+
+/**
+ * 計画した全件の blob を取り、候補にする。1件でも失敗したら全体を失敗にする。
+ *
+ * 取れた分の合計が1回の上限（`MAX_IMPORT_TOTAL_BYTES`）を超えたら、その時点で止める。
+ * 大きさの分かる分は計画の画面で断っているが、tree が大きさを返さない項目は取って
+ * みるまで分からない。1件ずつの上限だけでは、上限以下のファイルを大量に選べば
+ * 同じ量を一度に読めてしまう。
+ *
+ * `cache` は取り直しを避けるための控え（キーはリポジトリと blob SHA）。控えから使った
+ * 分も合計に数える（今回の取り込みで読み込む量なので）。
+ */
+export async function fetchBatchCandidates(
+  api: GitHubClient,
+  snapshot: GitHubSnapshot,
+  entries: readonly GitHubTreeEntry[],
+  cache: Map<string, ArrayBuffer>,
+  signal: AbortSignal,
+  onProgress: (done: number, total: number) => void,
+): Promise<GitHubCandidate[]> {
+  let done = 0;
+  let fetchedBytes = 0;
+  return mapWithConcurrency(entries, BLOB_CONCURRENCY, signal, async (entry, requestSignal) => {
+    const key = JSON.stringify([snapshot.repository.id, entry.sha]);
+    let buffer = cache.get(key);
+    if (!buffer) {
+      try {
+        buffer = await getBlobWithinLimit(api, snapshot, entry, requestSignal);
+      } catch (error) {
+        if (error instanceof GitHubRequestError) {
+          throw new GitHubBatchRequestError(entry.path, error);
+        }
+        throw error;
+      }
+      cache.set(key, buffer);
+    }
+    fetchedBytes += buffer.byteLength;
+    if (fetchedBytes > MAX_IMPORT_TOTAL_BYTES) {
+      throw new GitHubBatchPreparationError(describeImportTotalTooLarge());
+    }
+    const result = buildCandidate(snapshot, entry, buffer);
+    if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
+    done += 1;
+    if (!requestSignal.aborted) onProgress(done, entries.length);
+    return result.candidate;
+  });
 }
 
 const CANCELLED_NOTICE = 'GitHub への接続を取り消しました。';
@@ -484,39 +567,24 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
     const plan = state.batchPlan;
     if (!snapshot || !plan) return;
 
-    const total = plan.entries.length;
-    let done = 0;
     run(
       'blob',
       '選択したファイルを取得しています',
       (api, signal) =>
-        mapWithConcurrency(plan.entries, BLOB_CONCURRENCY, signal, async (entry, requestSignal) => {
-          const key = JSON.stringify([snapshot.repository.id, entry.sha]);
-          let buffer = blobCache.current.get(key);
-          if (!buffer) {
-            try {
-              buffer = await api.getBlob(snapshot, entry.sha, requestSignal);
-            } catch (error) {
-              if (error instanceof GitHubRequestError) {
-                throw new GitHubBatchRequestError(entry.path, error);
-              }
-              throw error;
-            }
-            blobCache.current.set(key, buffer);
-          }
-          const result = buildCandidate(snapshot, entry, buffer);
-          if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
+        fetchBatchCandidates(
+          api,
+          snapshot,
+          plan.entries,
+          blobCache.current,
+          signal,
           // 件数が多いと長くかかるので、進んでいることを見せる。変わらない表示のままだと
           // 固まったと思って閉じたりやり直したりしやすい。中断したあとは表示を戻さない。
-          done += 1;
-          if (!requestSignal.aborted) {
+          (done, total) =>
             dispatch({
               type: 'busy',
               label: `選択したファイルを取得しています（${done} / ${total}）`,
-            });
-          }
-          return result.candidate;
-        }),
+            }),
+        ),
       (candidates) => dispatch({ type: 'batch/set', selection: plan.selection, candidates }),
     );
   };
@@ -911,7 +979,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       run(
         'blob',
         `${entry.name} を取得しています`,
-        (api, signal) => api.getBlob(snapshot, entry.sha, signal),
+        (api, signal) => getBlobWithinLimit(api, snapshot, entry, signal),
         (buffer) => {
           const result = buildCandidate(snapshot, entry, buffer);
           if (result.kind === 'error') {

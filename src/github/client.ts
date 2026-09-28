@@ -15,6 +15,7 @@ import {
   normalizeRepositories,
   normalizeTree,
   PER_PAGE,
+  parseContentLength,
   parseNextLink,
   readErrorMessage,
 } from '../lib/githubApi';
@@ -28,6 +29,18 @@ import type { GitHubRepository, GitHubSnapshot } from '../types';
  * 任せ、ここは送ることと失敗の分類だけを持つ。副作用があるのでユニットテストの
  * 計測対象から外し、画面の流れは E2E（モックした GitHub）で確かめる。
  */
+
+/**
+ * blob が上限（`getBlob` の `maxBytes`）を超えていた。上限を超えた時点で読むのをやめて
+ * 投げるので、本文は手元に残らない。どのファイルかは呼び出し側が知っているので、
+ * 文言も呼び出し側で作る（`blobTooLargeMessage`）。
+ */
+export class GitHubBlobTooLargeError extends Error {
+  constructor(readonly maxBytes: number) {
+    super(`GitHub blob: larger than ${maxBytes} bytes`);
+    this.name = 'GitHubBlobTooLargeError';
+  }
+}
 
 /** 分類済みの失敗。呼び出し側は `error.kind` で分岐する。 */
 export class GitHubRequestError extends Error {
@@ -75,7 +88,59 @@ export interface GitHubClient {
     dir: string,
     signal: AbortSignal,
   ): Promise<NormalizedTree>;
-  getBlob(snapshot: GitHubSnapshot, blobSha: string, signal: AbortSignal): Promise<ArrayBuffer>;
+  /**
+   * blob の本文。`maxBytes` を超えたら `GitHubBlobTooLargeError`。
+   *
+   * tree が大きさを返さない項目（`size === null`）があるので、一覧で断れなかった分も
+   * ここで止める。全部受け取ってから断ると、上限の何倍もの本文をメモリに載せてしまう。
+   */
+  getBlob(
+    snapshot: GitHubSnapshot,
+    blobSha: string,
+    signal: AbortSignal,
+    maxBytes: number,
+  ): Promise<ArrayBuffer>;
+}
+
+/**
+ * 本文を読みながら数え、`maxBytes` を超えた時点で読むのをやめる。
+ *
+ * `Content-Length` が上限を超えていれば読まずに断る。上限内でも信用はしない
+ * （圧縮されていれば展開前の長さで、無いこともある）。
+ */
+async function readBodyWithLimit(response: Response, maxBytes: number): Promise<ArrayBuffer> {
+  const declared = parseContentLength(response.headers.get('content-length'));
+  if (declared !== null && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    throw new GitHubBlobTooLargeError(maxBytes);
+  }
+  const reader = response.body?.getReader();
+  if (!reader) {
+    // 本文をストリームで読めない実装。読み切ってから確かめるしかない。
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength > maxBytes) throw new GitHubBlobTooLargeError(maxBytes);
+    return buffer;
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      // 残りは受け取らない（接続ごと打ち切る）。
+      await reader.cancel().catch(() => {});
+      throw new GitHubBlobTooLargeError(maxBytes);
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes.buffer;
 }
 
 function invalidResponse(): GitHubRequestError {
@@ -201,13 +266,13 @@ export function createGitHubClient(
       return tree;
     },
 
-    async getBlob(snapshot, blobSha, signal) {
+    async getBlob(snapshot, blobSha, signal, maxBytes) {
       const url = `${GITHUB_API_ORIGIN}${repoPath(snapshot.repository)}/git/blobs/${blobSha}`;
       const response = await request(url, RAW_ACCEPT, signal);
       try {
-        return await response.arrayBuffer();
+        return await readBodyWithLimit(response, maxBytes);
       } catch (error) {
-        if (signal.aborted) throw error;
+        if (signal.aborted || error instanceof GitHubBlobTooLargeError) throw error;
         throw new GitHubRequestError({ kind: 'network', status: null, resetAt: null });
       }
     },

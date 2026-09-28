@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { GitHubClient } from '../github/client';
+import { GitHubBlobTooLargeError, type GitHubClient } from '../github/client';
 import { emptyTreeSelection, setTreeSelection } from '../lib/githubSelection';
+import { MAX_IMPORT_TOTAL_BYTES, MAX_INPUT_BYTES } from '../lib/inputLimits';
 import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types';
-import { enumerateSelectedEntries, GitHubBatchPreparationError } from './useGitHubImport';
+import {
+  enumerateSelectedEntries,
+  fetchBatchCandidates,
+  GitHubBatchPreparationError,
+} from './useGitHubImport';
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
@@ -237,5 +242,87 @@ describe('enumerateSelectedEntries', () => {
     await expect(
       enumerateSelectedEntries(api, SNAPSHOT, selection, new Map(), controller.signal),
     ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
+
+describe('fetchBatchCandidates', () => {
+  /** パスごとに決まった大きさの本文を返す。要求された上限と回数を記録する。 */
+  function blobs(sizes: Record<string, number>) {
+    const requested: { sha: string; maxBytes: number }[] = [];
+    const api = client({
+      getBlob: async (_snapshot, sha, _signal, maxBytes) => {
+        requested.push({ sha, maxBytes });
+        const size = sizes[sha] ?? 0;
+        if (size > maxBytes) throw new GitHubBlobTooLargeError(maxBytes);
+        return new ArrayBuffer(size);
+      },
+    });
+    return { api, requested };
+  }
+
+  const at = (path: string, sha: string): GitHubTreeEntry => ({
+    ...entry(path, 'importable', sha),
+    size: null,
+  });
+
+  it('1件ずつ上限付きで取り、全件を候補にする', async () => {
+    const { api, requested } = blobs({ [SHA_A]: 3, [SHA_B]: 4 });
+    const progress: string[] = [];
+    const candidates = await fetchBatchCandidates(
+      api,
+      SNAPSHOT,
+      [at('a.md', SHA_A), at('b.md', SHA_B)],
+      new Map(),
+      new AbortController().signal,
+      (done, total) => progress.push(`${done}/${total}`),
+    );
+    expect(candidates.map((candidate) => candidate.size)).toEqual([3, 4]);
+    expect(requested.every(({ maxBytes }) => maxBytes === MAX_INPUT_BYTES)).toBe(true);
+    expect(progress).toEqual(['1/2', '2/2']);
+  });
+
+  it('1件が上限を超えたら、そのファイルを名指しして再試行の無い失敗にする', async () => {
+    const { api } = blobs({ [SHA_A]: MAX_INPUT_BYTES + 1 });
+    const result = fetchBatchCandidates(
+      api,
+      SNAPSHOT,
+      [at('big/huge.md', SHA_A)],
+      new Map(),
+      new AbortController().signal,
+      () => {},
+    );
+    await expect(result).rejects.toBeInstanceOf(GitHubBatchPreparationError);
+    await expect(result).rejects.toThrow('big/huge.md は 5MB を超えるため取り込めません。');
+  });
+
+  it('1件ずつは上限内でも、合計が1回の上限を超えたら止める（大きさ不明の項目）', async () => {
+    const half = MAX_IMPORT_TOTAL_BYTES / 2;
+    const { api } = blobs({ [SHA_A]: half, [SHA_B]: half, [SHA_C]: 1 });
+    const result = fetchBatchCandidates(
+      api,
+      SNAPSHOT,
+      [at('a.md', SHA_A), at('b.md', SHA_B), at('c.md', SHA_C)],
+      new Map(),
+      new AbortController().signal,
+      () => {},
+    );
+    await expect(result).rejects.toThrow('合計が 5MB を超える');
+  });
+
+  it('控えから使った分も合計に数え、取り直さない', async () => {
+    const { api, requested } = blobs({ [SHA_B]: 1 });
+    const cache = new Map([
+      [JSON.stringify([REPOSITORY.id, SHA_A]), new ArrayBuffer(MAX_IMPORT_TOTAL_BYTES)],
+    ]);
+    const result = fetchBatchCandidates(
+      api,
+      SNAPSHOT,
+      [at('a.md', SHA_A), at('b.md', SHA_B)],
+      cache,
+      new AbortController().signal,
+      () => {},
+    );
+    await expect(result).rejects.toThrow('合計が 5MB を超える');
+    expect(requested.map(({ sha }) => sha)).toEqual([SHA_B]);
   });
 });

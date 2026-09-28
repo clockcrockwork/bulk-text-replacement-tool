@@ -6,6 +6,7 @@ import type {
   GitHubTreeEntry,
 } from '../types';
 import { isAcceptedFile } from './inputFiles';
+import { formatLimit, MAX_INPUT_BYTES } from './inputLimits';
 import { baseName, isGitSha, isRepositoryPath } from './inputSource';
 import { revealUnsafeChars } from './revealText';
 import { type DecodedText, decodeText } from './text';
@@ -82,9 +83,6 @@ export const GITHUB_FETCH_INIT = {
   credentials: 'omit',
   referrerPolicy: 'no-referrer',
 } as const satisfies RequestInit;
-
-/** Git blob API が扱える上限。これを超えるファイルは取得を試みない。 */
-export const MAX_BLOB_BYTES = 100 * 1024 * 1024;
 
 /** 1回で取れる件数の上限。ページ数を減らして rate limit を節約する。 */
 export const PER_PAGE = 100;
@@ -406,7 +404,9 @@ export function classifyTreeEntry(
   if (type === 'tree') return 'dir';
   if (type !== 'blob') return null;
   if (!isAcceptedFile(name)) return 'unsupported';
-  if (size !== null && size > MAX_BLOB_BYTES) return 'tooLarge';
+  // 上限はローカルのファイルと共有する（経路で扱いを分けない）。GitHub の blob API の
+  // 境界（100MB）はそれより大きいので、ここでは見なくてよい。
+  if (size !== null && size > MAX_INPUT_BYTES) return 'tooLarge';
   return 'importable';
 }
 
@@ -484,12 +484,30 @@ export function describeEntryStatus(status: GitHubEntryStatus): string | null {
     case 'unsupported':
       return '非対応の形式';
     case 'tooLarge':
-      return '100MB を超えるため取得できません';
+      return `${formatLimit(MAX_INPUT_BYTES)} を超えるため取り込めません`;
     case 'symlink':
       return 'シンボリックリンク';
     case 'submodule':
       return 'サブモジュール';
   }
+}
+
+/** 1ファイルの上限を超えたときの文言。一覧・取得・候補のどこで分かっても同じにする。 */
+export function blobTooLargeMessage(path: string): string {
+  return `${revealUnsafeChars(path)} は ${formatLimit(MAX_INPUT_BYTES)} を超えるため取り込めません。`;
+}
+
+/**
+ * `Content-Length` を読む。整数として読めなければ null。
+ *
+ * 応答が圧縮されていると、これは展開前の長さになる。上限を超えていれば読む前に
+ * 断ってよいが、上限内でも本文が上限内とは限らないので、通す根拠には使わない
+ * （最終的な判定は読みながら数えた長さ）。
+ */
+export function parseContentLength(value: string | null): number | null {
+  if (value === null || !/^\d+$/.test(value.trim())) return null;
+  const length = Number(value.trim());
+  return Number.isSafeInteger(length) ? length : null;
 }
 
 /** バイト数を読みやすくする。 */
@@ -544,11 +562,9 @@ export function buildCandidate(
       message: `${revealUnsafeChars(entry.path)} は取り込めない種類のファイルです。`,
     };
   }
-  if (buffer.byteLength > MAX_BLOB_BYTES) {
-    return {
-      kind: 'error',
-      message: `${revealUnsafeChars(entry.path)} は 100MB を超えるため取り込めません。`,
-    };
+  // 取得の側（`getBlob`）で読みながら打ち切っているが、候補にする入口でも確かめる。
+  if (buffer.byteLength > MAX_INPUT_BYTES) {
+    return { kind: 'error', message: blobTooLargeMessage(entry.path) };
   }
   if (isLfsPointer(new Uint8Array(buffer))) {
     return {

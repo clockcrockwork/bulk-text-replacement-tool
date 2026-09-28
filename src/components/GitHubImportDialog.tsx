@@ -49,6 +49,11 @@ import {
 } from '../lib/githubSelection';
 import { ACCEPTED_EXTENSIONS } from '../lib/inputFiles';
 import {
+  describeImportTotalTooLarge,
+  formatLimit,
+  MAX_IMPORT_TOTAL_BYTES,
+} from '../lib/inputLimits';
+import {
   type BatchSourceMatch,
   type BatchUpdateTarget,
   formatSourceDetail,
@@ -950,10 +955,8 @@ function describeBatchWarning(warning: BatchWarning): string {
       // 一覧を数えるのに使った分は、この画面の時点で既に使っている。ここで示すのは、
       // このあと本文を取るために追加で使う回数（1ファイル1回）。
       return `このあと ${warning.files}ファイルの本文を取得するため、GitHub API をさらに ${warning.files}回使います。GitHub の利用上限は通常 1時間 5,000回で、使い切るとしばらく取り込めなくなります。`;
-    case 'storage':
-      return `合計 ${formatBytes(warning.bytes)} あります。ブラウザへの保存は数MBで打ち止めになるため、取り込んだあと保存に失敗する可能性があります。`;
     case 'unknownSize':
-      return `${warning.files}件は大きさを事前に確認できません。表示している合計は下限で、実際にはもっと大きく、保存に失敗する可能性があります。`;
+      return `${warning.files}件は大きさを事前に確認できません。表示している合計は下限です。取得の途中で合計が ${formatLimit(MAX_IMPORT_TOTAL_BYTES)} を超えたら、そこで止めて取り込みません。`;
   }
 }
 
@@ -1010,6 +1013,11 @@ function BatchPlanView({
         <li>{BATCH_MEMORY_NOTE}</li>
       </ul>
       {saveFailed ? <SaveFailedNotice onExportBackup={onExportBackup} /> : null}
+      {plan.overLimit ? (
+        <p className="dialog__error" role="alert">
+          {describeImportTotalTooLarge()}
+        </p>
+      ) : null}
       {plan.warnings.length > 0 ? (
         <ul className="github__plan-warnings">
           {plan.warnings.map((warning) => (
@@ -1039,7 +1047,7 @@ function BatchPlanView({
         <button
           type="button"
           className="btn btn--primary"
-          disabled={state.busy !== null || rateLimited || saveFailed}
+          disabled={state.busy !== null || rateLimited || saveFailed || plan.overLimit}
           onClick={handlers.fetchBatch}
         >
           {plan.files}ファイルを取得
