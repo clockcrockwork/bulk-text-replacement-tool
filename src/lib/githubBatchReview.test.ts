@@ -10,14 +10,17 @@ import {
   needsDecision,
   orderForReview,
   toBatchDecisions,
+  UPDATE_TARGET_OPTION_LIMIT,
+  updateTargetAt,
   valueToChoice,
+  visibleUpdateTargets,
 } from './githubBatchReview';
 import type { BatchSourceMatch } from './inputSource';
 
 function match(path: string, targets: string[] = [], titleCollision = false): BatchSourceMatch {
   return {
     path,
-    sameSource: targets.map((id) => ({ id, label: `${id} のラベル` })),
+    sameSource: targets.map((id, index) => ({ id, label: `${id} のラベル`, position: index + 1 })),
     titleCollision,
   };
 }
@@ -99,5 +102,29 @@ describe('確認画面の一覧のページ', () => {
     expect(listPage(250, -1)).toEqual({ index: 0, count: 3, start: 0, end: 100 });
     expect(listPage(0, 0)).toEqual({ index: 0, count: 1, start: 0, end: 0 });
     expect(listPage(100, 1)).toEqual({ index: 0, count: 1, start: 0, end: 100 });
+  });
+});
+
+describe('更新先の選択肢', () => {
+  const targets = Array.from({ length: UPDATE_TARGET_OPTION_LIMIT + 10 }, (_, index) => ({
+    id: `in${index}`,
+    label: `${index + 1} x.md`,
+    position: index + 1,
+  }));
+
+  it('並べるのは先頭の上限件まで', () => {
+    expect(visibleUpdateTargets(targets, null)).toHaveLength(UPDATE_TARGET_OPTION_LIMIT);
+  });
+
+  it('範囲外の更新先を選んでいれば、それも並べる（選んだ値を選択欄に残す）', () => {
+    const shown = visibleUpdateTargets(targets, 'in55');
+    expect(shown).toHaveLength(UPDATE_TARGET_OPTION_LIMIT + 1);
+    expect(shown.at(-1)?.id).toBe('in55');
+    expect(visibleUpdateTargets(targets, 'in3')).toHaveLength(UPDATE_TARGET_OPTION_LIMIT);
+  });
+
+  it('一覧の番号で更新先を探し、この候補の更新先でなければ null', () => {
+    expect(updateTargetAt(targets, 56)?.id).toBe('in55');
+    expect(updateTargetAt(targets, 999)).toBeNull();
   });
 });

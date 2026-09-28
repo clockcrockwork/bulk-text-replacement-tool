@@ -291,9 +291,11 @@ export function App(): JSX.Element {
       )
     : false;
 
+  // 手つかずのサンプルは一括取り込みの action の中で片付くので、同名や同じ取り込み元の
+  // 判定には含めない（消える入力との衝突を警告しても意味が無い）。
   const githubBatchMatches: GitHubBatchMatch[] = github.state.batchCandidates
     ? matchBatchSources(
-        state.inputs,
+        state.isSample ? [] : state.inputs,
         github.state.batchCandidates,
         (input, index) => `${formatIndex(index)} ${input.title || formatFallbackTitle(index)}`,
       )

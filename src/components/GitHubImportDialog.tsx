@@ -12,6 +12,7 @@ import { formatTextMeta } from '../lib/format';
 import { describeEntryStatus, describeGitHubError, formatBytes } from '../lib/githubApi';
 import {
   BATCH_LIST_LIMIT,
+  type BatchChoice,
   type BatchChoices,
   choiceToValue,
   chooseAddForUndecided,
@@ -23,7 +24,10 @@ import {
   needsDecision,
   orderForReview,
   toBatchDecisions,
+  UPDATE_TARGET_OPTION_LIMIT,
+  updateTargetAt,
   valueToChoice,
+  visibleUpdateTargets,
 } from '../lib/githubBatchReview';
 import {
   type BatchWarning,
@@ -35,7 +39,12 @@ import {
   selectionMark,
   summarizeKnownSelection,
 } from '../lib/githubSelection';
-import { formatSourceDetail, shortSha } from '../lib/inputSource';
+import {
+  type BatchSourceMatch,
+  type BatchUpdateTarget,
+  formatSourceDetail,
+  shortSha,
+} from '../lib/inputSource';
 import type { GitHubImportError, GitHubImportState } from '../state/githubImport';
 import type { GitHubRepository, GitHubTreeEntry } from '../types';
 import { Icon } from './Icon';
@@ -71,11 +80,8 @@ export interface SameSourceInput {
   label: string;
 }
 
-export interface GitHubBatchMatch {
-  path: string;
-  sameSource: readonly SameSourceInput[];
-  titleCollision: boolean;
-}
+/** 一括取り込みの候補1件の照合結果（`matchBatchSources` が作る）。 */
+export type GitHubBatchMatch = BatchSourceMatch;
 
 export type { GitHubBatchDecision } from '../lib/githubBatchReview';
 
@@ -254,14 +260,24 @@ export function GitHubImportDialog({
           </p>
         ) : null}
 
+        {connected ? (
+          // 解除で捨てるのは、このタブがメモリに持つアクセストークンだけ。GitHub 側の認可や
+          // App のインストールまで取り消したと読まれないよう、ボタンの名前と補足で区別する。
+          <p id="github-disconnect-note" className="github__disconnect-note">
+            接続の解除はこのタブの中だけです。GitHub App に与えたアクセス権は、GitHub
+            の設定から変更できます。
+          </p>
+        ) : null}
+
         <div className="dialog__actions">
           {connected ? (
             <button
               type="button"
               className="btn btn--quiet github__disconnect"
+              aria-describedby="github-disconnect-note"
               onClick={handlers.disconnect}
             >
-              接続を解除
+              このタブの接続を解除
             </button>
           ) : null}
           <button type="button" className="btn" onClick={handlers.close}>
@@ -815,7 +831,9 @@ function TreeEntryRow({
 function describeBatchWarning(warning: BatchWarning): string {
   switch (warning.kind) {
     case 'requests':
-      return `GitHub へ ${warning.files}回リクエストします。GitHub の利用上限は通常 1時間 5,000回で、使い切るとしばらく取り込めなくなります。`;
+      // 一覧を数えるのに使った分は、この画面の時点で既に使っている。ここで示すのは、
+      // このあと本文を取るために追加で使う回数（1ファイル1回）。
+      return `このあと ${warning.files}ファイルの本文を取得するため、GitHub API をさらに ${warning.files}回使います。GitHub の利用上限は通常 1時間 5,000回で、使い切るとしばらく取り込めなくなります。`;
     case 'storage':
       return `合計 ${formatBytes(warning.bytes)} あります。ブラウザへの保存は数MBで打ち止めになるため、取り込んだあと保存に失敗する可能性があります。`;
     case 'unknownSize':
@@ -928,6 +946,34 @@ function BatchCandidateView({
   const [pageIndex, setPageIndex] = useState(0);
   const page = listPage(ordered.length, pageIndex);
   const shown = ordered.slice(page.start, page.end);
+  const listRef = useRef<HTMLUListElement>(null);
+  const rangeRef = useRef<HTMLParagraphElement>(null);
+
+  /**
+   * ページを送る。ページャは一覧の下にあるので、末尾までスクロールしてから押すのが自然で、
+   * スクロール位置を残すと次のページが末尾から始まる。押したボタンは端のページで無効になり
+   * フォーカスが外れるので、範囲の表示へ移す（行を入れ替える前に移しても、表示は残る）。
+   */
+  const goToPage = (index: number): void => {
+    setPageIndex(index);
+    if (listRef.current) listRef.current.scrollTop = 0;
+    rangeRef.current?.focus();
+  };
+
+  /** まとめて決める。押したボタンは件数が 0 になると消えるので、フォーカスを見出しへ戻す。 */
+  const decideAll = (decide: (current: BatchChoices) => BatchChoices): void => {
+    setChoices(decide);
+    headingRef.current?.focus();
+  };
+
+  const choose = (path: string, choice: BatchChoice | null): void => {
+    setChoices((current) => {
+      const next = new Map(current);
+      if (choice) next.set(path, choice);
+      else next.delete(path);
+      return next;
+    });
+  };
 
   return (
     <section className="github__section" aria-label="複数ファイルの取り込み確認">
@@ -961,7 +1007,7 @@ function BatchCandidateView({
             <button
               type="button"
               className="btn btn--small"
-              onClick={() => setChoices((current) => chooseSingleUpdates(batchMatches, current))}
+              onClick={() => decideAll((current) => chooseSingleUpdates(batchMatches, current))}
             >
               更新先が1件の{singleTargets}件をすべて更新
             </button>
@@ -969,14 +1015,14 @@ function BatchCandidateView({
           <button
             type="button"
             className="btn btn--small"
-            onClick={() => setChoices((current) => chooseAddForUndecided(batchMatches, current))}
+            onClick={() => decideAll((current) => chooseAddForUndecided(batchMatches, current))}
           >
             未決定の{undecided}件をすべて別の入力として追加
           </button>
         </div>
       ) : null}
 
-      <ul className="github__batch-list" aria-label="取り込むファイル">
+      <ul ref={listRef} className="github__batch-list" aria-label="取り込むファイル">
         {shown.map((match) => {
           const candidate = candidateByPath.get(match.path);
           if (!candidate) return null;
@@ -995,33 +1041,11 @@ function BatchCandidateView({
                 </span>
               ) : null}
               {needsDecision(match) ? (
-                <label className="github__batch-decision">
-                  <span>同じ取り込み元があります</span>
-                  <select
-                    aria-label={`${match.path} の取り込み方法`}
-                    value={choiceToValue(choices.get(match.path))}
-                    onChange={(event) => {
-                      const choice = valueToChoice(event.currentTarget.value);
-                      setChoices((current) => {
-                        const next = new Map(current);
-                        if (choice) next.set(match.path, choice);
-                        else next.delete(match.path);
-                        return next;
-                      });
-                    }}
-                  >
-                    <option value="">取り込み方法を選ぶ</option>
-                    <option value={choiceToValue({ action: 'add' })}>別の入力として追加</option>
-                    {match.sameSource.map((target) => (
-                      <option
-                        key={target.id}
-                        value={choiceToValue({ action: 'update', inputId: target.id })}
-                      >
-                        {target.label} を更新
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <BatchDecision
+                  match={match}
+                  choice={choices.get(match.path)}
+                  onChoose={(choice) => choose(match.path, choice)}
+                />
               ) : (
                 <span className="github__batch-new">新しい入力として追加</span>
               )}
@@ -1035,19 +1059,19 @@ function BatchCandidateView({
             type="button"
             className="btn btn--small"
             disabled={page.index === 0}
-            onClick={() => setPageIndex(page.index - 1)}
+            onClick={() => goToPage(page.index - 1)}
           >
             前の{BATCH_LIST_LIMIT}件
           </button>
-          <span className="github__list-more">
+          <p ref={rangeRef} className="github__list-more" tabIndex={-1} aria-live="polite">
             {page.start + 1}〜{page.end}件目 / 全{ordered.length}
             件（判断が要るもの・注意が要るものを先に並べています）
-          </span>
+          </p>
           <button
             type="button"
             className="btn btn--small"
             disabled={page.index === page.count - 1}
-            onClick={() => setPageIndex(page.index + 1)}
+            onClick={() => goToPage(page.index + 1)}
           >
             次の{BATCH_LIST_LIMIT}件
           </button>
@@ -1068,6 +1092,107 @@ function BatchCandidateView({
         </button>
       </div>
     </section>
+  );
+}
+
+/**
+ * 同じ取り込み元がある候補1件の取り込み方法。
+ *
+ * 更新先は「別の入力として追加」を繰り返した数だけあり得るので、選択欄に並べるのは先頭の
+ * `UPDATE_TARGET_OPTION_LIMIT` 件だけにする。それを超える候補では、入力の一覧の番号でも
+ * 更新先を指定できるようにし、どの更新先も選べることは保つ。
+ */
+function BatchDecision({
+  match,
+  choice,
+  onChoose,
+}: {
+  match: BatchSourceMatch;
+  choice: BatchChoice | undefined;
+  onChoose: (choice: BatchChoice | null) => void;
+}): JSX.Element {
+  const chosenId = choice?.action === 'update' ? choice.inputId : null;
+  const options = visibleUpdateTargets(match.sameSource, chosenId);
+  const hidden = Math.max(0, match.sameSource.length - UPDATE_TARGET_OPTION_LIMIT);
+  return (
+    <div className="github__batch-decision">
+      <label className="github__batch-decision-field">
+        <span>同じ取り込み元があります</span>
+        <select
+          aria-label={`${match.path} の取り込み方法`}
+          value={choiceToValue(choice)}
+          onChange={(event) => onChoose(valueToChoice(event.currentTarget.value))}
+        >
+          <option value="">取り込み方法を選ぶ</option>
+          <option value={choiceToValue({ action: 'add' })}>別の入力として追加</option>
+          {options.map((target) => (
+            <option key={target.id} value={choiceToValue({ action: 'update', inputId: target.id })}>
+              {target.label} を更新
+            </option>
+          ))}
+        </select>
+      </label>
+      {hidden > 0 ? (
+        <UpdateTargetByNumber
+          path={match.path}
+          targets={match.sameSource}
+          hidden={hidden}
+          onChoose={(target) => onChoose({ action: 'update', inputId: target.id })}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** 選択欄に並べきれない更新先を、入力の一覧の番号で指定する。 */
+function UpdateTargetByNumber({
+  path,
+  targets,
+  hidden,
+  onChoose,
+}: {
+  path: string;
+  targets: readonly BatchUpdateTarget[];
+  hidden: number;
+  onChoose: (target: BatchUpdateTarget) => void;
+}): JSX.Element {
+  const [value, setValue] = useState('');
+  const [message, setMessage] = useState<string | null>(null);
+  return (
+    <form
+      className="github__batch-target"
+      onSubmit={(event) => {
+        event.preventDefault();
+        // 日本語入力のままだと全角数字で打たれやすいので、番号として読むときだけ半角にそろえる。
+        const position = Number(value.normalize('NFKC'));
+        const target = Number.isInteger(position) ? updateTargetAt(targets, position) : null;
+        if (!target) {
+          setMessage(`${value || '空欄'} はこのファイルから取り込んだ入力の番号ではありません`);
+          return;
+        }
+        setMessage(null);
+        onChoose(target);
+      }}
+    >
+      <label className="github__batch-target-field">
+        <span>ほかに{hidden}件あります。入力の番号で更新先を指定できます</span>
+        <input
+          type="text"
+          inputMode="numeric"
+          aria-label={`${path} の更新先の入力の番号`}
+          value={value}
+          onChange={(event) => setValue(event.currentTarget.value.trim())}
+        />
+      </label>
+      <button type="submit" className="btn btn--small">
+        この番号を更新
+      </button>
+      {message ? (
+        <p className="github__batch-warning" role="alert">
+          {message}
+        </p>
+      ) : null}
+    </form>
   );
 }
 

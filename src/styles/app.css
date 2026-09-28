@@ -1316,6 +1316,13 @@ a.btn {
   margin-right: auto;
 }
 
+.github__disconnect-note {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 /* リポジトリ・ブランチ・コミット。どの時点の内容を見ているかを常に出す。 */
 .github__context {
   display: flex;
@@ -1709,12 +1716,38 @@ button.github__entry:hover {
   font-size: 13px;
 }
 
-.github__batch-decision {
+.github__batch-decision,
+.github__batch-decision-field,
+.github__batch-target-field {
   display: grid;
   gap: 4px;
   font-size: 13px;
 }
 
+.github__batch-decision {
+  gap: 8px;
+}
+
+/* 更新先が選択欄に並べきれないとき、入力の番号で指定する欄。 */
+.github__batch-target {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+  margin: 0;
+}
+
+.github__batch-target-field {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.github__batch-target .github__batch-warning {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.github__batch-target input,
 .github__batch-decision select {
   width: 100%;
   min-height: var(--control-height);
@@ -1738,6 +1771,19 @@ button.github__entry:hover {
   .github__selection-actions .btn {
     width: 100%;
   }
+
+  /*
+   * .btn は折り返さない（white-space: nowrap）。件数入りの長い文言が狭い画面で
+   * ダイアログの幅を超えないよう、ここでは1行に1つ並べて折り返しを許す。
+   */
+  .github__batch-bulk .btn,
+  .github__list-pager .btn {
+    flex: 1 1 100%;
+    width: 100%;
+    padding-block: 8px;
+    line-height: 1.4;
+    white-space: normal;
+  }
 }
 
 /* ============================================================ タッチ環境の調整 */
@@ -1757,6 +1803,7 @@ button.github__entry:hover {
   .dialog__textarea,
   .file-card__plain,
   .github__filter input,
+  .github__batch-target input,
   .github__batch-decision select {
     font-size: 16px;
   }

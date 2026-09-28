@@ -140,8 +140,8 @@ describe('matchBatchSources', () => {
     expect(match).toEqual({
       path: 'chapters/ch1.md',
       sameSource: [
-        { id: 'one', label: '1:custom-one.md' },
-        { id: 'two', label: '2:custom-two.md' },
+        { id: 'one', label: '1:custom-one.md', position: 1 },
+        { id: 'two', label: '2:custom-two.md', position: 2 },
       ],
       titleCollision: false,
     });
@@ -162,6 +162,21 @@ describe('matchBatchSources', () => {
     const same: InputText = { id: 'a', title: 'ch1.md', text: '', source: at('a/ch1.md') };
     expect(matchBatchSources([same], [candidate('a/ch1.md')], label)[0]?.titleCollision).toBe(
       false,
+    );
+  });
+
+  it('同名かどうかは、実際の出力ファイル名の規則（大小文字・使えない記号）で比べる', () => {
+    // 出力では大文字小文字を区別せず、`?` や `*` は `_` に置き換わるので、どれも同じ名前になる。
+    const matches = matchBatchSources(
+      [],
+      [candidate('a/A.md'), candidate('b/a.md'), candidate('c/x?.md'), candidate('d/x*.md')],
+      label,
+    );
+    expect(matches.map((match) => match.titleCollision)).toEqual([true, true, true, true]);
+
+    const local: InputText = { id: 'local', title: 'CH1.MD', text: '' };
+    expect(matchBatchSources([local], [candidate('a/ch1.md')], label)[0]?.titleCollision).toBe(
+      true,
     );
   });
 

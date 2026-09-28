@@ -1,4 +1,4 @@
-import type { BatchSourceMatch } from './inputSource';
+import type { BatchSourceMatch, BatchUpdateTarget } from './inputSource';
 
 /**
  * 計画画面・確認画面に一度に並べる行の上限。
@@ -139,4 +139,35 @@ export function toBatchDecisions(
     const choice = choices.get(match.path);
     return choice ? [{ path: match.path, ...choice }] : [];
   });
+}
+
+/**
+ * 1つの候補の選択欄に並べる更新先の上限。
+ *
+ * 「別の入力として追加」を繰り返せるので、同じ取り込み元の入力の数に上限は無い。
+ * 全部を `<option>` にすると、行数を抑えても1行だけで数千の要素になり得る。並べるのは
+ * 先頭だけにし、残りは一覧の番号で指定できるようにする（どの更新先も選べることは保つ）。
+ */
+export const UPDATE_TARGET_OPTION_LIMIT = 50;
+
+/**
+ * 選択欄に並べる更新先。先頭の `limit` 件に加え、いま選んでいる更新先が範囲外なら
+ * それも含める（選んだ値が選択欄に無いと、表示が「未決定」に戻ったように見えるため）。
+ */
+export function visibleUpdateTargets(
+  targets: readonly BatchUpdateTarget[],
+  chosenId: string | null,
+  limit = UPDATE_TARGET_OPTION_LIMIT,
+): BatchUpdateTarget[] {
+  const shown = targets.slice(0, limit);
+  const chosen = chosenId === null ? undefined : targets.find((target) => target.id === chosenId);
+  return chosen && !shown.includes(chosen) ? [...shown, chosen] : shown;
+}
+
+/** 一覧の番号（1 始まり）で更新先を探す。この候補の更新先でなければ null。 */
+export function updateTargetAt(
+  targets: readonly BatchUpdateTarget[],
+  position: number,
+): BatchUpdateTarget | null {
+  return targets.find((target) => target.position === position) ?? null;
 }

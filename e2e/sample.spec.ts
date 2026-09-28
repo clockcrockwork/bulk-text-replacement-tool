@@ -74,6 +74,31 @@ test('GitHub から一括で取り込むとサンプルは片付くが、元に�
   await expect(page.locator('[data-cell="0:0"]')).toHaveValue('');
 });
 
+test('一括取り込みの確認では、手つかずのサンプルとの同名を警告しない', async ({ page }) => {
+  // サンプルは同じ取り込みの中で片付くので、消える入力との衝突を知らせても意味が無い。
+  const mock = new GitHubMock([
+    novelRepository({
+      branches: { main: [{ path: 'chapters/chapter1.md', content: '本物の1章。\n' }] },
+    }),
+  ]);
+  await mock.install(page);
+  const dialog = page.getByRole('dialog', { name: 'GitHubから追加' });
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await dialog.getByRole('button', { name: 'GitHubに接続' }).click();
+  await dialog.getByRole('button', { name: 'octo/novel' }).click();
+  await dialog.getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  await dialog.getByRole('button', { name: '選択したファイルを確認' }).click();
+  await dialog.getByRole('button', { name: '1ファイルを取得' }).click();
+
+  const batch = dialog.getByRole('region', { name: '複数ファイルの取り込み確認' });
+  await expect(batch.getByText('新しい入力として追加')).toBeVisible();
+  await expect(batch.getByText(/同じファイル名の別入力があります/)).toHaveCount(0);
+  await batch.getByRole('button', { name: '1ファイルを取り込む' }).click();
+  await expect(page.locator('.input-card')).toHaveCount(1);
+  await expect(page.locator('.input-card__preview')).toHaveValue('本物の1章。\n');
+});
+
 test('サンプルを自分で片付けられる', async ({ page }) => {
   await page.getByRole('button', { name: 'サンプルを片付ける' }).click();
   await expect(page.locator('.input-card')).toHaveCount(0);

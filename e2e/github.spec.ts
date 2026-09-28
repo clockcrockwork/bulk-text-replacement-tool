@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { expect, type Page, type Route, test } from '@playwright/test';
+import { expect, type Page, type Request, type Route, test } from '@playwright/test';
 import { PENDING_AUTH_KEY } from '../src/lib/githubAuth';
 import { STORAGE_KEY } from '../src/lib/storage';
 import { goToTab, makeRule, openApp, seedWorkspace } from './fixtures';
@@ -67,6 +67,9 @@ async function fetchSelection(page: Page, files: number) {
  * 条件に合う GitHub API の要求を、`release` まで応答させずに止めておく。
  * 止めている間に中断された要求は `failed` に入る（`requestfailed` で数える）。
  * 待ち時間で近似せず、中断が実際に起きたかを確かめるために使う。
+ *
+ * `release` でルートとリスナーを外す。Playwright の `unroute` は関数の matcher を
+ * 参照の同一性でしか照合しないので、`route` と同じ関数を渡す（別に書くと何も外れない）。
  */
 async function hold(page: Page, pattern: RegExp) {
   const held: string[] = [];
@@ -75,28 +78,26 @@ async function hold(page: Page, pattern: RegExp) {
   const released = new Promise<void>((resolve) => {
     open = resolve;
   });
+  const matcher = (url: URL): boolean =>
+    url.origin === 'https://api.github.com' && pattern.test(url.href);
   const handler = async (route: Route): Promise<void> => {
     held.push(route.request().url());
     await released;
     // 中断済みの要求は応答できない（それで正しい）。
     await route.fallback().catch(() => {});
   };
-  page.on('requestfailed', (request) => {
+  const onFailed = (request: Request): void => {
     if (pattern.test(request.url())) failed.push(request.url());
-  });
-  await page.route(
-    (url) => url.origin === 'https://api.github.com' && pattern.test(url.href),
-    handler,
-  );
+  };
+  page.on('requestfailed', onFailed);
+  await page.route(matcher, handler);
   return {
     held,
     failed,
     release: async (): Promise<void> => {
       open();
-      await page.unroute(
-        (url) => url.origin === 'https://api.github.com' && pattern.test(url.href),
-        handler,
-      );
+      page.off('requestfailed', onFailed);
+      await page.unroute(matcher, handler);
     },
   };
 }
@@ -593,6 +594,8 @@ test('取得の途中で「選択へ戻る」を押すと、取得を中断し�
     .getByRole('button', { name: '2ファイルを取り込む' })
     .click();
   await expect(page.locator('.input-card')).toHaveCount(3);
+  // 解放したルートは外れている（2回目の取得は止められず、数えられもしない）。
+  expect(blobs.held).toHaveLength(2);
 });
 
 test('1件だけ確かめて取り込んでも、組んでいた複数選択は残る', async ({ page }) => {
@@ -644,9 +647,21 @@ test('大量の選択でも、計画画面は先頭だけを並べ、確認画�
   const rows = batch.getByRole('list', { name: '取り込むファイル' }).getByRole('listitem');
   await expect(rows).toHaveCount(100);
   await expect(batch).toContainText('1〜100件目 / 全120件');
+
+  // ページャは一覧の下にあるので、末尾までスクロールしてから送るのが自然な操作になる。
+  const list = batch.getByRole('list', { name: '取り込むファイル' });
+  await list.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
   await batch.getByRole('button', { name: '次の100件' }).click();
   await expect(rows).toHaveCount(20);
   await expect(rows.last()).toContainText('many/f119.md');
+  // 次のページは先頭から見え、押したボタンが無効になってもフォーカスは範囲の表示に残る。
+  expect(await list.evaluate((element) => element.scrollTop)).toBe(0);
+  const range = batch.getByText('101〜120件目 / 全120件');
+  await expect(range).toBeFocused();
+  await expect(range).toHaveAttribute('aria-live', 'polite');
+  await expect(batch.getByRole('button', { name: '次の100件' })).toBeDisabled();
   await batch.getByRole('button', { name: '120ファイルを取り込む' }).click();
   await expect(page.locator('.input-card')).toHaveCount(121);
 });
@@ -742,6 +757,9 @@ test('同じ取り込み元の候補は、更新先が1件のものをまとめ�
   await expect(batch.getByRole('combobox', { name: 'chapters/ch1.md の取り込み方法' })).toHaveValue(
     'update:one',
   );
+  // 押したボタンは消えるので、フォーカスは見出しへ移る（body へ外れない）。
+  await expect(batch.getByRole('button', { name: /すべて更新/ })).toHaveCount(0);
+  await expect(batch.getByRole('heading', { name: '2ファイルを取り込む' })).toBeFocused();
   await commit.click();
 
   // 追加ではなく更新なので、入力は増えず、タイトル（出力名）はそのまま本文が入れ替わる。
@@ -750,6 +768,77 @@ test('同じ取り込み元の候補は、更新先が1件のものをまとめ�
   await expect(page.locator('.input-card__preview').nth(0)).toHaveValue(
     'アリスは川辺に座っていた。\n',
   );
+});
+
+test('更新先が選択欄に並べきれないほどあっても、入力の番号で指定して更新できる', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  const head = mock.headOf(REPO.id, 'main');
+  const source = {
+    kind: 'github' as const,
+    repositoryId: REPO.id,
+    owner: REPO.owner,
+    repo: REPO.name,
+    ref: 'main',
+    commitSha: head,
+    path: 'chapters/ch1.md',
+    blobSha: 'b'.repeat(40),
+  };
+  // 「別の入力として追加」を繰り返すと、同じ取り込み元の入力はいくらでも増える。
+  const inputs = Array.from({ length: 55 }, (_, index) => ({
+    id: `copy${index}`,
+    title: `copy-${index}.md`,
+    text: '古い\n',
+    source,
+  }));
+  await mock.install(page);
+  await seedWorkspace(page, { inputs, groups: [{ id: 'g1', name: 'A用' }], rules: [] });
+  await openApp(page);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  const batch = await fetchSelection(page, 2);
+  const decision = batch.getByRole('combobox', { name: 'chapters/ch1.md の取り込み方法' });
+  // 「選ぶ」「追加」と、先頭の 50 件だけを並べる。
+  await expect(decision.locator('option')).toHaveCount(52);
+  await expect(batch).toContainText('ほかに5件あります');
+
+  const number = batch.getByRole('textbox', { name: 'chapters/ch1.md の更新先の入力の番号' });
+  await number.fill('999');
+  await batch.getByRole('button', { name: 'この番号を更新' }).click();
+  await expect(batch.getByRole('alert')).toContainText(
+    '999 はこのファイルから取り込んだ入力の番号ではありません',
+  );
+  await expect(decision).toHaveValue('');
+
+  // 全角数字でも番号として読む。
+  await number.fill('５５');
+  await batch.getByRole('button', { name: 'この番号を更新' }).click();
+  await expect(batch.getByRole('alert')).toHaveCount(0);
+  // 選んだ更新先は並べきれない範囲でも選択欄に出す（未決定に戻ったように見せない）。
+  await expect(decision).toHaveValue('update:copy54');
+  await expect(decision.locator('option')).toHaveCount(53);
+
+  await batch.getByRole('button', { name: '2ファイルを取り込む' }).click();
+  await expect(page.locator('.input-card')).toHaveCount(56);
+  await expect(page.locator('.input-card__title').nth(54)).toHaveValue('copy-54.md');
+  await expect(page.locator('.input-card__preview').nth(54)).toHaveValue(
+    'アリスは川辺に座っていた。\n',
+  );
+});
+
+test('接続の解除はこのタブだけだと、ボタンの名前と補足で伝える', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+
+  const disconnect = dialog(page).getByRole('button', { name: 'このタブの接続を解除' });
+  await expect(disconnect).toHaveAccessibleDescription(/GitHub の設定から変更できます/);
+  await disconnect.click();
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeVisible();
+  await expect(dialog(page).getByRole('button', { name: 'このタブの接続を解除' })).toHaveCount(0);
 });
 
 test('大きさの分からないファイルがあれば、合計が小さくても取得の前に警告する', async ({ page }) => {

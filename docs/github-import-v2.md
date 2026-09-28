@@ -134,6 +134,8 @@ Do not store it in:
 
 Reload, tab close, or expiry ends the GitHub connection. Reconnect instead of implementing refresh-token persistence in V2.
 
+The in-app disconnect button is labelled **このタブの接続を解除**. It only discards the in-memory token and the cached listings of this tab. It does not revoke the user's authorization or uninstall the GitHub App on GitHub; the dialog says that access granted to the App is changed from the GitHub settings, so a local disconnect is not mistaken for a revocation.
+
 ## 4. Repository and branch selection
 
 One picker session works with one repository and one branch.
@@ -285,6 +287,9 @@ Neither list renders more than 100 rows at a time. There is no hard cap on the s
 
 - The plan list shows the first 100 paths and a count of the rest. It only informs; nothing is decided there.
 - The confirmation list is paged in steps of 100, with previous/next controls. Same-source candidates must be decided row by row, so every row has to stay reachable; a list that showed only the first 100 would leave the 101st undecidable. It shows candidates that need a decision first, then candidates with a warning (same basename, Shift_JIS guess), then the rest. The order does not change as choices are made, so the row being edited never moves away.
+- Moving to another page scrolls the list back to its top (the pager sits below the list, so it is usually pressed after scrolling to the end) and moves focus to the range text (for example 「101〜120件目 / 全120件」), which is also a polite live region. The pressed button may become disabled at the first or last page, so focus must not stay on it.
+- A bulk action (§9) removes its own button once nothing is left for it to decide, so focus moves to the step heading.
+- The update-target `<select>` of one candidate lists at most the first 50 same-source inputs (plus the chosen one when it lies beyond them). Same-source inputs have no upper bound (**add as another input** can be repeated), so without this a single row could hold thousands of options. When there are more, the row also accepts the input's list number, so every target remains choosable.
 
 The batch confirmation does not preview file contents. For Shift_JIS guesses it says so and points to going back and opening files one by one (the single-file view shows the text).
 
@@ -373,6 +378,8 @@ Do not show an overwrite prompt only because basenames match.
 
 Candidate summary should warn about filename collisions and show full source paths.
 
+The collision warning uses the same rules as the output file names (`outputFileName` and the case-insensitive key of `dedupeNames`), not raw title equality. `A.md` / `a.md`, or `a?.md` / `a*.md`, become the same output name and one of them gets ` (2)`, so they are warned about as well. Inputs of an untouched sample are left out of the comparison, because the same import clears them (§7 **Untouched sample workspace**).
+
 Final output filename collision continues to use the existing output filename dedupe logic.
 
 ## 10. Persistence and backup
@@ -392,7 +399,7 @@ V2 behavior:
 - show selected file count and known bytes before fetch
 - reject blobs over 100 MB before fetch
 - warn for unusually large selections that browser persistence may fail
-  - the plan step (§7) warns when the selection has more than 200 files (each blob is one request against the usual 5,000 requests/hour) or more than 2 MB in total (localStorage stops at a few MB)
+  - the plan step (§7) warns when the selection has more than 200 files (each blob is one more request against the usual 5,000 requests/hour; the warning counts only these blob requests, because the tree requests of the enumeration have already been spent when the plan is shown) or more than 2 MB in total (localStorage stops at a few MB)
   - it also warns whenever some entries have an unknown size. The shown total is then only a lower bound, and the real size cannot be checked before fetching, so this case is never shown as "no warning"
   - these are warnings only; there is no hard cap, so a legitimate large import is still possible after the user has seen the numbers. A hard safety ceiling may be added later, based on measurements of browser memory and storage failures on real devices; it is a separate layer from GitHub's 100 MB per-blob API limit
 - keep the existing persistent save-failure warning and backup path
@@ -600,6 +607,9 @@ Implemented:
 - plan list shows the first 100 rows plus a count; the confirmation list is paged by 100 (decision-needed and warned candidates first) so every candidate stays reachable
 - 選択へ戻る during a fetch aborts the remaining blob requests and clears the busy state
 - bulk same-source decisions (update single-target candidates / add all undecided) that never guess
+- paging resets the list scroll and moves focus to the range text (a live region); bulk actions move focus to the heading
+- a candidate's update-target list is bounded to 50 options, with selection by input number beyond that
+- the filename collision warning follows the output-name rules and ignores an untouched sample
 - a single-file import keeps the checkbox selection; a multi-file import clears it
 - during a rate limit no request is sent to GitHub from any path (the deadline lives in state, is checked at the single request entry point, and disables 再試行 / 確認 / 取得); the reset time is kept between 1 minute and 1 hour on the device clock
 - selection is locked while enumerating/fetching, and results computed from a different selection are discarded
