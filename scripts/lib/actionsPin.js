@@ -9,13 +9,25 @@
  * SHA の後ろには `# v7.0.1` のように版を書く。人が読めるようにするためと、Dependabot が
  * この注記を見て SHA と一緒に書き換えるため（注記が無いと版の対応が追えなくなる）。
  *
- * 行を正規表現で見るのではなく、YAML として読んで「実際の mapping key が uses」の箇所を
- * 見る。行単位だと、引用したキー（`"uses":`）やフロー形式で固定していない Action を
+ * 行を正規表現で見るのではなく、YAML として読んで Action を参照する位置の `uses` を見る。
+ * 行単位だと、引用したキー（`"uses":`）やフロー形式で固定していない Action を
  * すり抜けさせ、逆に `run: |` やヒアドキュメントの本文にある `uses:` を Action と取り違える。
+ *
+ * 見る位置は GitHub が Action / 再利用ワークフローとして解釈するところだけに絞る。
+ * - ワークフロー: `jobs.<id>.steps[*].uses` と、再利用ワークフローの呼び出し `jobs.<id>.uses`
+ * - composite action: `runs.steps[*].uses`
+ * どこでも `uses` という key を見ると、Action の入力（`with.uses`）や `env.uses`・
+ * `inputs.uses` のような、参照ではない値まで落としてしまう。
+ *
+ * 位置で絞る代わりに、そこへ至る道筋を別の書き方で隠させない。ジョブ・steps・ステップが
+ * 別名（`*anchor`）なら参照先を解決して見る。キーの別名とマージキー（`<<`）は、
+ * どの key が効くかが読み手と GitHub で食い違い得るので、読めないものとして落とす。
  */
-import { isAlias, isScalar, LineCounter, parseAllDocuments, Scalar, visit } from 'yaml';
+import { isAlias, isMap, isScalar, isSeq, LineCounter, parseAllDocuments, Scalar } from 'yaml';
 
 /** @typedef {{ line: number; message: string }} PinProblem */
+/** @typedef {import('yaml').Document.Parsed} ParsedDocument */
+/** @typedef {import('yaml').YAMLMap} YAMLMap */
 
 const PINNED = /^[^@\s]+@[0-9a-f]{40}$/;
 const VERSION_COMMENT = /^v\d+(?:\.\d+)*$/;
@@ -40,65 +52,125 @@ export function findPinProblems(source) {
   const documents = parseAllDocuments(source, { lineCounter, prettyErrors: false });
   /** @type {PinProblem[]} */
   const problems = [];
-  /** @param {number} offset */
-  const lineAt = (offset) => lineCounter.linePos(offset).line;
+  // 同じアンカーを何か所から参照しても、定義の位置で 1 回だけ知らせる。
+  const seen = new Set();
+  /** @param {{ range?: readonly number[] | null | undefined } | null | undefined} node */
+  const lineOf = (node) =>
+    node?.range?.[0] === undefined ? 0 : lineCounter.linePos(node.range[0]).line;
+  /** @param {number} line @param {string} message */
+  const report = (line, message) => {
+    const key = `${line}\n${message}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    problems.push({ line, message });
+  };
 
   // 空のファイルは EmptyStream（文書の配列ではない）になる。見るものが無いので問題も無い。
   if (!Array.isArray(documents)) return problems;
 
-  for (const document of documents) {
+  for (const document of /** @type {ParsedDocument[]} */ (documents)) {
     for (const error of document.errors) {
-      problems.push({
-        line: lineAt(error.pos[0]),
-        message: `YAML として読めない（${error.code}）`,
-      });
+      report(lineCounter.linePos(error.pos[0]).line, `YAML として読めない（${error.code}）`);
     }
     if (document.errors.length > 0) continue;
 
-    visit(document, {
-      Pair(_, pair) {
-        const { key, value } = pair;
-        // キーに別名（`*name`）を使うと、中身を解決しないと uses かどうか分からない。
-        // 使う理由が無い書き方なので、読めないものとして落とす。
-        if (isAlias(key)) {
-          const line = key.range ? lineAt(key.range[0]) : 0;
-          problems.push({ line, message: 'キーに別名（*anchor）を使わない' });
-          return;
-        }
-        if (!isScalar(key) || key.value !== 'uses') return;
-        const keyLine = key.range ? lineAt(key.range[0]) : 0;
+    /** @param {unknown} node */
+    const deref = (node) => (isAlias(node) ? node.resolve(document) : node);
 
-        if (isAlias(value)) {
-          problems.push({ line: keyLine, message: 'uses: に別名（*anchor）を使わない' });
-          return;
+    /**
+     * mapping から name の組（key と値）を取る。その mapping の key に別名・マージキーが
+     * あれば、何が効いているかを決められないので知らせる。
+     * @param {YAMLMap} map
+     * @param {string} name
+     */
+    const pairOf = (map, name) => {
+      for (const pair of map.items) {
+        if (isAlias(pair.key)) {
+          report(lineOf(pair.key), 'キーに別名（*anchor）を使わない');
+        } else if (isScalar(pair.key) && pair.key.value === '<<') {
+          report(lineOf(pair.key), 'マージキー（<<）を使わない');
         }
-        if (
-          !isScalar(value) ||
-          typeof value.value !== 'string' ||
-          !value.range ||
-          !INLINE_SCALAR_TYPES.has(value.type ?? '')
-        ) {
-          problems.push({ line: keyLine, message: UNREADABLE });
-          return;
-        }
+      }
+      return map.items.find((pair) => isScalar(pair.key) && pair.key.value === name);
+    };
 
-        const ref = value.value;
-        const line = lineAt(value.range[0]);
-        // 同じリポジトリの中の Action は、このリポジトリの差分として見えるので固定しなくてよい。
-        if (ref.startsWith('./')) return;
-        if (!PINNED.test(ref)) {
-          problems.push({ line, message: `${ref} がコミット SHA（40 桁）で固定されていない` });
-          return;
-        }
-        const end = value.range[1];
-        const lineEnd = source.indexOf('\n', end);
-        const rest = source.slice(end, lineEnd === -1 ? undefined : lineEnd);
-        const comment = TRAILING_COMMENT.exec(rest)?.[1] ?? '';
-        if (!VERSION_COMMENT.test(comment)) {
-          problems.push({ line, message: `${ref} の後ろに版の注記（例: # v7.0.1）が無い` });
-        }
-      },
-    });
+    /** @param {YAMLMap} map ステップ、または再利用ワークフローを呼ぶジョブ */
+    const checkUses = (map) => {
+      const pair = pairOf(map, 'uses');
+      if (!pair) return;
+      const keyLine = lineOf(/** @type {{ range?: number[] }} */ (pair.key));
+      const { value } = pair;
+      if (isAlias(value)) {
+        report(keyLine, 'uses: に別名（*anchor）を使わない');
+        return;
+      }
+      if (
+        !isScalar(value) ||
+        typeof value.value !== 'string' ||
+        !value.range ||
+        !INLINE_SCALAR_TYPES.has(value.type ?? '')
+      ) {
+        report(keyLine, UNREADABLE);
+        return;
+      }
+
+      const ref = value.value;
+      const line = lineOf(value);
+      // 同じリポジトリの中の Action は、このリポジトリの差分として見えるので固定しなくてよい。
+      if (ref.startsWith('./')) return;
+      if (!PINNED.test(ref)) {
+        report(line, `${ref} がコミット SHA（40 桁）で固定されていない`);
+        return;
+      }
+      const end = value.range[1];
+      const lineEnd = source.indexOf('\n', end);
+      const rest = source.slice(end, lineEnd === -1 ? undefined : lineEnd);
+      const comment = TRAILING_COMMENT.exec(rest)?.[1] ?? '';
+      if (!VERSION_COMMENT.test(comment)) {
+        report(line, `${ref} の後ろに版の注記（例: # v7.0.1）が無い`);
+      }
+    };
+
+    /** @param {YAMLMap} owner `steps` を持つジョブ、または composite action の `runs` */
+    const checkSteps = (owner) => {
+      const pair = pairOf(owner, 'steps');
+      if (!pair) return;
+      const steps = deref(pair.value);
+      if (steps == null || (isScalar(steps) && steps.value == null)) return;
+      if (!isSeq(steps)) {
+        report(
+          lineOf(/** @type {{ range?: number[] }} */ (pair.key)),
+          'steps が配列として読めない',
+        );
+        return;
+      }
+      for (const item of steps.items) {
+        const step = deref(item);
+        if (isMap(step)) checkUses(step);
+        else
+          report(
+            lineOf(/** @type {{ range?: number[] }} */ (item)),
+            'ステップが mapping として読めない',
+          );
+      }
+    };
+
+    const root = deref(document.contents);
+    if (!isMap(root)) continue;
+
+    const jobs = deref(pairOf(root, 'jobs')?.value);
+    if (isMap(jobs)) {
+      for (const pair of jobs.items) {
+        if (isAlias(pair.key)) report(lineOf(pair.key), 'キーに別名（*anchor）を使わない');
+        const job = deref(pair.value);
+        if (!isMap(job)) continue;
+        checkUses(job);
+        checkSteps(job);
+      }
+    }
+
+    const runs = deref(pairOf(root, 'runs')?.value);
+    if (isMap(runs)) checkSteps(runs);
   }
   return problems;
 }

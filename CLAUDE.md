@@ -309,9 +309,11 @@ Vercel は `main`、ロリポップは `release/lolipop-v1` の build artifact �
 Action は**コミット SHA（40 桁）で固定**し、後ろに `# v7.0.1` のように版を書く。
 検査は `scripts/checkActionsPinned.mjs`（`npm run lint` に含まれる）で、判定は
 `scripts/lib/actionsPin.js`（テストあり）。ワークフローと `.github/actions` 以下の
-composite action を YAML として読み、実際のキーが `uses` の箇所を見る（行の正規表現に
-戻さない。引用したキーをすり抜けさせ、`run: |` の本文を Action と取り違える）。
-1 行に収まらない書き方・別名（`*anchor`）・読めない YAML は通さずに落とす。
+composite action を YAML として読み、Action を参照する位置（`jobs.<id>.steps[*].uses`・
+`jobs.<id>.uses`・`runs.steps[*].uses`）だけを見る（行の正規表現に戻さない。引用したキーを
+すり抜けさせ、`run: |` の本文を Action と取り違える。位置で絞らないと `with.uses` などの
+入力まで落とす）。別名で差したジョブ・ステップは解決して見て、1 行に収まらない書き方・
+値やキーの別名・マージキー（`<<`）・読めない YAML は通さずに落とす。
 タグは付け替えられるので、Action 側が乗っ取られると `@v7` のまま中身が変わる。
 更新は Dependabot（`github-actions`）が SHA と注記を一緒に書き換える PR で受け取る。
 ただし `directory: /` が追従するのは `.github/workflows` だけなので、composite action を
