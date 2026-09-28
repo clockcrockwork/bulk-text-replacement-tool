@@ -57,12 +57,13 @@ export default defineConfig({
     environment: 'node',
     // .test.tsx を足しても黙って無視されないようにしておく。
     // api/ は Vercel Function（トークン交換）。ブラウザ側と同じくユニットテストで押さえる。
-    include: ['src/**/*.test.{ts,tsx}', 'api/**/*.test.ts'],
+    // scripts/lib/ は CI の検査（Action の SHA 固定）。境界条件がそのまま仕様なので同じく押さえる。
+    include: ['src/**/*.test.{ts,tsx}', 'api/**/*.test.ts', 'scripts/lib/**/*.test.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html'],
       // 計測対象はロジック層だけ。UI の網は E2E（e2e/）が持つ。
-      include: ['src/lib/**/*.ts', 'src/state/**/*.ts', 'api/_lib/**/*.js'],
+      include: ['src/lib/**/*.ts', 'src/state/**/*.ts', 'api/_lib/**/*.js', 'scripts/lib/**/*.js'],
       exclude: ['src/**/*.test.ts', 'src/lib/browser.ts'],
       // 現状（statements 97% / branches 87%）から目立って下がったら落とす。
       // 数字を追うためではなく、テストを書かずにロジックを足すのを防ぐための歯止め。
