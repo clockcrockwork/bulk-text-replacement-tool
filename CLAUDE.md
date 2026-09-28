@@ -158,6 +158,11 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
     （`usePersistedWorkspace` の `flush` を `beforeNavigate` として渡す）。書けなければ移らない。
     表示中の `saveFailed` は最後に実行済みの保存の結果でしかなく、デバウンス中の編集は含まない。
     `flush` はそのレンダーの値を書く（effect で更新する ref は、次の操作より先に更新済みとは限らない）。
+    離れるとき（pagehide / visibilitychange）の保険が読む ref も、`useLayoutEffect` で更新する。
+  - Function の許可リスト（`GITHUB_OAUTH_ALLOWED_ORIGINS` は `/` 無し、`GITHUB_OAUTH_REDIRECT_URIS`
+    は `/` 付き）は `readExchangeConfig` で形まで確かめ、崩れていれば 503 にしてどの変数かを
+    ログに出す（取り違えると全員が黙って 403 / 400 になる）。失敗の画面には状態コードと理由コード
+    （`origin_not_allowed` など）を出す。切り分けの表は `docs/github-app-setup.md` §2。
   - バックエンドは原稿・ルール・リポジトリの内容を受け取らない。本文はブラウザから
     api.github.com へ直接取りに行く。Function も交換に要る3項目以外のキーがあれば 400 にし、
     本文は読みながら数えて 4KB を超えた時点で打ち切る（Content-Length が無くても読み切らない）。

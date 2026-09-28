@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { saveWorkspace } from '../lib/storage';
 import type { PersistedWorkspace } from '../types';
 
@@ -27,9 +27,11 @@ export interface PersistedWorkspaceStatus {
 export function usePersistedWorkspace(workspace: PersistedWorkspace): PersistedWorkspaceStatus {
   const { inputs, groups, rules, theme, isSample } = workspace;
   /**
-   * 直近の値。イベント時に依存配列を気にせず取り出せるようにしておく。
+   * 直近の値。離れるとき（pagehide / visibilitychange）に依存配列を気にせず取り出す。
    * レンダー中に書くと、破棄されたレンダー（Strict Mode の二重呼び出しや中断された
-   * 並行レンダー）の値が残りうるので、コミット後の effect で更新する。
+   * 並行レンダー）の値が残りうるので、コミット後に更新する。
+   * 更新は layout effect で行う。passive effect（useEffect）は「次の利用者操作より先に
+   * 済んでいる」保証が無く、編集の直後にタブを閉じると1つ前の内容を書き得るため。
    */
   const latest = useRef(workspace);
   /**
@@ -41,8 +43,11 @@ export function usePersistedWorkspace(workspace: PersistedWorkspace): PersistedW
    */
   const [failed, setFailed] = useState(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     latest.current = { inputs, groups, rules, theme, isSample };
+  }, [inputs, groups, rules, theme, isSample]);
+
+  useEffect(() => {
     const timer = setTimeout(() => {
       setFailed(!saveWorkspace({ inputs, groups, rules, theme, isSample }));
     }, SAVE_DEBOUNCE_MS);

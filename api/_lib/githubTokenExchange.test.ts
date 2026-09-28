@@ -82,6 +82,67 @@ describe('readExchangeConfig', () => {
     }
     expect(readExchangeConfig({})).toBeNull();
   });
+
+  describe('許可リストの形の取り違え（末尾の / の要否が逆の2変数）', () => {
+    const base = {
+      VITE_GITHUB_APP_CLIENT_ID: 'id',
+      GITHUB_APP_CLIENT_SECRET: 'secret',
+      GITHUB_OAUTH_ALLOWED_ORIGINS: ORIGIN,
+      GITHUB_OAUTH_REDIRECT_URIS: REDIRECT,
+    };
+
+    it.each([
+      [
+        'オリジンに末尾の / が付いている',
+        { GITHUB_OAUTH_ALLOWED_ORIGINS: `${ORIGIN}/` },
+        'ALLOWED_ORIGINS',
+      ],
+      [
+        'オリジンにパスが付いている',
+        { GITHUB_OAUTH_ALLOWED_ORIGINS: `${ORIGIN}/app` },
+        'ALLOWED_ORIGINS',
+      ],
+      [
+        'オリジンが URL として読めない',
+        { GITHUB_OAUTH_ALLOWED_ORIGINS: 'bulk.example' },
+        'ALLOWED_ORIGINS',
+      ],
+      ['callback に末尾の / が無い', { GITHUB_OAUTH_REDIRECT_URIS: ORIGIN }, 'REDIRECT_URIS'],
+      [
+        'callback が下位のパス',
+        { GITHUB_OAUTH_REDIRECT_URIS: `${ORIGIN}/callback` },
+        'REDIRECT_URIS',
+      ],
+      [
+        'callback にクエリが付いている',
+        { GITHUB_OAUTH_REDIRECT_URIS: `${ORIGIN}/?x=1` },
+        'REDIRECT_URIS',
+      ],
+      [
+        'callback のオリジンが許可リストに無い',
+        { GITHUB_OAUTH_REDIRECT_URIS: 'https://other.example/' },
+        'REDIRECT_URIS',
+      ],
+    ])('%s なら設定なし（503）にし、どの変数かをログに出す', (_, override, variable) => {
+      const errors: string[] = [];
+      vi.spyOn(console, 'error').mockImplementation((message: string) => {
+        errors.push(message);
+      });
+      expect(readExchangeConfig({ ...base, ...override })).toBeNull();
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain(`GITHUB_OAUTH_${variable}`);
+    });
+
+    it('正しい形なら複数でも読める', () => {
+      expect(
+        readExchangeConfig({
+          ...base,
+          GITHUB_OAUTH_ALLOWED_ORIGINS: `${ORIGIN},https://other.example`,
+          GITHUB_OAUTH_REDIRECT_URIS: `${REDIRECT},https://other.example/`,
+        }),
+      ).not.toBeNull();
+    });
+  });
 });
 
 describe('handleTokenExchange', () => {

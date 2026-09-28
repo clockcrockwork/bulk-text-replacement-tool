@@ -5,11 +5,13 @@ import {
   callbackUrl,
   codeChallengeS256,
   describeCallbackFailure,
+  describeTokenExchangeFailure,
   installationUrl,
   isTokenUsable,
   MAX_TOKEN_LIFETIME_SECONDS,
   PENDING_AUTH_TTL_MS,
   type PendingAuth,
+  parseExchangeErrorCode,
   parsePendingAuth,
   parseTokenResponse,
   readCallbackParams,
@@ -205,6 +207,29 @@ describe('コールバック', () => {
       expect(describeCallbackFailure(reason)).not.toBe('');
     }
     expect(describeCallbackFailure('stateMismatch')).toContain('state');
+  });
+});
+
+describe('トークン交換の失敗の知らせ', () => {
+  it('理由コードは公開の識別子の形だけを読む', () => {
+    expect(parseExchangeErrorCode({ error: 'origin_not_allowed' })).toBe('origin_not_allowed');
+    expect(parseExchangeErrorCode({ error: '<script>' })).toBeNull();
+    expect(parseExchangeErrorCode({ error: 'x'.repeat(41) })).toBeNull();
+    expect(parseExchangeErrorCode({ error: 1 })).toBeNull();
+    expect(parseExchangeErrorCode(null)).toBeNull();
+  });
+
+  it('状態コードに理由コードを添える（利用者から運用者へそのまま伝えられる）', () => {
+    expect(describeTokenExchangeFailure(403, 'origin_not_allowed')).toContain(
+      '403 origin_not_allowed',
+    );
+    expect(describeTokenExchangeFailure(502)).toContain('（トークンの交換に失敗: 502）');
+  });
+
+  it('429 は一時的な制限として、待ってから接続し直すよう伝える', () => {
+    const message = describeTokenExchangeFailure(429, 'rate_limited');
+    expect(message).toContain('一時的に制限');
+    expect(message).toContain('作業データはそのまま残っています');
   });
 });
 

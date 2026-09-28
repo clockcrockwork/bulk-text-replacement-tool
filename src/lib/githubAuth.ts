@@ -205,6 +205,31 @@ export function describeCallbackFailure(reason: CallbackFailure): string {
   }
 }
 
+/**
+ * 交換エンドポイントの失敗の本文から、理由コード（`origin_not_allowed` など）を読む。
+ * 公開の識別子だけを通し、形の違うものは読まない（画面にそのまま出すため）。
+ */
+export function parseExchangeErrorCode(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const { error } = value;
+  return typeof error === 'string' && /^[a-z_]{1,40}$/.test(error) ? error : null;
+}
+
+/**
+ * トークン交換の失敗を、利用者に出す文言にする。
+ *
+ * 理由コードを添えるのは、利用者から運用者へそのまま伝えてもらうため。状態コードだけだと、
+ * 403 が「許可リストの取り違え」なのか「別のサイトからの送信」なのか切り分けられない。
+ * 429 は Vercel Firewall のレート制限。作業データは消えていないことも伝える。
+ */
+export function describeTokenExchangeFailure(status: number, reason: string | null = null): string {
+  if (status === 429) {
+    return 'GitHub への接続が短時間に続いたため、一時的に制限されています。少し時間をおいてから、もう一度接続してください（作業データはそのまま残っています）。';
+  }
+  const detail = reason ? `${status} ${reason}` : String(status);
+  return `GitHub との接続に失敗しました（トークンの交換に失敗: ${detail}）。もう一度接続してください。`;
+}
+
 /** ブラウザがメモリにだけ持つアクセストークン。 */
 export interface GitHubToken {
   accessToken: string;

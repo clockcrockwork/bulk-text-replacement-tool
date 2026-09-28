@@ -63,10 +63,43 @@ function splitList(value) {
 }
 
 /**
+ * `https://example.com` の形（パスも末尾の `/` も無いオリジンそのもの）か。
+ * @param {string} value
+ * @returns {boolean}
+ */
+function isExactOrigin(value) {
+  try {
+    return new URL(value).origin === value;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `https://example.com/` の形（オリジン直下の callback）か。アプリの callback は
+ * オリジン直下に固定している（`callbackUrl`）ので、それ以外の形は必ず一致しない。
+ * @param {string} value
+ * @returns {boolean}
+ */
+function isRootCallback(value) {
+  try {
+    const url = new URL(value);
+    return url.href === value && value === `${url.origin}/`;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 環境変数から設定を読む。どれかが欠けていれば null（交換を断る）。
  *
  * Client ID はブラウザにも要る公開値なので、ビルド時の `VITE_GITHUB_APP_CLIENT_ID` を
  * そのまま読む（同じ値を2か所で管理しない）。secret と許可リストはこの Function 専用。
+ *
+ * 許可リストは形まで確かめ、崩れていれば設定なし（503）として扱い、どの変数かをログに出す。
+ * 2つの変数は見た目が似ているのに末尾の `/` の要否が逆（オリジンは無し、callback は有り）で、
+ * 取り違えると設定は読めてしまい、GitHub で承認まで通ったあと全員の交換が 403 / 400 で
+ * 失敗する。そのとき原因がどこにも出ないと、運用者が手掛かりなしで切り分けることになる。
  *
  * @param {Record<string, string | undefined>} env
  * @returns {ExchangeConfig | null}
@@ -77,6 +110,23 @@ export function readExchangeConfig(env) {
   const allowedOrigins = splitList(env.GITHUB_OAUTH_ALLOWED_ORIGINS);
   const redirectUris = splitList(env.GITHUB_OAUTH_REDIRECT_URIS);
   if (!clientId || !clientSecret || allowedOrigins.size === 0 || redirectUris.size === 0) {
+    return null;
+  }
+  // 値は公開してよいもの（オリジンと callback URL）なので、変数名に添えて出してよい。
+  const badOrigins = [...allowedOrigins].filter((value) => !isExactOrigin(value));
+  if (badOrigins.length > 0) {
+    console.error(
+      `github token exchange: GITHUB_OAUTH_ALLOWED_ORIGINS must be origins like https://example.com (no path, no trailing /): ${badOrigins.join(', ')}`,
+    );
+    return null;
+  }
+  const badRedirects = [...redirectUris].filter(
+    (value) => !isRootCallback(value) || !allowedOrigins.has(new URL(value).origin),
+  );
+  if (badRedirects.length > 0) {
+    console.error(
+      `github token exchange: GITHUB_OAUTH_REDIRECT_URIS must be https://<allowed origin>/ (with the trailing /): ${badRedirects.join(', ')}`,
+    );
     return null;
   }
   return { clientId, clientSecret, allowedOrigins, redirectUris };
@@ -194,7 +244,12 @@ export async function handleTokenExchange(request, config, fetchImpl) {
 
   // 許可したオリジンのページからだけ受け付ける。ブラウザは Origin を偽れない。
   const origin = request.headers.get('origin');
-  if (!origin || !config.allowedOrigins.has(origin)) return fail(403, 'origin_not_allowed');
+  if (!origin || !config.allowedOrigins.has(origin)) {
+    // 理由だけを残す（Origin の値は外から来る文字列なので書かない）。設定の取り違えは
+    // readExchangeConfig で弾くので、ここに来るのは主に許可していない送り元。
+    console.warn('github token exchange: origin not allowed');
+    return fail(403, 'origin_not_allowed');
+  }
 
   // `application/json` そのもの（後ろにパラメータが付くのは可）だけを受け付ける。前方一致だと
   // `application/jsonx` のような別の型も通ってしまう。
@@ -232,6 +287,7 @@ export async function handleTokenExchange(request, config, fetchImpl) {
     !config.redirectUris.has(redirectUri) ||
     originOf(redirectUri) !== origin
   ) {
+    console.warn('github token exchange: redirect_uri not allowed');
     return fail(400, 'redirect_uri_not_allowed');
   }
 

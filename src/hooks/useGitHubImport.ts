@@ -12,11 +12,13 @@ import {
   callbackUrl,
   codeChallengeS256,
   describeCallbackFailure,
+  describeTokenExchangeFailure,
   type GitHubAppConfig,
   type GitHubToken,
   installationUrl,
   isTokenUsable,
   PENDING_AUTH_KEY,
+  parseExchangeErrorCode,
   parsePendingAuth,
   parseTokenResponse,
   readCallbackParams,
@@ -298,12 +300,17 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
         cache: 'no-store',
         credentials: 'same-origin',
       });
-      const token = response.ok ? parseTokenResponse(await response.json(), Date.now()) : null;
+      // 失敗の本文は理由コードだけを読む（読めなくても状態コードで知らせる）。
+      const payload: unknown = await response.json().catch(() => null);
+      const token = response.ok ? parseTokenResponse(payload, Date.now()) : null;
       // 交換の途中で閉じられていたら、返ってきたトークンは捨てる（取り消し済み）。
       if (attempt.current !== started) return;
       if (!token) {
         dropConnection(
-          `GitHub との接続に失敗しました（トークンの交換に失敗: ${response.status}）。もう一度接続してください。`,
+          describeTokenExchangeFailure(
+            response.status,
+            response.ok ? null : parseExchangeErrorCode(payload),
+          ),
         );
         return;
       }
