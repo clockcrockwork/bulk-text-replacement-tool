@@ -745,7 +745,9 @@ test('既存workspaceに body.md があっても、別pathのGitHub body.mdは�
   await confirm.getByRole('button', { name: '入力に追加' }).click();
 
   await expect(page.locator('.input-card')).toHaveCount(2);
-  await expect(page.locator('.input-card__title')).toHaveValue(['body.md', 'body.md']);
+  const titles = page.locator('.input-card__title');
+  await expect(titles.nth(0)).toHaveValue('body.md');
+  await expect(titles.nth(1)).toHaveValue('body.md');
   await expect(page.locator('.input-card__source')).toHaveCount(1);
   await expect(page.locator('.input-card__source')).toContainText('作品/texts/CT-0001/body.md');
 });
