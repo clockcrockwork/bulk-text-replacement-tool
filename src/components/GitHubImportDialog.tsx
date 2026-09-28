@@ -174,6 +174,15 @@ export function GitHubImportDialog({
           </div>
         ) : null}
 
+        {/* 「閉じる」は接続を残す（続けて取り込むときに辿り直さなくて済む）。bfcache では
+            共用の端末を想定して切るので、同じ想定で「閉じる」の意味も見える所に書いておく。 */}
+        {connected ? (
+          <p className="dialog__lead github__session-note">
+            「閉じる」では、このタブの GitHub
+            との接続は残ります。共用の端末では、終わったら「接続を解除」を押してください。
+          </p>
+        ) : null}
+
         <div className="dialog__actions">
           {connected ? (
             <button

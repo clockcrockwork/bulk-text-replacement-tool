@@ -262,14 +262,27 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
     );
   };
 
-  /** ブランチの HEAD を解決して固定し、ルートを開く。 */
-  const pin = (repository: GitHubRepository, ref: string, previous?: GitHubSnapshot): void => {
+  /**
+   * ブランチの HEAD を解決して固定し、ルートを開く。
+   *
+   * `resume` は「最新に更新」で先頭が変わっていなかったときに開き直す場所。確認を始めた
+   * 時点で一覧の取得が終わっていなかったなら、その取得は確認のために中断している
+   * （`run` は前の取得を止める）。「最新です」とだけ言って戻ると、一覧の無い画面に残る。
+   */
+  const pin = (
+    repository: GitHubRepository,
+    ref: string,
+    previous?: GitHubSnapshot,
+    resume?: TrailStep,
+  ): void => {
     run(
       `${ref} の最新コミットを確認しています`,
       (api, signal) => api.resolveSnapshot(repository, ref, signal),
       (snapshot) => {
         if (previous && previous.commitSha === snapshot.commitSha) {
-          dispatch({ type: 'info', message: `最新です（${shortSha(snapshot.commitSha)} のまま）` });
+          const message = `最新です（${shortSha(snapshot.commitSha)} のまま）`;
+          if (resume) loadListing(previous, resume, message);
+          else dispatch({ type: 'info', message });
           return;
         }
         dispatch({ type: 'snapshot/pinned', snapshot });
@@ -516,13 +529,20 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
     hideBranches: () => {
       abortRef.current?.abort();
       dispatch({ type: 'branches/hide' });
+      // ブランチの一覧を開いた時点で、元の一覧の取得を中断していることがある
+      // （一覧を待たずに「ブランチを変更」を押した）。戻る先に一覧が無ければ取り直す。
+      const step = currentStep(state);
+      if (state.snapshot && state.listing === null && step) loadListing(state.snapshot, step);
     },
     selectBranch: (ref) => {
       if (state.repository) pin(state.repository, ref);
     },
     refreshSnapshot: () => {
       const snapshot = state.snapshot;
-      if (snapshot) pin(snapshot.repository, snapshot.ref, snapshot);
+      if (!snapshot) return;
+      // 一覧を待っている途中で押されたら、先頭が変わっていなくても今の場所を開き直す。
+      const resume = state.listing === null ? currentStep(state) : undefined;
+      pin(snapshot.repository, snapshot.ref, snapshot, resume);
     },
     enterDirectory: (entry) => {
       const snapshot = state.snapshot;

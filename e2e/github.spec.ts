@@ -258,6 +258,10 @@ test('リポジトリ → 既定ブランチの固定 → フォルダ → 1フ�
   const head = mock.headOf(REPO.id, 'main');
   await expect(dialog(page).locator('.github__facts')).toContainText('main');
   await expect(dialog(page).locator('.github__facts')).toContainText(head.slice(0, 7));
+  // 「閉じる」では接続が残ることを、共用の端末を想定して見せる。
+  await expect(dialog(page).locator('.github__session-note')).toContainText(
+    '「閉じる」では、このタブの GitHub との接続は残ります',
+  );
 
   // ルートは非再帰の tree で取り、フォルダを開くと次の階層を取りに行く。
   await expect(entry(page, 'chapters/')).toBeVisible();
@@ -395,6 +399,69 @@ test('中身が同じ別のフォルダ（tree SHA が同じ）を開いても�
     .map((call) => call.url.split('/').pop())
     .filter((sha) => sha !== rootTree);
   expect(new Set(subtreeShas).size).toBe(1);
+});
+
+/**
+ * 一致する API への要求を、`release()` を呼ぶまで止めておく。止めたあいだにアプリが
+ * 中断した要求は、そのまま捨てる（中断済みの要求は続きを流せない）。
+ * 利用者が「待たずに別のボタンを押す」操作を、応答の遅さに頼らずに再現するために使う。
+ */
+async function holdRequests(page: Page, pattern: string): Promise<() => void> {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(pattern, async (route) => {
+    await gate;
+    await route.fallback().catch(() => {});
+  });
+  return release;
+}
+
+test('一覧を待っている途中に「最新に更新」を押しても、先頭が同じなら一覧を開き直す', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  const releaseTrees = await holdRequests(page, 'https://api.github.com/**/git/trees/**');
+  await entry(page, 'chapters/').click();
+  await expect(dialog(page).getByRole('status')).toContainText('フォルダを読み込んでいます');
+
+  // 確認のために一覧の取得は中断される。先頭が変わっていなければ、同じ場所を開き直す。
+  await dialog(page).getByRole('button', { name: '最新に更新' }).click();
+  releaseTrees();
+  await expect(entry(page, 'ch1.md')).toBeVisible();
+  await expect(dialog(page).getByRole('status')).toContainText('最新です');
+  await expect(dialog(page).getByRole('navigation', { name: '現在の場所' })).toContainText(
+    'chapters',
+  );
+});
+
+test('一覧を待っている途中に「ブランチを変更」→「変えずに戻る」としても、一覧を開き直す', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  const releaseTrees = await holdRequests(page, 'https://api.github.com/**/git/trees/**');
+  const releaseBranches = await holdRequests(page, 'https://api.github.com/**/branches**');
+  await entry(page, 'chapters/').click();
+  await expect(dialog(page).getByRole('status')).toContainText('フォルダを読み込んでいます');
+
+  // ブランチの一覧も待たずに戻る。どちらの取得も中断されている。
+  await dialog(page).getByRole('button', { name: 'ブランチを変更' }).click();
+  await expect(dialog(page).getByRole('heading', { name: 'ブランチを選ぶ' })).toBeVisible();
+  await dialog(page).getByRole('button', { name: 'ブランチを変えずに戻る' }).click();
+  releaseBranches();
+  releaseTrees();
+
+  await expect(dialog(page).getByRole('heading', { name: 'ファイルを選ぶ' })).toBeVisible();
+  await expect(entry(page, 'ch1.md')).toBeVisible();
 });
 
 test('ブランチを変えると、そのブランチの先頭で固定し直す', async ({ page }) => {
