@@ -221,6 +221,33 @@ describe('findPinProblems', () => {
       expect(messages(merge)).toEqual(['6: マージキー（<<）を使わない']);
     });
 
+    it('jobs の直下とジョブの中のマージキーも落とす（構造をたどる mapping はどれも）', () => {
+      const jobs = [
+        'x-jobs: &shared-jobs',
+        '  injected:',
+        '    steps:',
+        '      - uses: evil/action@main',
+        'jobs:',
+        '  <<: *shared-jobs',
+        '',
+      ].join('\n');
+      expect(messages(jobs)).toEqual(['6: マージキー（<<）を使わない']);
+
+      const job = [
+        'x-job: &job',
+        '  steps:',
+        '    - uses: evil/action@main',
+        'jobs:',
+        '  build:',
+        '    <<: *job',
+        '',
+      ].join('\n');
+      expect(messages(job)).toEqual(['6: マージキー（<<）を使わない']);
+
+      const root = ['x: &x', '  jobs: {}', '<<: *x', ''].join('\n');
+      expect(messages(root)).toEqual(['3: マージキー（<<）を使わない']);
+    });
+
     it('別名で差したステップ・steps・ジョブは、参照先を解決して見る', () => {
       const step = [
         'x-steps:',

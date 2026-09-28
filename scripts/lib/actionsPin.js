@@ -78,21 +78,31 @@ export function findPinProblems(source) {
     const deref = (node) => (isAlias(node) ? node.resolve(document) : node);
 
     /**
-     * mapping から name の組（key と値）を取る。その mapping の key に別名・マージキーが
-     * あれば、何が効いているかを決められないので知らせる。
+     * mapping の key に別名・マージキーがあれば知らせ、そうでない組だけを返す。
+     * どちらも、その mapping で何が効いているかが読み手と GitHub で食い違い得る。
+     * 構造をたどる mapping（トップ・jobs・ジョブ・runs・ステップ）はすべてここを通す
+     * （1 か所でも直接 items を回すと、そこだけマージキーで中身を持ち込める）。
+     * @param {YAMLMap} map
+     */
+    const plainPairs = (map) =>
+      map.items.filter((pair) => {
+        if (isAlias(pair.key)) {
+          report(lineOf(pair.key), 'キーに別名（*anchor）を使わない');
+          return false;
+        }
+        if (isScalar(pair.key) && pair.key.value === '<<') {
+          report(lineOf(pair.key), 'マージキー（<<）を使わない');
+          return false;
+        }
+        return true;
+      });
+
+    /**
      * @param {YAMLMap} map
      * @param {string} name
      */
-    const pairOf = (map, name) => {
-      for (const pair of map.items) {
-        if (isAlias(pair.key)) {
-          report(lineOf(pair.key), 'キーに別名（*anchor）を使わない');
-        } else if (isScalar(pair.key) && pair.key.value === '<<') {
-          report(lineOf(pair.key), 'マージキー（<<）を使わない');
-        }
-      }
-      return map.items.find((pair) => isScalar(pair.key) && pair.key.value === name);
-    };
+    const pairOf = (map, name) =>
+      plainPairs(map).find((pair) => isScalar(pair.key) && pair.key.value === name);
 
     /** @param {YAMLMap} map ステップ、または再利用ワークフローを呼ぶジョブ */
     const checkUses = (map) => {
@@ -160,8 +170,7 @@ export function findPinProblems(source) {
 
     const jobs = deref(pairOf(root, 'jobs')?.value);
     if (isMap(jobs)) {
-      for (const pair of jobs.items) {
-        if (isAlias(pair.key)) report(lineOf(pair.key), 'キーに別名（*anchor）を使わない');
+      for (const pair of plainPairs(jobs)) {
         const job = deref(pair.value);
         if (!isMap(job)) continue;
         checkUses(job);
