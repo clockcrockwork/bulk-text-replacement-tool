@@ -21,6 +21,7 @@ npm run test -- <path> # 単一テストファイルの実行
 npm run coverage       # カバレッジ（閾値つき。ロジック層のみ計測）
 npm run test:e2e       # Playwright（初回は npx playwright install chromium webkit）
 npm run lint:text      # 不可視文字・双方向制御文字・CRLF の全ファイル走査（lint に含まれる）
+npm run lint:actions   # ワークフローの Action が SHA で固定されているか（lint に含まれる）
 ```
 
 E2E をブラウザ1つに絞るときは `npx playwright test --project=chromium`。
@@ -304,3 +305,10 @@ Vercel は `main`、ロリポップは `release/lolipop-v1` の build artifact �
 `.github/workflows/ci.yml` の2ジョブ（`Lint / Types / Unit tests / Build` と `E2E (Playwright)`）。
 `push` は `main` のみ、他は `pull_request` で走る（同じコミットに同名チェックが2系統
 報告されると required status checks が不安定になるため）。失敗時だけレポートを回収する。
+
+Action は**コミット SHA（40 桁）で固定**し、後ろに `# v7.0.1` のように版を書く
+（`scripts/checkActionsPinned.mjs`、`npm run lint` に含まれる）。タグは付け替えられるので、
+Action 側が乗っ取られると `@v7` のまま中身が変わる。更新は Dependabot（`github-actions`）が
+SHA と注記を一緒に書き換える PR で受け取る。Action を足すときは
+`git ls-remote --tags https://github.com/<owner>/<repo>.git` でタグの指す SHA を確かめる
+（注釈付きタグなら `^{}` の行がコミット）。

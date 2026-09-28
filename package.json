@@ -10,7 +10,7 @@
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
-    "lint": "biome check . && npm run lint:text",
+    "lint": "biome check . && npm run lint:text && npm run lint:actions",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "test": "vitest run",
@@ -18,7 +18,8 @@
     "test:e2e": "playwright test",
     "check": "npm run lint && npm run typecheck && npm run coverage && npm run build",
     "coverage": "vitest run --coverage",
-    "lint:text": "node scripts/checkText.mjs"
+    "lint:text": "node scripts/checkText.mjs",
+    "lint:actions": "node scripts/checkActionsPinned.mjs"
   },
   "dependencies": {
     "react": "^19.3.0",
