@@ -629,13 +629,13 @@ test('同じbasenameの別パスを一括選択すると衝突を知らせ、別
 test('NovelText 型の深いパスで同名 body.md が複数あり、同じ blob / tree SHA でもすべて別入力にする', async ({
   page,
 }) => {
-  const shared = '同じ本文\\n';
+  const shared = '同じ本文\n';
   const repository = novelRepository({
     branches: {
       main: [
         { path: '作品/texts/CT-0001/body.md', content: shared },
         { path: '作品/texts/CT-0002/body.md', content: shared },
-        { path: '作品/texts/CT-0003/body.md', content: '別の本文\\n' },
+        { path: '作品/texts/CT-0003/body.md', content: '別の本文\n' },
       ],
     },
   });
@@ -672,7 +672,7 @@ test('NovelText 型の深いパスで同名 body.md が複数あり、同じ blo
 
   // 同一内容の2件は同じ blob SHA なので、取得は共有されて2リクエストだけ。
   // それでも source.path は別なので入力は3件残る。
-  expect(mock.apiCalls(/\\/git\\/blobs\\//)).toHaveLength(2);
+  expect(mock.apiCalls(new RegExp('git/blobs'))).toHaveLength(2);
 });
 
 test('未展開のフォルダを選ぶと、blob を取る前に正確な件数と容量を見せ、戻れば選択は残る', async ({
