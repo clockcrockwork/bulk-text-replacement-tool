@@ -11,6 +11,7 @@ import {
   selectionMark,
   selectionMayContainSelected,
   setTreeSelection,
+  summarizeExcluded,
   summarizeKnownSelection,
 } from './githubSelection';
 
@@ -185,5 +186,30 @@ describe('取得前の計画', () => {
       { kind: 'requests', files: BATCH_WARN_FILES + 2 },
       { kind: 'storage', bytes: BATCH_WARN_BYTES + 1 },
     ]);
+  });
+});
+
+describe('対象外の項目の内訳', () => {
+  it('種類ごとに決まった順で数え、フォルダと取り込める項目は数えない', () => {
+    const at = (path: string, status: GitHubTreeEntry['status']): GitHubTreeEntry => ({
+      name: path,
+      path,
+      sha: 'x',
+      status,
+      size: 1,
+    });
+    expect(
+      summarizeExcluded([
+        at('a.png', 'unsupported'),
+        at('sub', 'submodule'),
+        at('b.rst', 'unsupported'),
+        at('c.md', 'importable'),
+        at('d', 'dir'),
+      ]),
+    ).toEqual([
+      { status: 'unsupported', count: 2 },
+      { status: 'submodule', count: 1 },
+    ]);
+    expect(summarizeExcluded([])).toEqual([]);
   });
 });

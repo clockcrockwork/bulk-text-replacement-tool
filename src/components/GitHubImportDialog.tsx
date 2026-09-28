@@ -44,15 +44,17 @@ import {
   isPathSelected,
   planBatch,
   selectionMark,
+  summarizeExcluded,
   summarizeKnownSelection,
 } from '../lib/githubSelection';
+import { ACCEPTED_EXTENSIONS } from '../lib/inputFiles';
 import {
   type BatchSourceMatch,
   type BatchUpdateTarget,
   formatSourceDetail,
   shortSha,
 } from '../lib/inputSource';
-import type { GitHubImportError, GitHubImportState } from '../state/githubImport';
+import type { GitHubBatchPlan, GitHubImportError, GitHubImportState } from '../state/githubImport';
 import type { GitHubRepository, GitHubTreeEntry } from '../types';
 import { Icon } from './Icon';
 
@@ -109,6 +111,8 @@ interface GitHubImportDialogProps {
   onAdd: () => void;
   onUpdate: (inputId: string) => void;
   onApplyBatch: (decisions: readonly GitHubBatchDecision[]) => void;
+  /** 作業データの書き出しを開く（保存に失敗しているときの逃げ道）。 */
+  onOpenBackup: () => void;
 }
 
 /**
@@ -183,6 +187,7 @@ export function GitHubImportDialog({
   onAdd,
   onUpdate,
   onApplyBatch,
+  onOpenBackup,
 }: GitHubImportDialogProps): JSX.Element {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const backdrop = useBackdropClose(dialogRef, () => handlers.close());
@@ -232,6 +237,8 @@ export function GitHubImportDialog({
             onAdd={onAdd}
             onUpdate={onUpdate}
             onApplyBatch={onApplyBatch}
+            saveFailed={saveFailed}
+            onOpenBackup={onOpenBackup}
           />
         ) : (
           <ConsentView
@@ -372,6 +379,8 @@ interface ConnectedViewProps {
   onAdd: () => void;
   onUpdate: (inputId: string) => void;
   onApplyBatch: (decisions: readonly GitHubBatchDecision[]) => void;
+  saveFailed: boolean;
+  onOpenBackup: () => void;
 }
 
 function ConnectedView(props: ConnectedViewProps): JSX.Element | null {
@@ -455,7 +464,9 @@ function ConnectedView(props: ConnectedViewProps): JSX.Element | null {
           state={state}
           handlers={handlers}
           headingRef={headingRef}
-          entries={state.batchPlan.entries}
+          plan={state.batchPlan}
+          saveFailed={props.saveFailed}
+          onOpenBackup={props.onOpenBackup}
         />
       ) : state.candidate ? (
         <CandidateView {...props} candidate={state.candidate} />
@@ -839,6 +850,33 @@ function TreeEntryRow({
 
 // ---- 複数取り込み：取得前の計画 ------------------------------------------------
 
+/**
+ * 一括取り込みの途中の内容はメモリにだけある（非公開リポジトリの本文を保存しない）。
+ * ダイアログを閉じても残るが、再読み込みやタブを閉じると失われることを先に伝える。
+ */
+const BATCH_MEMORY_NOTE =
+  'この一括取り込みはこのタブの中にだけあります。再読み込みやタブを閉じると、取得し直しになります。';
+
+/**
+ * 保存に失敗している間は、一括の取得と確定を止める。反映しても保存されず、再読み込みで
+ * それまでの保存できていない編集ごと失われる。背後の警告は操作できないので、
+ * 書き出しへの道をここにも置く。
+ */
+function SaveFailedNotice({ onOpenBackup }: { onOpenBackup: () => void }): JSX.Element {
+  return (
+    <div className="dialog__error github__save-failed" role="alert">
+      <p>
+        いまブラウザへの保存に失敗しています。このまま取り込んでも保存されず、再読み込みや
+        タブを閉じると失われます。先に作業データを書き出すか、入力を減らして保存できる状態に
+        してください。
+      </p>
+      <button type="button" className="btn btn--small" onClick={onOpenBackup}>
+        作業データを書き出す
+      </button>
+    </div>
+  );
+}
+
 function describeBatchWarning(warning: BatchWarning): string {
   switch (warning.kind) {
     case 'requests':
@@ -861,15 +899,21 @@ function BatchPlanView({
   state,
   handlers,
   headingRef,
-  entries,
+  plan: batchPlan,
+  saveFailed,
+  onOpenBackup,
 }: {
   state: GitHubImportState;
   handlers: GitHubDialogHandlers;
   headingRef: RefObject<HTMLHeadingElement | null>;
-  entries: readonly GitHubTreeEntry[];
+  plan: GitHubBatchPlan;
+  saveFailed: boolean;
+  onOpenBackup: () => void;
 }): JSX.Element {
+  const { entries } = batchPlan;
   const rateLimited = useBeforeDeadline(state.rateLimitedUntil);
   const plan = useMemo(() => planBatch(entries), [entries]);
+  const excluded = useMemo(() => summarizeExcluded(batchPlan.excluded), [batchPlan.excluded]);
   // 本文を取り始める前の最後の確認なので、101件目以降も見られるようにする（並べる数は抑える）。
   const [pageIndex, setPageIndex] = useState(0);
   const page = listPage(entries.length, pageIndex);
@@ -887,7 +931,18 @@ function BatchPlanView({
           合計 {formatBytes(plan.bytes)}
           {plan.unknownSizes > 0 ? `以上（${plan.unknownSizes}件は大きさ不明）` : ''}
         </li>
+        <li>
+          選んだ範囲のうち、対応する形式（{ACCEPTED_EXTENSIONS.map((ext) => `.${ext}`).join(' / ')}
+          ）のファイルだけを取り込みます。
+          {excluded.length > 0
+            ? `ほかに対象外が ${batchPlan.excluded.length}件あります（${excluded
+                .map(({ status, count }) => `${describeEntryStatus(status)} ${count}件`)
+                .join(' · ')}）。`
+            : ''}
+        </li>
+        <li>{BATCH_MEMORY_NOTE}</li>
       </ul>
+      {saveFailed ? <SaveFailedNotice onOpenBackup={onOpenBackup} /> : null}
       {plan.warnings.length > 0 ? (
         <ul className="github__plan-warnings">
           {plan.warnings.map((warning) => (
@@ -917,7 +972,7 @@ function BatchPlanView({
         <button
           type="button"
           className="btn btn--primary"
-          disabled={state.busy !== null || rateLimited}
+          disabled={state.busy !== null || rateLimited || saveFailed}
           onClick={handlers.fetchBatch}
         >
           {plan.files}ファイルを取得
@@ -990,6 +1045,8 @@ function BatchCandidateView({
   candidates,
   batchMatches,
   onApplyBatch,
+  saveFailed,
+  onOpenBackup,
 }: ConnectedViewProps & {
   candidates: NonNullable<GitHubImportState['batchCandidates']>;
 }): JSX.Element {
@@ -1058,6 +1115,8 @@ function BatchCandidateView({
       </h3>
       <p className="dialog__lead">
         全ファイルの取得と検証が終わりました。ここで確定するまで入力テキストは変更されません。
+        一括取り込みは追加と更新だけを行います。GitHub
+        で削除・移動したファイルの入力は、自動では消しません。
       </p>
       <ul className="dialog__details">
         <li>合計 {formatBytes(bytes)}</li>
@@ -1067,6 +1126,7 @@ function BatchCandidateView({
             として読み込みました（推測）。文字化けしていないか、その行の「本文を確認」で確かめてください。
           </li>
         ) : null}
+        <li>{BATCH_MEMORY_NOTE}</li>
         {needingDecision.length > 0 ? (
           <li>
             {needingDecision.length}件は同じ取り込み元の入力があります
@@ -1140,6 +1200,8 @@ function BatchCandidateView({
         onGo={setPageIndex}
       />
 
+      {saveFailed ? <SaveFailedNotice onOpenBackup={onOpenBackup} /> : null}
+
       {/* 確定すると何が起きるか、押せないならなぜかを、確定ボタンのすぐ上に出す。 */}
       <div id="github-batch-outcome" className="github__batch-outcome" aria-live="polite">
         {undecided > 0 ? (
@@ -1167,7 +1229,7 @@ function BatchCandidateView({
           type="button"
           className="btn btn--primary"
           aria-describedby="github-batch-outcome"
-          disabled={state.busy !== null || undecided > 0}
+          disabled={state.busy !== null || undecided > 0 || saveFailed}
           onClick={() => onApplyBatch(toBatchDecisions(batchMatches, choices))}
         >
           {candidates.length}ファイルを取り込む

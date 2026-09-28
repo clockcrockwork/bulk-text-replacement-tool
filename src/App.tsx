@@ -875,6 +875,7 @@ export function App(): JSX.Element {
           onAdd={addFromGitHub}
           onUpdate={updateFromGitHub}
           onApplyBatch={applyGitHubBatch}
+          onOpenBackup={openBackup}
         />
       ) : null}
 

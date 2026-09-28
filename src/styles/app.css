@@ -1728,6 +1728,19 @@ button.github__entry:hover {
   gap: 8px;
 }
 
+/* 保存に失敗している間の警告。書き出しへのボタンを添える。 */
+.github__save-failed {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.github__save-failed p {
+  flex: 1 1 16rem;
+  margin: 0;
+}
+
 /* GitHub 側が変わっていない更新先の補足。警告ほど強くはしない。 */
 .github__batch-note {
   margin: 0;

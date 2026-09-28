@@ -289,6 +289,7 @@ What the plan step guarantees: **no file content (blob) is fetched in bulk befor
 
 Neither list renders more than 100 rows at a time. There is no hard cap on the selection, so without this the screen that shows the warnings could itself become too large to render.
 
+- The plan says that only supported files (`.md` / `.txt` / `.tex`) in the selected range are imported, and counts the entries that were selected but cannot be imported, by kind (unsupported format, over 100 MB, symlink, submodule). A folder checked without being opened hides those entries, and "N files found" would otherwise read as "the whole folder was checked", so a chapter in an unsupported format could go missing from a successful import. Git LFS pointers are only known after the blob is read and still fail the batch atomically.
 - The plan list is paged in steps of 100 as well. Nothing is decided there, but it is the last point to audit the targets before blob requests are spent, so paths beyond the first 100 must be viewable too.
 - The confirmation list is paged in steps of 100, with previous/next controls. Same-source candidates must be decided row by row, so every row has to stay reachable; a list that showed only the first 100 would leave the 101st undecidable. It shows candidates that need a decision first, then candidates with a warning (same basename, Shift_JIS guess), then the rest. The order does not change as choices are made, so the row being edited never moves away.
 - Moving to another page scrolls the list back to its top (the pager sits below the list, so it is usually pressed after scrolling to the end) and moves focus to the range text (for example 「101〜120件目 / 全120件」), which is also a polite live region. The pressed button may become disabled at the first or last page, so focus must not stay on it.
@@ -304,6 +305,12 @@ Next to the commit button, the confirmation step says what committing will do: �
 **選択へ戻る** on the plan step also cancels a fetch that is in progress. The remaining blob requests are aborted and the busy state is cleared.
 
 Closing the dialog (the close button, Escape, or a click on the backdrop) does **not** discard a multi-file import in progress. The plan, the fetched and validated candidates, and the add/update choices made so far stay in memory, and reopening the dialog returns to the same step. Fetching again costs rate limit and choosing again costs manual work, and Escape or a backdrop click is easy to trigger by accident. A fetch that was running when the dialog closed is aborted; reopening shows the plan step so it can be started again without re-enumerating. Only **選択へ戻る**, changing the selection, pinning another snapshot, disconnecting, or committing the import discards the batch. Disconnecting while a batch is in progress asks for confirmation first (`ConfirmDialog`), because keeping the batch on close makes the disconnect button the one remaining easy way to lose it.
+
+A batch in progress lives in memory only (private repository contents are not persisted). The plan and confirmation steps say that a reload or closing the tab loses it, and while a plan or fetched candidates exist the page registers a `beforeunload` guard (browsers that honour it ask before leaving; mobile browsers may not, so the inline note is the guarantee).
+
+While blobs are being fetched, the status shows how many have completed (「選択したファイルを取得しています（37 / 500）」). A static message during a long fetch reads as a hang, and a user who closes or retries at that point throws the work away.
+
+If saving to the browser is already failing, the plan step's fetch button and the confirmation step's commit button are disabled, with a notice that offers 「作業データを書き出す」 inside the dialog. The app-level warning sits behind the modal and cannot be used from there, and an import applied while saving fails is lost on reload together with the earlier unsaved edits.
 
 The backdrop closes a dialog only when the pointer was also pressed on the backdrop. `click` fires on the common ancestor of the press and release targets, so selecting text inside the dialog and releasing outside would otherwise count as a backdrop click (`useBackdropClose`, shared by every dialog in the app). Choices are rechecked against the current workspace when shown: an update choice whose target input no longer has the same source is dropped and must be made again (never guessed).
 
@@ -391,6 +398,8 @@ An update replaces the input's whole text. When the candidate's blob SHA equals 
 - are counted separately in the outcome text next to the commit button
 
 Skipping a single candidate is still out of scope; the user adds it, updates it knowingly, or goes back and unchecks it.
+
+A multi-file import adds and updates only; it is not a sync. Inputs whose GitHub file was deleted or moved since they were imported are left untouched. The confirmation step says so, because re-importing a folder easily reads as "update to what GitHub has now". Detecting such stale inputs is a possible later addition; they are never removed automatically.
 
 ### Same basename but different GitHub source
 
@@ -636,6 +645,9 @@ Implemented:
 - Shift_JIS rows can show the fetched text in place; the plan list is paged by 100
 - fetched blobs are reused within a snapshot, so retries and re-selection only request missing blobs
 - disconnecting with a batch in progress asks for confirmation; a backdrop click closes a dialog only when the press also started on the backdrop
+- the plan counts selected entries that cannot be imported, by kind; the confirmation says the import is not a sync
+- fetch progress is shown as completed / total; a batch in progress warns before unload and says it is memory-only
+- while browser saving fails, batch fetch and commit are disabled and the dialog offers a backup export
 - closing the dialog keeps the plan, fetched candidates, and choices; only 選択へ戻る (or a selection/snapshot change, disconnect, or commit) discards them
 - the rate-limit wait holds while the page stays loaded; a reload or OAuth round-trip re-learns it from the first response
 - the filename collision warning follows the output-name rules and ignores an untouched sample

@@ -1,4 +1,4 @@
-import type { GitHubTreeEntry } from '../types';
+import type { GitHubEntryStatus, GitHubTreeEntry } from '../types';
 import { compareCodePoints } from './githubApi';
 
 /**
@@ -188,4 +188,36 @@ export function planBatch(entries: readonly GitHubTreeEntry[]): BatchPlanSummary
   if (bytes > BATCH_WARN_BYTES) warnings.push({ kind: 'storage', bytes });
   if (unknownSizes > 0) warnings.push({ kind: 'unknownSize', files: unknownSizes });
   return { files: entries.length, bytes, unknownSizes, warnings };
+}
+
+/** 取り込めない項目の種類ごとの件数。表示する順に並べる。 */
+export interface ExcludedCount {
+  status: Exclude<GitHubEntryStatus, 'dir' | 'importable'>;
+  count: number;
+}
+
+const EXCLUDED_ORDER: ReadonlyArray<ExcludedCount['status']> = [
+  'unsupported',
+  'tooLarge',
+  'symlink',
+  'submodule',
+];
+
+/**
+ * 選択範囲にあったが取り込めない項目を、種類ごとに数える。
+ *
+ * 開かずにフォルダごと選ぶと、対象外の項目は一覧で見えない。「N ファイルが見つかった」を
+ * フォルダの中身をすべて確かめた結果と受け取ると、非対応の形式の章が欠けたまま一括が
+ * 成功してしまうので、計画画面で内訳を出す。
+ */
+export function summarizeExcluded(entries: readonly GitHubTreeEntry[]): ExcludedCount[] {
+  const counts = new Map<ExcludedCount['status'], number>();
+  for (const entry of entries) {
+    if (entry.status === 'dir' || entry.status === 'importable') continue;
+    counts.set(entry.status, (counts.get(entry.status) ?? 0) + 1);
+  }
+  return EXCLUDED_ORDER.flatMap((status) => {
+    const count = counts.get(status);
+    return count ? [{ status, count }] : [];
+  });
 }

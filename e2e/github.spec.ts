@@ -1176,6 +1176,102 @@ test('ダイアログの中で文字をドラッグで選び、外側で離し�
   await expect(dialog(page)).toHaveCount(0);
 });
 
+test('開かずにフォルダを選んでも、計画画面で対象外の項目の件数と、対応する形式だけを取り込むことを示す', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
+  await expect(plan).toContainText('対応する形式（.md / .txt / .tex）のファイルだけを取り込みます');
+  await expect(plan).toContainText(
+    'ほかに対象外が 2件あります（非対応の形式 1件 · シンボリックリンク 1件）',
+  );
+  await expect(plan).toContainText('再読み込みやタブを閉じると、取得し直しになります');
+});
+
+test('本文の取得中は、何件目まで進んだかを出す', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  // 2件のうち ch2.txt だけを止め、ch1.md が先に終わった状態を作る。
+  const second = await hold(page, new RegExp(GitHubMock.blobSha('ビルがやってきた。\n')));
+  await dialog(page).getByRole('button', { name: '2ファイルを取得' }).click();
+  await expect(dialog(page).getByRole('status')).toContainText(
+    '選択したファイルを取得しています（1 / 2）',
+  );
+  await second.release();
+  const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+  await expect(batch).toContainText('一括取り込みは追加と更新だけを行います');
+});
+
+test('一括取り込みの途中は、再読み込みやタブを閉じる前に確かめる', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+  const leaving = () =>
+    page.evaluate(() => {
+      const event = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+
+  expect(await leaving()).toBe(false);
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  const batch = await fetchSelection(page, 2);
+  expect(await leaving()).toBe(true);
+  await batch.getByRole('button', { name: '2ファイルを取り込む' }).click();
+  expect(await leaving()).toBe(false);
+});
+
+test('接続したあとで保存に失敗したら、一括の取得と確定を止めて書き出しへ案内する', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await mock.install(page);
+  await seed(page);
+  // 接続（画面遷移）のあとで、保存だけを失敗させられるようにする。
+  await page.addInitScript((key) => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function setItem(name: string, value: string) {
+      if (name === key && (window as { failSave?: boolean }).failSave) {
+        throw new Error('QuotaExceededError');
+      }
+      return original.call(this, name, value);
+    };
+  }, STORAGE_KEY);
+  await openApp(page);
+  await connect(page);
+  await openRepository(page);
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  await dialog(page).getByRole('button', { name: '選択したファイルを確認' }).click();
+  const plan = dialog(page).getByRole('region', { name: '取り込むファイルの確認' });
+  await plan.getByRole('button', { name: '2ファイルを取得' }).click();
+  const batch = dialog(page).getByRole('region', { name: '複数ファイルの取り込み確認' });
+  await dialog(page).getByRole('button', { name: '閉じる' }).click();
+
+  await page.evaluate(() => {
+    (window as { failSave?: boolean }).failSave = true;
+  });
+  await page.locator('.input-card__title').fill('changed.md');
+  await expect(page.locator('.save-error')).toBeVisible();
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await expect(batch.getByRole('alert')).toContainText('いまブラウザへの保存に失敗しています');
+  await expect(batch.getByRole('button', { name: '2ファイルを取り込む' })).toBeDisabled();
+  await batch.getByRole('button', { name: '作業データを書き出す' }).click();
+  await expect(page.getByRole('dialog', { name: '作業データ' })).toBeVisible();
+});
+
 test('大きさの分からないファイルがあれば、合計が小さくても取得の前に警告する', async ({ page }) => {
   const mock = new GitHubMock([REPO]);
   mock.omitTreeSizes = true;

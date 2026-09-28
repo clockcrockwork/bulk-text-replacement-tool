@@ -362,10 +362,15 @@ describe('一括取り込みの段階', () => {
     commitSha: SHA_A,
     selection: SELECTED.selection,
     entries: [ENTRY],
+    excluded: [],
   });
 
   it('列挙の結果は、始めたときと同じ選択・同じコミットのときだけ計画にする', () => {
-    expect(PLANNED.batchPlan).toEqual({ entries: [ENTRY], selection: SELECTED.selection });
+    expect(PLANNED.batchPlan).toEqual({
+      entries: [ENTRY],
+      excluded: [],
+      selection: SELECTED.selection,
+    });
     expect(PLANNED.busy).toBeNull();
   });
 
@@ -381,6 +386,7 @@ describe('一括取り込みの段階', () => {
         commitSha: SHA_A,
         selection: SELECTED.selection,
         entries: [ENTRY],
+        excluded: [],
       }),
     ).toBe(changed);
   });
@@ -392,6 +398,7 @@ describe('一括取り込みの段階', () => {
         commitSha: SHA_C,
         selection: SELECTED.selection,
         entries: [ENTRY],
+        excluded: [],
       }),
     ).toBe(SELECTED);
   });

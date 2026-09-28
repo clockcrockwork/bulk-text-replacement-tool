@@ -85,27 +85,35 @@ async function loadBatchTree(
   }
 }
 
+/** 選択範囲を列挙した結果。 */
+export interface SelectedEntries {
+  /** 取り込める（対応する）ファイル。パス順。 */
+  files: GitHubTreeEntry[];
+  /**
+   * 選択範囲にあったが取り込めない項目（非対応の形式・100MB 超・シンボリックリンク・
+   * サブモジュール）。開かずにフォルダごと選ぶと一覧で見えないので、計画画面で件数を出す。
+   */
+  excluded: GitHubTreeEntry[];
+}
+
 export async function enumerateSelectedEntries(
   api: GitHubClient,
   snapshot: GitHubSnapshot,
   selection: GitHubTreeSelection,
   knownEntries: ReadonlyMap<string, GitHubTreeEntry>,
   signal: AbortSignal,
-): Promise<GitHubTreeEntry[]> {
+): Promise<SelectedEntries> {
   const queue: Array<{ path: string; treeSha: string }> = [];
   const files: GitHubTreeEntry[] = [];
+  const excluded: GitHubTreeEntry[] = [];
   const seen = new Set<string>();
 
   const collect = (entries: readonly GitHubTreeEntry[]): void => {
     for (const entry of entries) {
-      if (
-        entry.status === 'importable' &&
-        isPathSelected(selection, entry.path) &&
-        !seen.has(entry.path)
-      ) {
-        seen.add(entry.path);
-        files.push(entry);
-      }
+      if (entry.status === 'dir' || seen.has(entry.path)) continue;
+      if (!isPathSelected(selection, entry.path)) continue;
+      seen.add(entry.path);
+      (entry.status === 'importable' ? files : excluded).push(entry);
     }
   };
 
@@ -123,10 +131,10 @@ export async function enumerateSelectedEntries(
         `${path} の場所を確認できませんでした。フォルダを開き直して選び直してください。`,
       );
     }
-    if (entry.status === 'importable') {
-      collect([entry]);
-    } else if (entry.status === 'dir') {
+    if (entry.status === 'dir') {
       queue.push({ path: entry.path, treeSha: entry.sha });
+    } else {
+      collect([entry]);
     }
   }
 
@@ -159,7 +167,8 @@ export async function enumerateSelectedEntries(
   }
 
   files.sort((a, b) => compareCodePoints(a.path, b.path));
-  return files;
+  excluded.sort((a, b) => compareCodePoints(a.path, b.path));
+  return { files, excluded };
 }
 
 export interface GitHubImport {
@@ -239,6 +248,19 @@ function readPendingAuth(): string | null {
  */
 export function useGitHubImport(): GitHubImport {
   const [state, dispatch] = useReducer(githubImportReducer, initialGitHubImportState);
+
+  // 一括取り込みの途中の内容（計画・取得した本文・決めた取り込み方法）はメモリにだけある。
+  // ダイアログを閉じても残すようにしたので、次に起きやすい取り違えは再読み込みやタブを閉じること。
+  // 対応するブラウザでは離れる前に確かめる（スマホでは出ないことがあるので、画面にも書いてある）。
+  const batchInProgress = state.batchPlan !== null || state.batchCandidates !== null;
+  useEffect(() => {
+    if (!batchInProgress) return;
+    const warn = (event: BeforeUnloadEvent): void => {
+      event.preventDefault();
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [batchInProgress]);
   const tokenRef = useRef<GitHubToken | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   /**
@@ -377,20 +399,30 @@ export function useGitHubImport(): GitHubImport {
     run(
       '選択範囲を確認しています（ファイルの本文はまだ取得していません）',
       async (api, signal) => {
-        const entries = await enumerateSelectedEntries(
+        const found = await enumerateSelectedEntries(
           api,
           snapshot,
           selection,
           knownEntries,
           signal,
         );
-        if (entries.length === 0) {
-          throw new GitHubBatchPreparationError('選択範囲に取り込めるファイルがありません。');
+        if (found.files.length === 0) {
+          throw new GitHubBatchPreparationError(
+            found.excluded.length > 0
+              ? `選択範囲に取り込めるファイルがありません（対象外 ${found.excluded.length}件）。`
+              : '選択範囲に取り込めるファイルがありません。',
+          );
         }
-        return entries;
+        return found;
       },
-      (entries) =>
-        dispatch({ type: 'batch/planned', commitSha: snapshot.commitSha, selection, entries }),
+      ({ files, excluded }) =>
+        dispatch({
+          type: 'batch/planned',
+          commitSha: snapshot.commitSha,
+          selection,
+          entries: files,
+          excluded,
+        }),
     );
   };
 
@@ -399,6 +431,8 @@ export function useGitHubImport(): GitHubImport {
     const plan = state.batchPlan;
     if (!snapshot || !plan) return;
 
+    const total = plan.entries.length;
+    let done = 0;
     run(
       '選択したファイルを取得しています',
       (api, signal) =>
@@ -418,6 +452,15 @@ export function useGitHubImport(): GitHubImport {
           }
           const result = buildCandidate(snapshot, entry, buffer);
           if (result.kind === 'error') throw new GitHubBatchPreparationError(result.message);
+          // 件数が多いと長くかかるので、進んでいることを見せる。変わらない表示のままだと
+          // 固まったと思って閉じたりやり直したりしやすい。中断したあとは表示を戻さない。
+          done += 1;
+          if (!requestSignal.aborted) {
+            dispatch({
+              type: 'busy',
+              label: `選択したファイルを取得しています（${done} / ${total}）`,
+            });
+          }
           return result.candidate;
         }),
       (candidates) => dispatch({ type: 'batch/set', selection: plan.selection, candidates }),

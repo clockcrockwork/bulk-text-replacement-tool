@@ -68,7 +68,7 @@ describe('enumerateSelectedEntries', () => {
     });
     const selection = setTreeSelection(emptyTreeSelection(), 'chapters', true);
 
-    const files = await enumerateSelectedEntries(
+    const { files } = await enumerateSelectedEntries(
       api,
       SNAPSHOT,
       selection,
@@ -78,6 +78,34 @@ describe('enumerateSelectedEntries', () => {
 
     expect(calls).toEqual(['chapters']);
     expect(files.map((item) => item.path)).toEqual(['chapters/ch1.md', 'chapters/ch2.txt']);
+  });
+
+  it('選択範囲にある取り込めない項目は、捨てずに対象外として返す', async () => {
+    const api = client({
+      getTreeRecursive: async () => ({
+        entries: [
+          entry('chapters/ch1.md'),
+          entry('chapters/cover.png', 'unsupported'),
+          entry('chapters/link.md', 'symlink'),
+          entry('chapters/sub', 'dir'),
+        ],
+        truncated: false,
+      }),
+    });
+    const selection = setTreeSelection(emptyTreeSelection(), 'chapters', true);
+    const found = await enumerateSelectedEntries(
+      api,
+      SNAPSHOT,
+      selection,
+      new Map([['chapters', entry('chapters', 'dir', SHA_C)]]),
+      new AbortController().signal,
+    );
+    expect(found.files.map((item) => item.path)).toEqual(['chapters/ch1.md']);
+    // フォルダ自体は対象外に数えない。
+    expect(found.excluded.map((item) => [item.path, item.status])).toEqual([
+      ['chapters/cover.png', 'unsupported'],
+      ['chapters/link.md', 'symlink'],
+    ]);
   });
 
   it('recursive response が truncated なら partial を捨てて非再帰 traversal へ fallback する', async () => {
@@ -98,7 +126,7 @@ describe('enumerateSelectedEntries', () => {
     });
     const selection = setTreeSelection(emptyTreeSelection(), 'chapters', true);
 
-    const files = await enumerateSelectedEntries(
+    const { files } = await enumerateSelectedEntries(
       api,
       SNAPSHOT,
       selection,
@@ -130,7 +158,7 @@ describe('enumerateSelectedEntries', () => {
     selection = setTreeSelection(selection, 'chapters/drafts', false);
     selection = setTreeSelection(selection, 'chapters/drafts/keep.md', true);
 
-    const files = await enumerateSelectedEntries(
+    const { files } = await enumerateSelectedEntries(
       api,
       SNAPSHOT,
       selection,
@@ -185,7 +213,7 @@ describe('enumerateSelectedEntries', () => {
     });
     const selection = setTreeSelection(emptyTreeSelection(), 'ch1.md', true);
 
-    const files = await enumerateSelectedEntries(
+    const { files } = await enumerateSelectedEntries(
       api,
       SNAPSHOT,
       selection,

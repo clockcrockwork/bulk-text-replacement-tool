@@ -42,6 +42,8 @@ export interface DirectoryListing {
  */
 export interface GitHubBatchPlan {
   entries: GitHubTreeEntry[];
+  /** 選択範囲にあったが取り込めない項目。計画画面で件数を出す。 */
+  excluded: GitHubTreeEntry[];
   selection: GitHubTreeSelection;
 }
 
@@ -147,6 +149,7 @@ export type GitHubImportAction =
       commitSha: string;
       selection: GitHubTreeSelection;
       entries: GitHubTreeEntry[];
+      excluded: GitHubTreeEntry[];
     }
   /** 計画した全件を取得・検証し終えた。`selection` は計画を作ったときの選択。 */
   | { type: 'batch/set'; selection: GitHubTreeSelection; candidates: GitHubCandidate[] }
@@ -429,7 +432,7 @@ function acceptBatchPlan(
   return {
     ...state,
     candidate: null,
-    batchPlan: { entries: action.entries, selection: action.selection },
+    batchPlan: { entries: action.entries, excluded: action.excluded, selection: action.selection },
     batchCandidates: null,
     batchChoices: NO_CHOICES,
     busy: null,
