@@ -10,6 +10,7 @@ import {
   describeEntryStatus,
   describeGitHubError,
   encodePath,
+  errorClassificationNeedsBody,
   formatBytes,
   GITHUB_CORS_ALLOWED_REQUEST_HEADERS,
   GITHUB_CORS_EXPOSED_RESPONSE_HEADERS,
@@ -297,6 +298,34 @@ describe('describeGitHubError', () => {
   it('オフラインは、ネットワーク障害一般と区別して伝える', () => {
     expect(describeGitHubError(classifyFetchFailure(false))).toContain('オフライン');
     expect(describeGitHubError(classifyFetchFailure(true))).not.toContain('オフライン');
+  });
+});
+
+describe('errorClassificationNeedsBody', () => {
+  const headers = (remaining: string | null) => ({
+    get: (name: string) => (name === 'x-ratelimit-remaining' ? remaining : null),
+  });
+
+  it('本文が要るのは、rate limit のヘッダが無い 403 だけ', () => {
+    expect(errorClassificationNeedsBody(403, headers(null))).toBe(true);
+    expect(errorClassificationNeedsBody(403, headers('12'))).toBe(true);
+    expect(errorClassificationNeedsBody(403, headers('0'))).toBe(false);
+    for (const status of [401, 404, 409, 429, 500, 503]) {
+      expect(errorClassificationNeedsBody(status, headers(null))).toBe(false);
+    }
+  });
+
+  it('本文が要らないと言った応答は、本文が何であっても分類が変わらない（classifyErrorResponse と揃う）', () => {
+    const messages = ['', 'API rate limit exceeded', 'Resource protected by organization SAML'];
+    for (const status of [400, 401, 403, 404, 409, 422, 429, 500, 502]) {
+      for (const remaining of [null, '0', '5']) {
+        const h = headers(remaining);
+        const kinds = new Set(
+          messages.map((message) => classifyErrorResponse(status, h, message, 0).kind),
+        );
+        if (!errorClassificationNeedsBody(status, h)) expect(kinds.size).toBe(1);
+      }
+    }
   });
 });
 

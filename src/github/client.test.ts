@@ -224,6 +224,7 @@ function timedFetch(
     | {
         kind: 'body';
         status?: number;
+        headers?: Record<string, string>;
         chunks: Array<[number, Uint8Array]>;
         end: boolean;
         pulled?: { count: number };
@@ -257,7 +258,7 @@ function timedFetch(
           if (plan.end) setTimeout(() => signal.aborted || cancelled || controller.close(), at);
         },
       });
-      resolve(new Response(stream, { status: plan.status ?? 200 }));
+      resolve(new Response(stream, { status: plan.status ?? 200, headers: plan.headers ?? {} }));
     })) as typeof fetch;
 }
 
@@ -333,7 +334,7 @@ describe('待ち時間（issue #20）', () => {
     expect(settledAt - started).toBe(2_000);
   });
 
-  it('エラー応答の本文が止まっても待ち続けず、状態コードの分類はそのまま（401 を timeout にしない）', async () => {
+  it('状態コードだけで決まる 401 は、本文が止まっても待ち続けず unauthorized にする（接続を切る）', async () => {
     const fetchImpl = timedFetch({
       kind: 'body',
       status: 401,
@@ -344,6 +345,45 @@ describe('待ち時間（issue #20）', () => {
     const settled = expect(result).rejects.toMatchObject({ detail: { kind: 'unauthorized' } });
     await vi.advanceTimersByTimeAsync(1_000);
     await settled;
+  });
+
+  it('403 の本文が止まったら、rate limit や SAML を見分けられないので timeout にする', async () => {
+    const fetchImpl = timedFetch({
+      kind: 'body',
+      status: 403,
+      chunks: [[0, bytes('{"message":')]],
+      end: false,
+    });
+    const result = client(fetchImpl).listBranches(REPO, new AbortController().signal);
+    const settled = expect(result).rejects.toMatchObject({ detail: { kind: 'timeout' } });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await settled;
+  });
+
+  it('x-ratelimit-remaining: 0 の 403 は、本文が止まってもヘッダで rate limit と分かる', async () => {
+    const fetchImpl = timedFetch({
+      kind: 'body',
+      status: 403,
+      headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '2000000000' },
+      chunks: [[0, bytes('{"message":')]],
+      end: false,
+    });
+    const result = client(fetchImpl).listBranches(REPO, new AbortController().signal);
+    const settled = expect(result).rejects.toMatchObject({ detail: { kind: 'rateLimited' } });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await settled;
+  });
+
+  it('403 の本文が通信の失敗で読めなければ、一般の 403 と取り違えず network にする', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError('network'));
+      },
+    });
+    const fetchImpl = (async () => new Response(stream, { status: 403 })) as typeof fetch;
+    await expect(
+      client(fetchImpl, () => true).listBranches(REPO, new AbortController().signal),
+    ).rejects.toMatchObject({ detail: { kind: 'network' } });
   });
 
   it('blob は少しずつでも受信が進んでいれば、合計が上限を超えても切らない', async () => {

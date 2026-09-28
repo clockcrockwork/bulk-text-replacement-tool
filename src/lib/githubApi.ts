@@ -275,6 +275,18 @@ export function classifyErrorResponse(
   return { ...base, kind: 'invalidResponse' };
 }
 
+/**
+ * 失敗した応答の分類に、本文（`message`）が要るか。
+ *
+ * 401・404・409・429・5xx と、`x-ratelimit-remaining: 0` の 403 は、状態コードとヘッダだけで
+ * 決まる。それ以外の 403 は、secondary rate limit・SAML SSO・一般の 403 を本文でしか
+ * 見分けられない。本文が途中で止まったとき、これが true なら分類せずに時間切れ（または
+ * 通信の失敗）として扱う（`classifyErrorResponse` と条件を揃える）。
+ */
+export function errorClassificationNeedsBody(status: number, headers: HeaderReader): boolean {
+  return status === 403 && headers.get('x-ratelimit-remaining') !== '0';
+}
+
 function formatClock(ms: number): string {
   const date = new Date(ms);
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;

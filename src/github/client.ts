@@ -3,6 +3,7 @@ import {
   classifyErrorResponse,
   classifyFetchFailure,
   encodePath,
+  errorClassificationNeedsBody,
   GITHUB_API_ORIGIN,
   GITHUB_FETCH_INIT,
   type GitHubError,
@@ -269,7 +270,20 @@ export function createGitHubClient(
     }
     if (!response.ok) {
       // secondary rate limit と SAML SSO は本文の message でしか見分けられない。
-      const body = await response.text().catch(() => '');
+      let body = '';
+      try {
+        body = await response.text();
+      } catch (error) {
+        // 本文を読み切れなかった。状態コードとヘッダだけで決まる失敗（401・rate limit など）は
+        // そのまま分類する（401 は接続を切るべき場面で、時間切れの「再試行」にしない）。
+        // 本文が要る 403 は、読めないまま分類すると rate limit や SAML を一般の 403 と
+        // 取り違えるので、分類しない。中断（時間切れを含む）なら投げ直して `limited` に
+        // 任せ、そうでなければ通信の失敗にする。
+        if (errorClassificationNeedsBody(response.status, response.headers)) {
+          if (signal.aborted) throw error;
+          throw new GitHubRequestError(classifyFetchFailure(isOnline()));
+        }
+      }
       throw new GitHubRequestError(
         classifyErrorResponse(
           response.status,
