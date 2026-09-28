@@ -246,6 +246,34 @@ test('アクセストークンはどこにも保存せず、再読み込みす�
   await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeVisible();
 });
 
+test('GitHub から追加した直後（保存のデバウンス中）に再読み込みしても、追加した入力は残る', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await mock.install(page);
+  await seed(page);
+  // 時計を止めて、デバウンス（400ms）の保存が走らないうちに再読み込みする状況を確実に作る。
+  // 残るのは、離れるとき（pagehide / visibilitychange）の書き出しが最新の内容を書いた場合だけ。
+  await page.clock.install();
+  await openApp(page);
+  await page.clock.pauseAt(Date.now() + 60_000);
+  await connect(page);
+  await openRepository(page);
+  await entry(page, 'chapters/').click();
+  await entry(page, 'ch1.md').click();
+  await dialog(page)
+    .getByRole('region', { name: '取り込む内容の確認' })
+    .getByRole('button', { name: '入力に追加' })
+    .click();
+  await expect(page.locator('.input-card')).toHaveCount(2);
+
+  await page.reload();
+  await expect(page.locator('.input-card')).toHaveCount(2);
+  await expect(page.locator('.input-card').nth(1).locator('.input-card__title')).toHaveValue(
+    'ch1.md',
+  );
+});
+
 test('リポジトリ → 既定ブランチの固定 → フォルダ → 1ファイルを入力に追加し、変換に使える', async ({
   page,
 }) => {

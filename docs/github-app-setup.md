@@ -59,8 +59,11 @@ Environment は **Production** にだけ設定する（Preview の URL は callb
 | `GITHUB_OAUTH_ALLOWED_ORIGINS` | `https://bulk-text-replacement-tool.vercel.app` | Function だけ |
 | `GITHUB_OAUTH_REDIRECT_URIS` | `https://bulk-text-replacement-tool.vercel.app/` | Function だけ |
 
-- `VITE_` で始まる3つは公開値で、ビルドに埋め込まれる。**設定したら再デプロイが必要**。
-  Client ID と slug が未設定のビルドでは「GitHubから追加」ボタンが無効になる
+- `VITE_` で始まる3つは公開値で、ビルドに埋め込まれる。Client ID と slug が未設定のビルドでは
+  「GitHubから追加」ボタンが無効になる
+- **どの変数も、変えたら再デプロイが必要**（`VITE_` だけでなく、secret と許可リストも）。
+  Vercel の環境変数は新しいデプロイにしか反映されない。再デプロイを忘れると、本番の
+  Function は古い値のまま動く
 - `VITE_GITHUB_APP_ORIGIN` は、GitHub App の Callback URL と `GITHUB_OAUTH_ALLOWED_ORIGINS` に
   登録した**正規のオリジン**（パスを付けない。末尾の `/` は付けても付けなくてもよい）。
   - Production のビルドは、別名（`bulk-text-replacement-tool-<team>.vercel.app` などの
@@ -76,6 +79,38 @@ Environment は **Production** にだけ設定する（Preview の URL は callb
     同時に変える
 - 許可リストはカンマ区切りで複数書ける。独自ドメインを足すときは両方に足し、
   GitHub App の Callback URL にも同じ URL を追加する
+- **2つの許可リストは末尾の `/` の要否が逆**。取り違えやすいので、形が崩れていると
+  Function は設定なし（503 `not_configured`）として断り、どの変数が崩れているかを
+  Function のログに出す
+  - `GITHUB_OAUTH_ALLOWED_ORIGINS`：オリジンそのもの。**`/` を付けない**（`https://example.com`）
+  - `GITHUB_OAUTH_REDIRECT_URIS`：オリジン直下の callback。**`/` を付ける**（`https://example.com/`）。
+    オリジンは `GITHUB_OAUTH_ALLOWED_ORIGINS` のどれかと同じであること
+
+### client secret を差し替える
+
+古い secret を先に消すと、差し替えが本番に届くまでのあいだ全員の接続が失敗する
+（GitHub は `incorrect_client_credentials` を返し、画面には「交換に失敗: 400 exchange_rejected」と出る）。
+次の順で行う。
+
+1. GitHub App の設定で **新しい secret を作る**（古い secret はまだ消さない。App は secret を同時に複数持てる）
+2. Vercel の `GITHUB_APP_CLIENT_SECRET` を新しい値に変える
+3. **Production を再デプロイする**
+4. §5 の 1〜3 で接続できることを確かめる
+5. GitHub App の設定で **古い secret を削除する**
+
+### 「接続できない」と言われたとき
+
+画面の「トークンの交換に失敗: <状態コード> <理由コード>」と、Function のログで切り分ける。
+
+| 画面に出るもの | 主な原因 | 直し方 |
+| --- | --- | --- |
+| `503 not_configured` | 環境変数が無い・形が崩れている・変えたあと再デプロイしていない | Function のログに出る変数名を見て直し、再デプロイする |
+| `403 origin_not_allowed` | 許可していないオリジン（Production の別名など）から開いている | 正規の URL で開く。独自ドメインなら両方の許可リストに足す |
+| `400 redirect_uri_not_allowed` | 開いたオリジンの callback が許可リストに無い | `GITHUB_OAUTH_REDIRECT_URIS` に `https://<そのオリジン>/` を足す |
+| `400 exchange_rejected` | コードの期限切れ・使い回し、または secret の不一致 | もう一度接続する。全員が失敗するなら secret と再デプロイを確かめる |
+| `502 upstream_invalid` | GitHub App の「Expire user authorization tokens」がオフ（期限の無いトークンは受け付けない） | App の設定でオンに戻す |
+| `502 upstream_unreachable` / `upstream_error` | GitHub 側の障害・遅延 | 時間をおいて接続し直す |
+| `429`（一時的に制限） | Firewall のレート制限（§3） | 1 分ほど待つ。同じ IP の利用者が続けて試していないかも確かめる |
 - client secret は `VITE_` を付けない（付けるとブラウザに配られる）
 
 ## 3. トークン交換のレート制限（Vercel Firewall）
@@ -126,6 +161,10 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
 ### 本番への入れ方（段階導入）
 
 設定を誤ると OAuth 全体を止めるので、いきなり本番で制限を有効にしない。
+
+**Rate Limit を本番で有効にするのは、429 の案内文（#18 の `describeTokenExchangeFailure`）が
+本番に入ってからにする。** それより前に有効にすると、制限に掛かった利用者には
+「トークンの交換に失敗: 429」とだけ出て、待てば直ることが伝わらない。
 
 **Firewall のルールは、条件に環境を入れない限り Production と Preview の両方に効く。**
 上の表の条件は `/api/` の前方一致だけなので、同じルールの Then を Rate Limit に変えると、
@@ -197,7 +236,8 @@ Preview で試すつもりでも本番に同時に効く。Preview で試すと�
 
 ## 5. 確認（実 GitHub での smoke test）
 
-本番にデプロイしたあと:
+本番にデプロイしたあと（1 の前に、GitHub App の設定で **Expire user authorization tokens が
+オン**であることを見る。オフだと 1 で `502 upstream_invalid` になる）:
 
 1. 「GitHubから追加」→ 同意画面 →「GitHubに接続」
 2. 初回は「アクセスできるリポジトリがありません」になるので、
@@ -224,7 +264,9 @@ Preview で試すつもりでも本番に同時に効く。Preview で試すと�
    ```
 
    確かめたあとは窓（60 秒）が明けるまで、同じ IP からは接続できない。この間に接続すると、
-   画面に「少し時間をおいてから」の案内が出ること
+   画面に「少し時間をおいてから」の案内が出ること。
+   **利用者と同じ回線（社内の NAT・同じ Wi-Fi）から実行しない**。同じ IP の利用者全員が
+   60 秒間接続できなくなる。携帯のテザリングなど別の回線から、利用の少ない時間に行う
 10. **実機の Safari（macOS と iOS）**で 1〜4 を通すこと。COOP（§4）によるブラウジング
     コンテキストグループの切り替えのあとも、戻った画面で「接続の確認に失敗しました」
     「この画面で始めた接続ではない」が出ずにリポジトリの一覧まで進めば、sessionStorage は残っている

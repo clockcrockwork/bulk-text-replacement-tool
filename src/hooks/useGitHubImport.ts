@@ -19,6 +19,7 @@ import {
   isTokenUsable,
   nonCanonicalTarget,
   PENDING_AUTH_KEY,
+  parseExchangeErrorCode,
   parsePendingAuth,
   parseTokenResponse,
   readCallbackParams,
@@ -331,12 +332,19 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
         cache: 'no-store',
         credentials: 'same-origin',
       });
-      const token = response.ok ? parseTokenResponse(await response.json(), Date.now()) : null;
+      // 失敗の本文は理由コードだけを読む（読めなくても状態コードで知らせる）。
+      const payload: unknown = await response.json().catch(() => null);
+      const token = response.ok ? parseTokenResponse(payload, Date.now()) : null;
       // 交換の途中でページを離れたか閉じられていたら、返ってきたトークンは捨てる
       // （接続は解除・取り消し済み）。
       if (superseded()) return;
       if (!token) {
-        dropConnection(describeTokenExchangeFailure(response.status));
+        dropConnection(
+          describeTokenExchangeFailure(
+            response.status,
+            response.ok ? null : parseExchangeErrorCode(payload),
+          ),
+        );
         return;
       }
       tokenRef.current = token;
