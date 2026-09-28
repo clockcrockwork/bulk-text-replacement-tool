@@ -616,6 +616,49 @@ test('state が一致しない戻りはコードを交換せず、URL と一時�
   expect(await page.evaluate((key) => sessionStorage.getItem(key), PENDING_AUTH_KEY)).toBeNull();
 });
 
+test('トークン交換の途中で閉じたら接続を取り消し、あとから返った交換の結果で接続しない', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+
+  // 交換の応答を止めておく（モックより後に張った route が先に効く）。
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reached: () => void = () => {};
+  const exchangeStarted = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  await page.route('**/api/github/token', async (route) => {
+    reached();
+    await held;
+    await route.fallback();
+  });
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).click();
+  await exchangeStarted;
+  // 認可から戻った画面は「接続しています」のまま、交換の応答を待っている。
+  await expect(
+    dialog(page).getByRole('heading', { name: 'GitHub に接続しています' }),
+  ).toBeVisible();
+
+  await dialog(page).getByRole('button', { name: '閉じる' }).click();
+  await expect(dialog(page)).toHaveCount(0);
+  release();
+
+  // 交換は返ってくるが、その結果でトークンを持たない（一覧を取りに行かない）。
+  await expect.poll(() => mock.tokenCalls.length).toBe(1);
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  const consent = dialog(page).getByRole('region', { name: 'GitHub との接続' });
+  await expect(consent.getByRole('alert')).toContainText('GitHub への接続を取り消しました');
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeEnabled();
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toHaveCount(0);
+  expect(mock.apiCalls(/^\/user\/installations$/)).toEqual([]);
+});
+
 test('自分で始めていない戻り URL（直接開かれたもの）では何も交換しない', async ({ page }) => {
   const mock = new GitHubMock([REPO]);
   await mock.install(page);
@@ -675,8 +718,11 @@ test('保存の直前（デバウンス中）に接続しても、書き出せ�
   await page.getByRole('button', { name: 'GitHubから追加' }).click();
   await dialog(page).getByRole('button', { name: 'GitHubに接続' }).click();
 
-  // その場で書き出して失敗に気付き、GitHub へは移らない。
-  await expect(dialog(page).getByRole('alert').first()).toContainText('接続を中止しました');
+  // その場で書き出して失敗に気付き、GitHub へは移らない。中止の知らせと保存失敗の警告は
+  // 役割を分け、書き出しの案内は1回だけ出す（同じ案内を2回読み上げさせない）。
+  const alerts = dialog(page).getByRole('alert');
+  await expect(alerts.filter({ hasText: 'GitHub への接続を中止しました' })).toHaveCount(1);
+  await expect(alerts.filter({ hasText: '先に作業データを書き出してください' })).toHaveCount(1);
   await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeDisabled();
   await expect(page.locator('.save-error')).toBeVisible();
   expect(mock.authorizeCalls).toEqual([]);

@@ -273,11 +273,19 @@ export async function handleTokenExchange(request, config, fetchImpl) {
     return fail(502, 'upstream_invalid');
   }
 
-  // 返すのはブラウザが使う分だけ。refresh_token と refresh_token_expires_in は捨てる。
-  /** @type {Record<string, unknown>} */
-  const response = { access_token: accessToken, token_type: 'bearer' };
-  if (typeof payload.expires_in === 'number' && Number.isFinite(payload.expires_in)) {
-    response.expires_in = payload.expires_in;
+  // 期限付きのユーザートークンだけを通す。GitHub App の「Expire user authorization tokens」を
+  // 切ると `expires_in` そのものが返らなくなる。設定の取り違えで、期限の無いトークンを
+  // 黙って「期限情報なし」として配らない（ブラウザはそれを無期限として使い続けてしまう）。
+  const expiresIn = payload.expires_in;
+  if (typeof expiresIn !== 'number' || !Number.isFinite(expiresIn) || expiresIn <= 0) {
+    console.error('github token exchange: upstream token has no expiry');
+    return fail(502, 'upstream_invalid');
   }
-  return json(200, response);
+  // GitHub のユーザートークンは bearer。違う種類が返ったら、想定外の応答として扱う。
+  if (typeof payload.token_type !== 'string' || payload.token_type.toLowerCase() !== 'bearer') {
+    return fail(502, 'upstream_invalid');
+  }
+
+  // 返すのはブラウザが使う分だけ。refresh_token と refresh_token_expires_in は捨てる。
+  return json(200, { access_token: accessToken, token_type: 'bearer', expires_in: expiresIn });
 }

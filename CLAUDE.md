@@ -145,6 +145,11 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   - アクセストークンは `useGitHubImport` の ref（メモリ）にだけ持つ。localStorage /
     sessionStorage / ワークスペース / 作業データに書かない。sessionStorage に置いてよいのは
     リダイレクトを跨ぐ state と PKCE verifier だけで、戻った時点で消す。
+  - トークンは**期限付きだけ**を使う。`expires_in` の無い（0 以下の）応答は Function が 502 にし、
+    ブラウザ（`parseTokenResponse`）も受け付けない。GitHub App の期限切れ設定がオフにされると
+    `expires_in` が返らなくなり、「期限なし」として使い続けてしまうため。
+  - 接続の途中（`connecting`）で閉じたら取り消す（`attempt` の世代を進める）。トークン交換の
+    fetch はコードが1回しか使えないので止めないが、閉じたあとに返った結果は捨てる。
   - 認可は毎回アプリが state と PKCE（S256）を付けて始める。GitHub の「インストール時に
     OAuth を要求」には頼らない。callback はオリジン直下（`base: './'` なので下位パス不可）。
   - 認可で GitHub の画面へ移る直前に、保留中の編集も含めて保存を書き出す

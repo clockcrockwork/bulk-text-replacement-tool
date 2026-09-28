@@ -225,6 +225,12 @@ describe('sanitizeName（幅を持たない書式文字）', () => {
     expect(sanitizeName('a\ufeff.md', false)).toBe('a_.md');
   });
 
+  it('末尾の BOM は拡張子の一部として残るので、保証していない拡張子として .txt を足す', () => {
+    // `a.md` のまま出すと、見えない文字が消えて別の名前に化けたことに気付けない。
+    expect(resolveFileNames(['a.md\ufeff'])).toEqual(['a.md_.txt']);
+    expect(resolveFileNames(['\ufeffa.md'])).toEqual(['_a.md']);
+  });
+
   it('前後の改行類（改行・行区切り・段落区切り）は従来どおり空白として落とす', () => {
     expect(sanitizeName('\u2028a.md\u2029', false)).toBe('a.md');
     expect(sanitizeName('\na.md\t', false)).toBe('a.md');

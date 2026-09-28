@@ -208,8 +208,11 @@ export function describeCallbackFailure(reason: CallbackFailure): string {
 /** ブラウザがメモリにだけ持つアクセストークン。 */
 export interface GitHubToken {
   accessToken: string;
-  /** 失効時刻（ミリ秒）。GitHub が有効期限を返さなかった場合は null。 */
-  expiresAt: number | null;
+  /**
+   * 失効時刻（ミリ秒）。期限付きのトークンしか受け付けないので、必ずある
+   * （`parseTokenResponse` を参照）。
+   */
+  expiresAt: number;
 }
 
 /**
@@ -217,16 +220,18 @@ export interface GitHubToken {
  *
  * refresh token は Function 側で捨てているので、ここでも読まない
  * （紛れ込んでもメモリにすら載せない）。
+ *
+ * 有効期限（`expires_in`）の無い応答は受け付けない。期限付きのユーザートークンを使うのが
+ * 前提で、GitHub App の設定でトークンの期限切れがオフにされると `expires_in` が返らなくなる。
+ * そのとき「期限なし」として使い続けると、設定の取り違えで安全側の前提が黙って外れる。
+ * Function でも同じ確認をしているが、ここでも重ねて確かめる。
  */
 export function parseTokenResponse(value: unknown, now: number): GitHubToken | null {
   if (!isRecord(value)) return null;
   const { access_token: accessToken, expires_in: expiresIn } = value;
   if (typeof accessToken !== 'string' || accessToken === '') return null;
-  const expiresAt =
-    typeof expiresIn === 'number' && Number.isFinite(expiresIn) && expiresIn > 0
-      ? now + expiresIn * 1000
-      : null;
-  return { accessToken, expiresAt };
+  if (typeof expiresIn !== 'number' || !Number.isFinite(expiresIn) || expiresIn <= 0) return null;
+  return { accessToken, expiresAt: now + expiresIn * 1000 };
 }
 
 /**
@@ -238,5 +243,5 @@ export function parseTokenResponse(value: unknown, now: number): GitHubToken | n
 export const TOKEN_EXPIRY_MARGIN_MS = 60 * 1000;
 
 export function isTokenUsable(token: GitHubToken, now: number): boolean {
-  return token.expiresAt === null || now < token.expiresAt - TOKEN_EXPIRY_MARGIN_MS;
+  return now < token.expiresAt - TOKEN_EXPIRY_MARGIN_MS;
 }

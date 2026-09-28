@@ -41,6 +41,8 @@ const APP_CONFIG: GitHubAppConfig | null = readGitHubAppConfig(import.meta.env);
 
 const EXPIRED_NOTICE = 'GitHub との接続の有効期限が切れました。もう一度接続してください。';
 
+const CANCELLED_NOTICE = 'GitHub への接続を取り消しました。';
+
 export interface GitHubImport {
   config: GitHubAppConfig | null;
   /** App のインストール・権限設定の画面。 */
@@ -123,6 +125,13 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
   /** 直前に失敗した操作。「再試行」で同じことをやり直す。 */
   const lastTask = useRef<(() => void) | null>(null);
   const handledCallback = useRef(false);
+  /**
+   * 接続の手続き（認可の画面へ移る準備と、戻ったあとのトークン交換）の世代。
+   * 途中で「閉じる」と進め、それより前に始めた手続きの結果を捨てる。
+   * 交換はコードが1回しか使えないので fetch 自体は止めないが、閉じたあとに返った
+   * トークンは持たない（閉じたのに裏で接続が完了し、一覧を取りに行く、を起こさない）。
+   */
+  const attempt = useRef(0);
 
   /** 進行中の取得を止めて、新しい取得の中断口を作る。 */
   const begin = (): AbortController => {
@@ -273,6 +282,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
 
   const exchangeCode = async (code: string, verifier: string): Promise<void> => {
     dispatch({ type: 'connect/start' });
+    const started = attempt.current;
     // 交換は中断口を共有しない。コードは1回しか使えないので、他の操作や
     // （開発時の Strict Mode による）effect の片付けで止めると、やり直せなくなる。
     try {
@@ -289,6 +299,8 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
         credentials: 'same-origin',
       });
       const token = response.ok ? parseTokenResponse(await response.json(), Date.now()) : null;
+      // 交換の途中で閉じられていたら、返ってきたトークンは捨てる（取り消し済み）。
+      if (attempt.current !== started) return;
       if (!token) {
         dropConnection(
           `GitHub との接続に失敗しました（トークンの交換に失敗: ${response.status}）。もう一度接続してください。`,
@@ -299,6 +311,7 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       dispatch({ type: 'connect/done' });
       loadRepositories();
     } catch (error) {
+      if (attempt.current !== started) return;
       console.error('GitHub のトークン交換に失敗しました', error);
       dropConnection(
         'GitHub との接続に失敗しました。ネットワークを確認して、もう一度接続してください。',
@@ -364,8 +377,11 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       });
       return;
     }
+    const started = attempt.current;
     const pending = { state: randomToken(), verifier: randomToken(), createdAt: Date.now() };
     const codeChallenge = await codeChallengeS256(pending.verifier, crypto.subtle);
+    // 準備の間に閉じられていたら、認可の画面へは移らない。
+    if (attempt.current !== started) return;
     try {
       sessionStorage.setItem(PENDING_AUTH_KEY, serializePendingAuth(pending));
     } catch {
@@ -382,8 +398,8 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       removePendingAuth();
       dispatch({
         type: 'disconnect',
-        notice:
-          'ブラウザへの保存に失敗したため、接続を中止しました。GitHub の画面へ移ると保存できていない作業が失われます。先に作業データを書き出してください。',
+        // 書き出しの案内は、同時に出る保存失敗の警告（saveFailed）に任せる。
+        notice: 'ブラウザへの保存に失敗したため、GitHub への接続を中止しました。',
       });
       return;
     }
@@ -421,6 +437,13 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
     close: () => {
       abortRef.current?.abort();
       abortRef.current = null;
+      // 接続の途中で閉じたら、手続きを取り消す（裏で接続を完了させない）。
+      // 閉じたら終わり、という見た目どおりの意味にする。
+      if (state.connection === 'connecting') {
+        attempt.current += 1;
+        removePendingAuth();
+        dispatch({ type: 'disconnect', notice: CANCELLED_NOTICE });
+      }
       dispatch({ type: 'close' });
     },
     connect,
