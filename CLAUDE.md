@@ -304,3 +304,5 @@ Vercel は `main`、ロリポップは `release/lolipop-v1` の build artifact �
 `.github/workflows/ci.yml` の2ジョブ（`Lint / Types / Unit tests / Build` と `E2E (Playwright)`）。
 `push` は `main` のみ、他は `pull_request` で走る（同じコミットに同名チェックが2系統
 報告されると required status checks が不安定になるため）。失敗時だけレポートを回収する。
+GITHUB_TOKEN は `contents: read` だけ。Action は full SHA で固定し、行末の `# vX.Y.Z` と
+一緒に Dependabot が更新する（タグは付け替えられるので、タグ参照に戻さない）。
