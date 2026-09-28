@@ -286,6 +286,37 @@ export function describeTokenExchangeFailure(status: number, reason: string | nu
   return `GitHub との接続に失敗しました（トークンの交換に失敗: ${detail}）。もう一度接続してください。`;
 }
 
+/**
+ * ブラウザがトークン交換（`/api/github/token`）の応答を待つ上限。
+ *
+ * 平均の所要時間から逆算した値ではない。Function の中の GitHub への交換は、本文の読み取りまで
+ * 含めて 10 秒で必ず切れる（`api/_lib/githubTokenExchange.js` の `UPSTREAM_TIMEOUT_MS`）。
+ * Function の起動・往復・応答の返送が遅くても、その 10 秒の結果（504 upstream_timeout）の方が
+ * 先に届くだけの余裕を持たせる。ブラウザ側で切るのは「Function 自体が返ってこない」ときだけに
+ * したい。Function 側の上限を変えたら、ここも見直す。
+ */
+export const TOKEN_EXCHANGE_TIMEOUT_MS = 25_000;
+
+/**
+ * 交換の応答が上限までに返らなかったときの文言。
+ *
+ * 認可コードは1回しか使えない（交換が GitHub 側で成功している可能性もある）ので、同じコードでは
+ * やり直させない。次の手は「もう一度接続」（認可からやり直す）だけにする。
+ */
+export function describeTokenExchangeTimeout(): string {
+  return 'GitHub との接続を確認できませんでした（応答がありませんでした）。もう一度接続すると、認可の画面からやり直します（作業データはそのまま残っています）。';
+}
+
+/**
+ * 交換の送信そのものが失敗した（応答が無い）ときの文言。`navigator.onLine` は false の
+ * ときだけ信用する（`classifyFetchFailure` と同じ）。
+ */
+export function describeTokenExchangeNetworkFailure(online: boolean | undefined): string {
+  return online === false
+    ? '端末がオフラインのため、GitHub に接続できませんでした。接続が戻ったら、もう一度接続してください（作業データはそのまま残っています）。'
+    : 'GitHub との接続に失敗しました。ネットワークを確認して、もう一度接続してください。';
+}
+
 /** ブラウザがメモリにだけ持つアクセストークン。 */
 export interface GitHubToken {
   accessToken: string;

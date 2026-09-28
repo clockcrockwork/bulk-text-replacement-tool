@@ -2493,3 +2493,160 @@ test.describe('取り込む大きさの上限（5MiB）', () => {
     );
   });
 });
+
+// ---- 通信が止まったとき（issue #20） ----------------------------------------------
+//
+// 応答を止めたまま `page.clock` で時間を進め、案内 → 中断 → 次の手の流れを見る。
+// 秒数は `src/lib/githubApi.ts` / `src/lib/githubAuth.ts` の定数と同じ。
+
+/** トークン交換の応答を `release` まで止める。止めている間に届いたかを `reached` で待てる。 */
+async function holdExchange(page: Page) {
+  let open = (): void => {};
+  const released = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  let reach = (): void => {};
+  const reached = new Promise<void>((resolve) => {
+    reach = resolve;
+  });
+  const handler = async (route: Route): Promise<void> => {
+    reach();
+    await released;
+    await route.fallback().catch(() => {});
+  };
+  await page.route('**/api/github/token', handler);
+  return {
+    reached,
+    release: async (): Promise<void> => {
+      open();
+      await page.unroute('**/api/github/token', handler);
+    },
+  };
+}
+
+function tokenRequests(mock: GitHubMock) {
+  return mock.requests.filter((request) => request.url.endsWith('/api/github/token'));
+}
+
+test('トークン交換が返らなければ、案内のあと中断し、同じコードで再試行させず認可からやり直す', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await page.clock.install();
+  await start(page, mock);
+  const exchange = await holdExchange(page);
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).click();
+  await exchange.reached;
+  const consent = dialog(page).getByRole('region', { name: 'GitHub との接続' });
+  await expect(consent.getByRole('heading', { name: 'GitHub に接続しています' })).toBeVisible();
+  await expect(consent).not.toContainText('時間がかかっています');
+
+  // 8 秒で「閉じれば取り消せる」ことを添える（閉じる操作を知っている前提にしない）。
+  await page.clock.fastForward(8_000);
+  await expect(consent.getByRole('status')).toContainText(
+    '時間がかかっています。閉じると接続を取り消します',
+  );
+
+  // 25 秒で諦め、「もう一度接続」（認可からやり直す）だけを出す。再試行は出さない。
+  await page.clock.fastForward(17_000);
+  await expect(consent.getByRole('alert')).toContainText('応答がありませんでした');
+  await expect(consent.getByRole('alert')).toContainText('認可の画面からやり直します');
+  await expect(dialog(page).getByRole('button', { name: '再試行' })).toHaveCount(0);
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeEnabled();
+
+  // 止めていた応答があとから届いても、その結果では接続しない。
+  await exchange.release();
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toHaveCount(0);
+  expect(mock.apiCalls(/^\/user\/installations$/)).toEqual([]);
+  // 同じコードを送り直していない（交換の送信は1回だけ）。
+  expect(tokenRequests(mock)).toHaveLength(1);
+
+  // 「GitHubに接続」は認可から始め直す（新しい state）。
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).click();
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toBeVisible();
+  expect(mock.authorizeCalls).toHaveLength(2);
+  expect(mock.authorizeCalls[1]?.get('state')).not.toBe(mock.authorizeCalls[0]?.get('state'));
+  expect(tokenRequests(mock)).toHaveLength(2);
+});
+
+test('一覧が返らなければ、案内のあと中断して再試行を出し、再試行で続けられる', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await page.clock.install();
+  await start(page, mock);
+  const installations = await hold(page, /\/user\/installations(\?|$)/);
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).click();
+  await expect.poll(() => installations.held.length).toBe(1);
+  await expect(dialog(page).getByRole('status').first()).toContainText(
+    'リポジトリを読み込んでいます',
+  );
+
+  await page.clock.fastForward(8_000);
+  await expect(dialog(page)).toContainText(
+    '時間がかかっています。閉じると中断できます（作業データはそのまま残ります）。',
+  );
+
+  // 1リクエストの上限（30 秒）で中断し、失敗として見せる（読み込み中のまま残さない）。
+  await page.clock.fastForward(22_000);
+  const alert = dialog(page).getByRole('alert');
+  await expect(alert).toContainText('GitHub から 30 秒応答がなかったため中断しました');
+  await expect(dialog(page)).not.toContainText('時間がかかっています');
+  await expect.poll(() => installations.failed.length).toBe(1);
+
+  await installations.release();
+  await alert.getByRole('button', { name: '再試行' }).click();
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toBeVisible();
+});
+
+test('時間がかかっている途中で閉じたら、失敗は出さずに中断し、あとから時間が経っても知らせない', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([REPO]);
+  await page.clock.install();
+  await start(page, mock);
+  await connect(page);
+  const trees = await hold(page, /\/git\/trees\//);
+
+  await dialog(page).getByRole('button', { name: 'octo/novel' }).click();
+  await expect.poll(() => trees.held.length).toBe(1);
+  await page.clock.fastForward(8_000);
+  await expect(dialog(page)).toContainText('時間がかかっています');
+
+  await dialog(page).getByRole('button', { name: '閉じる' }).click();
+  await expect(dialog(page)).toHaveCount(0);
+  // 閉じる＝中断（要求は実際に止まる）。
+  await expect.poll(() => trees.failed.length).toBe(1);
+
+  // 上限を過ぎても、閉じた取得の時間切れは知らせない。
+  await page.clock.fastForward(60_000);
+  await trees.release();
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await expect(dialog(page).getByRole('heading', { name: 'ファイルを選ぶ' })).toBeVisible();
+  await expect(dialog(page)).not.toContainText('応答がなかった');
+  await expect(dialog(page)).not.toContainText('時間がかかっています');
+});
+
+test('端末がオフラインなら、ネットワーク障害一般と区別して知らせる', async ({ page, context }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  // `setOffline` は navigator.onLine を false にするが、route で置き換えた要求は応答してしまう。
+  // 回線が切れたときと同じく、要求そのものも切断で落とす。
+  const offlineTrees = (url: URL): boolean => url.href.includes('/git/trees/');
+  const disconnect = (route: Route): Promise<void> => route.abort('internetdisconnected');
+  await page.route(offlineTrees, disconnect);
+  await context.setOffline(true);
+  await entry(page, 'chapters/').click();
+  const alert = dialog(page).getByRole('alert');
+  await expect(alert).toContainText('端末がオフラインのため');
+
+  await page.unroute(offlineTrees, disconnect);
+  await context.setOffline(false);
+  await alert.getByRole('button', { name: '再試行' }).click();
+  await expect(entry(page, 'ch1.md')).toBeVisible();
+});

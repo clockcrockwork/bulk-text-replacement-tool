@@ -110,8 +110,15 @@ Environment は **Production** にだけ設定する（Preview の URL は callb
 | `400 exchange_rejected` | コードの期限切れ・使い回し、または secret の不一致 | もう一度接続する。全員が失敗するなら secret と再デプロイを確かめる |
 | `502 upstream_invalid` | GitHub App の「Expire user authorization tokens」がオフ（期限の無いトークンは受け付けない） | App の設定でオンに戻す |
 | `502 upstream_unreachable` / `upstream_error` | GitHub 側の障害・遅延 | 時間をおいて接続し直す |
+| `504 upstream_timeout` | GitHub が 10 秒以内に応答を返し終えなかった（ヘッダ待ちでも本文の途中でも同じ） | 時間をおいて接続し直す。続くなら GitHub の障害を確かめる |
+| 「応答がありませんでした」（状態コードなし） | ブラウザが 25 秒待っても Function から返らなかった（Function に届かない・起動しない） | もう一度接続する（認可からやり直す）。続くなら Function のログと Vercel の障害を確かめる |
 | `429`（一時的に制限） | Firewall のレート制限（§3） | 1 分ほど待つ。同じ IP の利用者が続けて試していないかも確かめる |
 - client secret は `VITE_` を付けない（付けるとブラウザに配られる）
+
+ブラウザが交換を諦めたあと（「応答がありませんでした」）も、Function と GitHub の側では交換が
+済んでいることがある。そのときコードは使い済みになり、期限付きのトークンが誰にも渡らないまま
+GitHub 上に残る。ブラウザにもログにも出ていないので使われることはなく、期限（8 時間）で失効する。
+取り消す仕組みは置いていない（理由は `docs/github-import-v2.md` の Network stalls and timeouts）。
 
 ## 3. トークン交換のレート制限（Vercel Firewall）
 
@@ -281,3 +288,13 @@ Preview で試すつもりでも本番に同時に効く。Preview で試すと�
     （bfcache から戻ったページでトークンが生き返らない）。E2E は Playwright の Chromium が
     bfcache を無効にして起動するため、`persisted` 付きの pagehide / pageshow を合成して
     確かめているだけで、本物の「戻る」はここで確かめる
+13. 待ち時間（issue #20）の見直しの材料。**実装や配信を止める確認ではない**。25 / 30 / 60 秒
+    を平均に寄せるためではなく、正常な利用を誤って切っていないかを見る
+    - Function の固定の遅れ: `vercel httpstat /api/github/token` を 3 回程度。GET は 405 で終わり、
+      コードを使わず GitHub も呼ばない。1回目は cold の**可能性がある**だけなので断定しない。
+      Firewall（§3）は IP ごとに 60 秒で 10 回までなので連打しない。429 は Function に届いて
+      いないので、比べるのは 405 の結果だけ
+    - 実際の交換: 普段の接続のついでに、ブラウザの Network で `POST /api/github/token` の
+      所要時間を見る（測るためにコードを送り直さない）
+    - iOS Safari・モバイル回線: 接続・一覧・取得、背面へ回して戻る、「時間がかかっています」、
+      時間切れのあとの再試行 / もう一度接続が、操作として破綻しないこと

@@ -37,8 +37,13 @@ export const MAX_BODY_BYTES = 4096;
  */
 export const MAX_TOKEN_LIFETIME_SECONDS = 24 * 60 * 60;
 
-/** GitHub の応答を待つ上限。 */
-const UPSTREAM_TIMEOUT_MS = 10_000;
+/**
+ * GitHub の応答を待つ上限（ミリ秒）。fetch に渡した signal は応答ヘッダだけでなく本文の読み取り
+ * （`upstream.json()`）にも効くので、これは「送ってから本文を読み終えるまで」の合計になる。
+ * ブラウザ側の上限（`src/lib/githubAuth.ts` の `TOKEN_EXCHANGE_TIMEOUT_MS`）は、この結果が
+ * 先に届くよう、これより十分長くしてある。ここを変えたら、あちらも見直す。
+ */
+export const UPSTREAM_TIMEOUT_MS = 10_000;
 
 /**
  * @typedef {object} ExchangeConfig
@@ -218,6 +223,18 @@ async function readBody(request) {
 }
 
 /**
+ * GitHub の応答が上限までに終わらなかった。
+ *
+ * このあと GitHub 側では交換が済んでいることもある（コードは消費され、トークンは誰にも
+ * 渡らずに期限で失効する）。ブラウザは同じコードで再試行せず、認可からやり直す。
+ * @returns {Response}
+ */
+function upstreamTimedOut() {
+  console.error('github token exchange: upstream timed out');
+  return fail(504, 'upstream_timeout');
+}
+
+/**
  * redirect_uri のオリジン。URL として読めなければ null。
  * @param {string} value
  * @returns {string | null}
@@ -232,13 +249,15 @@ function originOf(value) {
 
 /**
  * 交換リクエストを処理する。`fetchImpl` は GitHub への送信（テストで差し替える）。
+ * `options.upstreamTimeoutMs` はテストで上限を短くするためだけにある。
  *
  * @param {Request} request
  * @param {ExchangeConfig | null} config
  * @param {typeof fetch} fetchImpl
+ * @param {{ upstreamTimeoutMs?: number }} [options]
  * @returns {Promise<Response>}
  */
-export async function handleTokenExchange(request, config, fetchImpl) {
+export async function handleTokenExchange(request, config, fetchImpl, options = {}) {
   if (request.method !== 'POST') return fail(405, 'method_not_allowed', { Allow: 'POST' });
   if (!config) return fail(503, 'not_configured');
 
@@ -291,6 +310,11 @@ export async function handleTokenExchange(request, config, fetchImpl) {
     return fail(400, 'redirect_uri_not_allowed');
   }
 
+  // ヘッダ待ちでも本文の途中でも、同じ signal で合計の時間を切る。時間切れは「GitHub が遅い」
+  // として `upstream_timeout` にまとめ、壊れた応答（`upstream_invalid`）や届かない
+  // （`upstream_unreachable`）と区別する。理由コードは失敗の画面に出るので、運用者が切り分けられる。
+  const upstreamSignal = AbortSignal.timeout(options.upstreamTimeoutMs ?? UPSTREAM_TIMEOUT_MS);
+
   /** @type {Response} */
   let upstream;
   try {
@@ -307,9 +331,10 @@ export async function handleTokenExchange(request, config, fetchImpl) {
         redirect_uri: redirectUri,
         code_verifier: verifier,
       }).toString(),
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      signal: upstreamSignal,
     });
   } catch {
+    if (upstreamSignal.aborted) return upstreamTimedOut();
     // 例外の中身に送信内容が載り得るので、ログには種類だけを出す。
     console.error('github token exchange: upstream unreachable');
     return fail(502, 'upstream_unreachable');
@@ -320,6 +345,8 @@ export async function handleTokenExchange(request, config, fetchImpl) {
   try {
     payload = await upstream.json();
   } catch {
+    // 応答ヘッダのあと本文の途中で止まった場合も、同じ上限で切れてここに来る。
+    if (upstreamSignal.aborted) return upstreamTimedOut();
     console.error(`github token exchange: unreadable upstream response (${upstream.status})`);
     return fail(502, 'upstream_invalid');
   }

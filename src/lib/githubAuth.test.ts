@@ -6,6 +6,8 @@ import {
   codeChallengeS256,
   describeCallbackFailure,
   describeTokenExchangeFailure,
+  describeTokenExchangeNetworkFailure,
+  describeTokenExchangeTimeout,
   installationUrl,
   isTokenUsable,
   MAX_TOKEN_LIFETIME_SECONDS,
@@ -20,6 +22,7 @@ import {
   readGitHubAppConfig,
   serializePendingAuth,
   stripCallbackParams,
+  TOKEN_EXCHANGE_TIMEOUT_MS,
   TOKEN_EXPIRY_MARGIN_MS,
   validateCallback,
 } from './githubAuth';
@@ -296,6 +299,22 @@ describe('トークン交換の失敗の知らせ', () => {
     const message = describeTokenExchangeFailure(429, 'rate_limited');
     expect(message).toContain('一時的に制限');
     expect(message).toContain('作業データはそのまま残っています');
+  });
+
+  it('時間切れは、同じコードで再試行させず、認可からやり直すと伝える', () => {
+    const message = describeTokenExchangeTimeout();
+    expect(message).toContain('もう一度接続すると、認可の画面からやり直します');
+    expect(message).not.toContain('再試行');
+  });
+
+  it('オフラインは navigator.onLine が false のときだけ伝える', () => {
+    expect(describeTokenExchangeNetworkFailure(false)).toContain('オフライン');
+    expect(describeTokenExchangeNetworkFailure(true)).not.toContain('オフライン');
+    expect(describeTokenExchangeNetworkFailure(undefined)).not.toContain('オフライン');
+  });
+
+  it('ブラウザ側の上限は、Function の上限（10 秒）より十分長い', () => {
+    expect(TOKEN_EXCHANGE_TIMEOUT_MS).toBeGreaterThanOrEqual(2 * 10_000);
   });
 });
 

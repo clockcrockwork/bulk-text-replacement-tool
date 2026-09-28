@@ -275,6 +275,12 @@ export function GitHubImportDialog({
             {state.busy}…
           </p>
         ) : null}
+        {state.busy && state.slow ? (
+          // 「閉じれば中断できる」を利用者が知っている前提にしない。
+          <p className="github__status github__status--slow" role="status">
+            時間がかかっています。閉じると中断できます（作業データはそのまま残ります）。
+          </p>
+        ) : null}
 
         {state.info ? (
           <p className="github__status" role="status">
@@ -365,6 +371,11 @@ function ConsentView({
       {state.notice ? (
         <p className="dialog__error" role="alert">
           {state.notice}
+        </p>
+      ) : null}
+      {connecting && state.slow ? (
+        <p className="github__status github__status--slow" role="status">
+          時間がかかっています。閉じると接続を取り消します（作業データはそのまま残ります）。
         </p>
       ) : null}
       <ul className="dialog__details github__promises">

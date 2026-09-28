@@ -1336,6 +1336,12 @@ a.btn {
   font-size: 13px;
 }
 
+/* 待ちが長いときの案内は、ただの進行表示より目に留まるようにする（色だけに頼らず文でも伝える）。 */
+.github__status--slow {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
 .github__error {
   display: flex;
   flex-wrap: wrap;

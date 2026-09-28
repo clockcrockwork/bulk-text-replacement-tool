@@ -104,6 +104,11 @@ export interface GitHubImportState {
   selection: GitHubTreeSelection;
   /** 取得中の内容。null なら待っていない。 */
   busy: string | null;
+  /**
+   * 取得中（または接続中）に、利用者に見える進みが `SLOW_NOTICE_MS` のあいだ無かった。
+   * 「時間がかかっています。閉じると中断できます」を添える。進みがあれば（`busy` の更新で）消える。
+   */
+  slow: boolean;
   error: GitHubImportError | null;
   /** 失敗ではない知らせ（「最新です」など）。次の操作で消える。 */
   info: string | null;
@@ -132,6 +137,8 @@ export type GitHubImportAction =
   /** 切断する。トークンの失効やユーザーの操作で呼ぶ。 */
   | { type: 'disconnect'; notice: string | null }
   | { type: 'busy'; label: string }
+  /** 進みが無いまま時間が経った。待っているときだけ効く。 */
+  | { type: 'busy/slow' }
   /** `rateLimitedUntil` を渡すと、その時刻まで GitHub への要求を止める。 */
   | { type: 'fail'; error: GitHubImportError; rateLimitedUntil?: number }
   | { type: 'error/dismiss' }
@@ -198,6 +205,7 @@ export const initialGitHubImportState: GitHubImportState = {
   batchChoices: NO_CHOICES,
   selection: emptyTreeSelection(),
   busy: null,
+  slow: false,
   error: null,
   info: null,
   rateLimitedUntil: null,
@@ -235,6 +243,15 @@ export function githubImportReducer(
     : { ...next, info: null };
 }
 
+/**
+ * 「時間がかかっています」を出す。待っている（取得中か接続中の）ときだけ効かせ、
+ * 待ち終わったあとに遅れて届いた知らせで、次の画面に案内を残さない。
+ */
+function markSlow(state: GitHubImportState): GitHubImportState {
+  const waiting = state.busy !== null || state.connection === 'connecting';
+  return waiting ? { ...state, slow: true } : state;
+}
+
 function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImportState {
   switch (action.type) {
     case 'open':
@@ -255,7 +272,7 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
       };
 
     case 'connect/start':
-      return { ...state, connection: 'connecting', notice: null, error: null };
+      return { ...state, connection: 'connecting', notice: null, error: null, slow: false };
 
     case 'connect/abandon':
       return state.connection === 'connecting' ? { ...state, connection: 'disconnected' } : state;
@@ -271,7 +288,7 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
         : state;
 
     case 'connect/done':
-      return { ...state, connection: 'connected', busy: null, error: null };
+      return { ...state, connection: 'connected', busy: null, error: null, slow: false };
 
     case 'disconnect':
       return {
@@ -283,7 +300,10 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
       };
 
     case 'busy':
-      return { ...state, busy: action.label, error: null };
+      return { ...state, busy: action.label, error: null, slow: false };
+
+    case 'busy/slow':
+      return markSlow(state);
 
     case 'fail':
       return {

@@ -175,3 +175,42 @@ test.describe('320px 幅の端末', () => {
     await expect(page.locator('.input-card')).toHaveCount(250);
   });
 });
+
+test('スマホ幅でも、時間がかかっている案内と時間切れの知らせが幅に収まり、再試行をタップできる', async ({
+  page,
+}) => {
+  const mock = new GitHubMock([novelRepository()]);
+  await page.clock.install();
+  await mock.install(page);
+  await seedWorkspace(page, { inputs: [], groups: [{ id: 'g1', name: 'A用' }], rules: [] });
+  await openApp(page);
+
+  // リポジトリの一覧を、再試行するまで返さない。
+  let hold = true;
+  let reached = 0;
+  await page.route(
+    (url) => url.origin === 'https://api.github.com' && url.pathname === '/user/installations',
+    async (route) => {
+      reached += 1;
+      if (hold) return;
+      await route.fallback();
+    },
+  );
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).tap();
+  await dialog(page).getByRole('button', { name: 'GitHubに接続' }).tap();
+  await expect.poll(() => reached).toBe(1);
+
+  await page.clock.fastForward(8_000);
+  await expect(dialog(page)).toContainText('時間がかかっています。閉じると中断できます');
+  await expectFitsWidth(page);
+
+  await page.clock.fastForward(22_000);
+  const alert = dialog(page).getByRole('alert');
+  await expect(alert).toContainText('30 秒応答がなかった');
+  await expectFitsWidth(page);
+
+  hold = false;
+  await alert.getByRole('button', { name: '再試行' }).tap();
+  await expect(dialog(page).getByRole('heading', { name: 'リポジトリを選ぶ' })).toBeVisible();
+});
