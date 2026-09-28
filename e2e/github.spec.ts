@@ -673,6 +673,43 @@ test('NovelText 型の深いパスで同名 body.md が複数あり、同じ blo
   // blobCache は再試行用で、同時進行中の同一 SHA リクエストを coalesce する契約ではない。
 });
 
+
+test('別ディレクトリへ移動しながら同名 body.md を個別チェックしても選択を保持する', async ({
+  page,
+}) => {
+  const repository = novelRepository({
+    branches: {
+      main: [
+        { path: '作品/texts/CT-0001/body.md', content: '本文1\\n' },
+        { path: '作品/texts/CT-0002/body.md', content: '本文2\\n' },
+      ],
+    },
+  });
+  const mock = new GitHubMock([repository]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await entry(page, '作品/').click();
+  await entry(page, 'texts/').click();
+
+  await entry(page, 'CT-0001/').click();
+  await dialog(page).getByRole('checkbox', { name: 'body.md を選択' }).check();
+  await dialog(page).getByRole('button', { name: '上の階層へ' }).click();
+
+  await entry(page, 'CT-0002/').click();
+  await dialog(page).getByRole('checkbox', { name: 'body.md を選択' }).check();
+
+  const batch = await fetchSelection(page, 2);
+  await expect(batch.locator('.github__batch-warning')).toHaveCount(2);
+  await batch.getByRole('button', { name: '2ファイルを取り込む' }).click();
+
+  await expect(page.locator('.input-card__source')).toHaveText([
+    /作品\/texts\/CT-0001\/body\.md/,
+    /作品\/texts\/CT-0002\/body\.md/,
+  ]);
+});
+
 test('NovelText 実構成相当の36個の body.md を一括で別入力として保持し、出力名だけ重複解決する', async ({
   page,
 }) => {
