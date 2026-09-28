@@ -7,6 +7,7 @@ import {
 } from '../lib/format';
 import { ACCEPT_ATTRIBUTE, ACCEPTED_EXTENSIONS_LABEL } from '../lib/inputFiles';
 import { formatSourceDetail, formatSourceLabel } from '../lib/inputSource';
+import { hasUnsafeDisplayChars, revealUnsafeChars } from '../lib/revealText';
 import type { InputText } from '../types';
 import { Icon } from './Icon';
 
@@ -144,6 +145,17 @@ export function InputPanel({
                 <Icon name="close" />
               </button>
             </div>
+            {/* 入力欄は値をそのまま持つ（書き換えると名前が変わる）ので、RLO などは欄の中では
+                効いたまま見えない。見える形の名前を別に添えて、偽装した名前に気付けるようにする。 */}
+            {hasUnsafeDisplayChars(input.title) ? (
+              <p className="input-card__reveal">
+                <span className="tag">注意</span>
+                <span>
+                  名前に見えない文字があります:{' '}
+                  <span className="input-card__reveal-name">{revealUnsafeChars(input.title)}</span>
+                </span>
+              </p>
+            ) : null}
             {input.source ? (
               <div className="input-card__source" title={formatSourceDetail(input.source)}>
                 <span className="tag">GitHub</span>

@@ -8,6 +8,12 @@ on:
     branches: [main]
   pull_request:
 
+# GITHUB_TOKEN はリポジトリの読み取りだけにする。どのジョブも checkout とテストしか
+# しないので、書き込み権限を持たせる理由が無い（依存のスクリプトや Action が
+# 乗っ取られたときに、push やリリースの改ざんまで届かせない）。
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true

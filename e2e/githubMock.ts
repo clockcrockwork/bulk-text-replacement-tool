@@ -107,6 +107,8 @@ export class GitHubMock {
   recursiveTreeTruncations = 0;
   /** true の間、tree 応答から blob の size を省く（大きさ不明の項目の E2E 用）。 */
   omitTreeSizes = false;
+  /** 200 以外なら、トークン交換がその状態コードで失敗する（429 は Vercel Firewall の制限）。 */
+  tokenStatus = 200;
 
   private readonly repositories = new Map<number, MockRepository>();
   private readonly objects = new Map<string, { tree: TreeItem[] } | { blob: Buffer }>();
@@ -259,6 +261,13 @@ export class GitHubMock {
       const body = route.request().postData() ?? '';
       this.tokenCalls.push(body);
       this.tokenOrigins.push(await route.request().headerValue('origin'));
+      if (this.tokenStatus !== 200) {
+        return route.fulfill({
+          status: this.tokenStatus,
+          headers: { 'content-type': 'text/plain', 'cache-control': 'no-store' },
+          body: 'Too Many Requests',
+        });
+      }
       return route.fulfill({
         status: 200,
         headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },

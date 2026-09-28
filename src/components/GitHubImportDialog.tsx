@@ -54,6 +54,7 @@ import {
   formatSourceDetail,
   shortSha,
 } from '../lib/inputSource';
+import { revealUnsafeChars as reveal } from '../lib/revealText';
 import type { GitHubBatchPlan, GitHubImportError, GitHubImportState } from '../state/githubImport';
 import type { GitHubRepository, GitHubTreeEntry } from '../types';
 import { Icon } from './Icon';
@@ -67,6 +68,7 @@ export interface GitHubDialogHandlers {
   reloadRepositories: () => void;
   selectRepository: (repository: GitHubRepository) => void;
   clearRepository: () => void;
+  reselectRepository: () => void;
   showBranches: () => void;
   hideBranches: () => void;
   selectBranch: (ref: string) => void;
@@ -99,6 +101,10 @@ interface GitHubImportDialogProps {
   state: GitHubImportState;
   handlers: GitHubDialogHandlers;
   installUrl: string | null;
+  /** 正規でないオリジンで開かれているとき、正規のオリジンの URL（`useGitHubImport`）。 */
+  canonicalUrl: string | null;
+  /** 作業データを書き出す（「作業データ」ダイアログの書き出しと同じ処理）。 */
+  onExportBackup: () => void;
   /**
    * ブラウザへの保存に失敗しているか。
    * 認可は画面遷移を伴うので、保存できていない作業はそこで失われる。
@@ -111,8 +117,6 @@ interface GitHubImportDialogProps {
   onAdd: () => void;
   onUpdate: (inputId: string) => void;
   onApplyBatch: (decisions: readonly GitHubBatchDecision[]) => void;
-  /** 作業データの書き出しを開く（保存に失敗しているときの逃げ道）。 */
-  onOpenBackup: () => void;
 }
 
 /**
@@ -148,6 +152,11 @@ function ErrorNotice({
           接続し直す
         </button>
       ) : null}
+      {error.recover === 'reselect' ? (
+        <button type="button" className="btn btn--small" onClick={handlers.reselectRepository}>
+          リポジトリを選び直す
+        </button>
+      ) : null}
       {error.recover === 'dismiss' ? (
         <button type="button" className="btn btn--small" onClick={handlers.dismissError}>
           閉じる
@@ -175,11 +184,17 @@ function viewKey(state: GitHubImportState): string {
  * 同意 → 接続 → リポジトリ → ブランチ（ここでコミットを固定）→ フォルダを辿って
  * 1ファイルを選ぶ → 内容を確かめて入力に追加、の順。タップだけで進められるよう、
  * 選択肢はすべてボタンの一覧にしている。
+ *
+ * GitHub から来た名前（リポジトリ・ブランチ・パス・ファイル名）は `reveal` を通して描画する。
+ * 双方向制御文字をそのまま出すと、一覧の見た目と違うファイルを選ばせる偽装ができる。
+ * 変えるのは表示だけで、選んだ項目・出自・タイトルは元の文字列のまま扱う。
  */
 export function GitHubImportDialog({
   state,
   handlers,
   installUrl,
+  canonicalUrl,
+  onExportBackup,
   saveFailed,
   sameSource,
   titleCollision,
@@ -187,7 +202,6 @@ export function GitHubImportDialog({
   onAdd,
   onUpdate,
   onApplyBatch,
-  onOpenBackup,
 }: GitHubImportDialogProps): JSX.Element {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const backdrop = useBackdropClose(dialogRef, () => handlers.close());
@@ -238,11 +252,13 @@ export function GitHubImportDialog({
             onUpdate={onUpdate}
             onApplyBatch={onApplyBatch}
             saveFailed={saveFailed}
-            onOpenBackup={onOpenBackup}
+            onExportBackup={onExportBackup}
           />
         ) : (
           <ConsentView
             state={state}
+            canonicalUrl={canonicalUrl}
+            onExportBackup={onExportBackup}
             saveFailed={saveFailed}
             headingRef={headingRef}
             onConnect={handlers.connect}
@@ -283,6 +299,15 @@ export function GitHubImportDialog({
           </p>
         ) : null}
 
+        {/* 「閉じる」は接続を残す（続けて取り込むときに辿り直さなくて済む）。bfcache では
+            共用の端末を想定して切るので、同じ想定で「閉じる」の意味も見える所に書いておく。 */}
+        {connected ? (
+          <p className="dialog__lead github__session-note">
+            「閉じる」では、このタブの GitHub
+            との接続は残ります。共用の端末では、終わったら「接続を解除」を押してください。
+          </p>
+        ) : null}
+
         <div className="dialog__actions">
           {connected ? (
             <button
@@ -307,6 +332,8 @@ export function GitHubImportDialog({
 
 interface ConsentViewProps {
   state: GitHubImportState;
+  canonicalUrl: string | null;
+  onExportBackup: () => void;
   saveFailed: boolean;
   headingRef: RefObject<HTMLHeadingElement | null>;
   onConnect: () => void;
@@ -316,7 +343,14 @@ interface ConsentViewProps {
  * GitHub へ遷移する前の説明。何を許可し、何が起きないかを先に見せる。
  * GitHub の権限はリポジトリ単位なので、「選んだファイルだけ」の保証はこのアプリ側の約束になる。
  */
-function ConsentView({ state, saveFailed, headingRef, onConnect }: ConsentViewProps): JSX.Element {
+function ConsentView({
+  state,
+  canonicalUrl,
+  onExportBackup,
+  saveFailed,
+  headingRef,
+  onConnect,
+}: ConsentViewProps): JSX.Element {
   const connecting = state.connection === 'connecting';
   return (
     <section className="github__consent" aria-label="GitHub との接続">
@@ -335,28 +369,61 @@ function ConsentView({ state, saveFailed, headingRef, onConnect }: ConsentViewPr
           どのリポジトリを許可するかは GitHub の画面で選びます。
         </li>
         <li>
-          このアプリが取得するのは、この画面で選んだ対応ファイル（.md / .txt / .tex）だけです。
+          一覧を出すために、許可したリポジトリ・ブランチ・フォルダの情報（名前・コミット・一覧）を取得します。
+          <strong>本文を取得するのは、この画面で選んだファイルだけ</strong>
+          です（対応形式は .md / .txt / .tex）。
         </li>
         <li>
-          接続の資格情報は保存しません。再読み込みやタブを閉じたあとは、もう一度接続が必要です。
+          接続の資格情報は保存しません。再読み込み・タブを閉じる・ほかのページへ移動したあとは、もう一度接続が必要です（「戻る」で戻っても接続は解除されています）。
         </li>
         <li>
           取り込んだ本文は、手で追加した原稿と同じくこのブラウザの中に保存されます。
           リポジトリの内容がこのサイトのサーバーを経由することはありません。
         </li>
+        <li>
+          取り込んだ入力には、取り込み元（owner/repo・ブランチ・パス・コミットの SHA）も記録します。
+          これはこのブラウザ（localStorage）に保存され、作業データの書き出しにも含まれます。
+        </li>
       </ul>
+      {canonicalUrl ? (
+        <div className="dialog__error github__origin" role="alert">
+          <p>
+            このアドレスでは GitHub に接続できません。GitHub App に登録してある
+            正規のアドレスで開き直してください。
+          </p>
+          <p>
+            <a href={canonicalUrl} target="_blank" rel="noreferrer">
+              {canonicalUrl} を開く
+            </a>
+          </p>
+          <p>
+            作業データはアドレスごとにブラウザへ保存されるため、移った先には引き継がれません。
+            必要なら先に作業データを書き出してください。
+          </p>
+        </div>
+      ) : null}
+      {/* 書き出しはその場で行えるようにする。モーダルの外にある「作業データ」を探させると、
+          閉じたあとに書き出し忘れたまま作業を続けやすい。書き出す処理は既存のものと同じ。 */}
       {saveFailed ? (
-        <p className="dialog__error" role="alert">
-          いまブラウザへの保存に失敗しています。接続では GitHub の画面へ移動するため、
-          保存できていない作業が失われます。先に作業データを書き出してください。
-        </p>
+        <div className="dialog__error github__save-failed" role="alert">
+          <p className="github__save-failed-text">
+            いまブラウザへの保存に失敗しています。接続では GitHub の画面へ移動するため、
+            保存できていない作業が失われます。先に作業データを書き出してください。
+          </p>
+          <div className="dialog__row">
+            <button type="button" className="btn btn--small" onClick={onExportBackup}>
+              <Icon name="download" size={14} />
+              <span>作業データを書き出す</span>
+            </button>
+          </div>
+        </div>
       ) : null}
       <div className="dialog__row">
         <button
           type="button"
           className="btn btn--primary"
           onClick={onConnect}
-          disabled={connecting || saveFailed}
+          disabled={connecting || saveFailed || canonicalUrl !== null}
         >
           <Icon name="branch" size={15} />
           <span>GitHubに接続</span>
@@ -380,7 +447,7 @@ interface ConnectedViewProps {
   onUpdate: (inputId: string) => void;
   onApplyBatch: (decisions: readonly GitHubBatchDecision[]) => void;
   saveFailed: boolean;
-  onOpenBackup: () => void;
+  onExportBackup: () => void;
 }
 
 function ConnectedView(props: ConnectedViewProps): JSX.Element | null {
@@ -431,7 +498,7 @@ function ConnectedView(props: ConnectedViewProps): JSX.Element | null {
                 onClick={() => handlers.selectRepository(candidate)}
               >
                 <span className="github__entry-name">
-                  {candidate.owner}/{candidate.name}
+                  {reveal(`${candidate.owner}/${candidate.name}`)}
                 </span>
                 {candidate.private ? <span className="tag">private</span> : null}
               </button>
@@ -466,7 +533,7 @@ function ConnectedView(props: ConnectedViewProps): JSX.Element | null {
           headingRef={headingRef}
           plan={state.batchPlan}
           saveFailed={props.saveFailed}
-          onOpenBackup={props.onOpenBackup}
+          onExportBackup={props.onExportBackup}
         />
       ) : state.candidate ? (
         <CandidateView {...props} candidate={state.candidate} />
@@ -494,15 +561,13 @@ function RepositoryContext({
       <dl className="github__facts">
         <div>
           <dt>リポジトリ</dt>
-          <dd>
-            {repository.owner}/{repository.name}
-          </dd>
+          <dd>{reveal(`${repository.owner}/${repository.name}`)}</dd>
         </div>
         {snapshot ? (
           <>
             <div>
               <dt>ブランチ</dt>
-              <dd>{snapshot.ref}</dd>
+              <dd>{reveal(snapshot.ref)}</dd>
             </div>
             <div>
               <dt>固定したコミット</dt>
@@ -567,7 +632,7 @@ function BranchList({
                   onClick={() => handlers.selectBranch(name)}
                 >
                   <Icon name="branch" size={15} />
-                  <span className="github__entry-name">{name}</span>
+                  <span className="github__entry-name">{reveal(name)}</span>
                   {name === defaultBranch ? <span className="tag">既定</span> : null}
                   {name === current ? <span className="tag">表示中</span> : null}
                 </button>
@@ -633,7 +698,9 @@ function Explorer({
       <nav className="github__crumbs" aria-label="現在の場所">
         <ol>
           {trail.map((step, index) => {
-            const label = index === 0 ? rootLabel : step.path.slice(step.path.lastIndexOf('/') + 1);
+            const label = reveal(
+              index === 0 ? rootLabel : step.path.slice(step.path.lastIndexOf('/') + 1),
+            );
             const last = index === trail.length - 1;
             return (
               <li key={step.path || '/'}>
@@ -709,7 +776,7 @@ function Explorer({
         ) : visibleEntries.length === 0 ? (
           <p className="dialog__lead">一致する項目がありません。</p>
         ) : (
-          <ul className="github__list" aria-label={here.path || rootLabel}>
+          <ul className="github__list" aria-label={reveal(here.path || rootLabel)}>
             {visibleEntries.map((entry) => (
               <li key={entry.sha + entry.name}>
                 <TreeEntryRow
@@ -803,7 +870,7 @@ function TreeEntryRow({
       <div className="github__select-row">
         <SelectionCheckbox
           mark={mark}
-          label={`${entry.name} フォルダを選択`}
+          label={`${reveal(entry.name)} フォルダを選択`}
           disabled={selectionLocked}
           onChange={(selected) => handlers.setSelected(entry.path, selected)}
         />
@@ -813,7 +880,7 @@ function TreeEntryRow({
           onClick={() => handlers.enterDirectory(entry)}
         >
           <Icon name="folder" size={16} />
-          <span className="github__entry-name">{entry.name}/</span>
+          <span className="github__entry-name">{reveal(entry.name)}/</span>
         </button>
       </div>
     );
@@ -824,13 +891,13 @@ function TreeEntryRow({
       <div className="github__select-row">
         <SelectionCheckbox
           mark={selected ? 'checked' : 'unchecked'}
-          label={`${entry.name} を選択`}
+          label={`${reveal(entry.name)} を選択`}
           disabled={selectionLocked}
           onChange={(checked) => handlers.setSelected(entry.path, checked)}
         />
         <button type="button" className="github__entry" onClick={() => handlers.selectFile(entry)}>
           <Icon name="file" size={16} />
-          <span className="github__entry-name">{entry.name}</span>
+          <span className="github__entry-name">{reveal(entry.name)}</span>
           {entry.size === null ? null : (
             <span className="github__entry-meta">{formatBytes(entry.size)}</span>
           )}
@@ -842,7 +909,7 @@ function TreeEntryRow({
   return (
     <div className="github__entry is-disabled">
       <Icon name="file" size={16} />
-      <span className="github__entry-name">{entry.name}</span>
+      <span className="github__entry-name">{reveal(entry.name)}</span>
       <span className="github__entry-meta">{describeEntryStatus(entry.status)}</span>
     </div>
   );
@@ -862,15 +929,15 @@ const BATCH_MEMORY_NOTE =
  * それまでの保存できていない編集ごと失われる。背後の警告は操作できないので、
  * 書き出しへの道をここにも置く。
  */
-function SaveFailedNotice({ onOpenBackup }: { onOpenBackup: () => void }): JSX.Element {
+function SaveFailedNotice({ onExportBackup }: { onExportBackup: () => void }): JSX.Element {
   return (
     <div className="dialog__error github__save-failed" role="alert">
-      <p>
+      <p className="github__save-failed-text">
         いまブラウザへの保存に失敗しています。このまま取り込んでも保存されず、再読み込みや
         タブを閉じると失われます。先に作業データを書き出すか、入力を減らして保存できる状態に
         してください。
       </p>
-      <button type="button" className="btn btn--small" onClick={onOpenBackup}>
+      <button type="button" className="btn btn--small" onClick={onExportBackup}>
         作業データを書き出す
       </button>
     </div>
@@ -901,14 +968,14 @@ function BatchPlanView({
   headingRef,
   plan: batchPlan,
   saveFailed,
-  onOpenBackup,
+  onExportBackup,
 }: {
   state: GitHubImportState;
   handlers: GitHubDialogHandlers;
   headingRef: RefObject<HTMLHeadingElement | null>;
   plan: GitHubBatchPlan;
   saveFailed: boolean;
-  onOpenBackup: () => void;
+  onExportBackup: () => void;
 }): JSX.Element {
   const { entries } = batchPlan;
   const rateLimited = useBeforeDeadline(state.rateLimitedUntil);
@@ -942,7 +1009,7 @@ function BatchPlanView({
         </li>
         <li>{BATCH_MEMORY_NOTE}</li>
       </ul>
-      {saveFailed ? <SaveFailedNotice onOpenBackup={onOpenBackup} /> : null}
+      {saveFailed ? <SaveFailedNotice onExportBackup={onExportBackup} /> : null}
       {plan.warnings.length > 0 ? (
         <ul className="github__plan-warnings">
           {plan.warnings.map((warning) => (
@@ -953,7 +1020,7 @@ function BatchPlanView({
       <ul ref={listRef} className="github__plan-list" aria-label="取り込むファイル">
         {entries.slice(page.start, page.end).map((entry) => (
           <li key={entry.path}>
-            <span className="github__plan-path">{entry.path}</span>
+            <span className="github__plan-path">{reveal(entry.path)}</span>
             <span>{entry.size === null ? '大きさ不明' : formatBytes(entry.size)}</span>
           </li>
         ))}
@@ -1046,7 +1113,7 @@ function BatchCandidateView({
   batchMatches,
   onApplyBatch,
   saveFailed,
-  onOpenBackup,
+  onExportBackup,
 }: ConnectedViewProps & {
   candidates: NonNullable<GitHubImportState['batchCandidates']>;
 }): JSX.Element {
@@ -1164,7 +1231,7 @@ function BatchCandidateView({
           return (
             <li key={match.path} className="github__batch-item" data-index={page.start + offset}>
               <div className="github__batch-file">
-                <strong>{match.path}</strong>
+                <strong>{reveal(match.path)}</strong>
                 <span>
                   {formatBytes(candidate.size)}
                   {candidate.encoding === 'shift_jis' ? ' · Shift_JIS' : ''}
@@ -1200,19 +1267,21 @@ function BatchCandidateView({
         onGo={setPageIndex}
       />
 
-      {saveFailed ? <SaveFailedNotice onOpenBackup={onOpenBackup} /> : null}
+      {saveFailed ? <SaveFailedNotice onExportBackup={onExportBackup} /> : null}
 
       {/* 確定すると何が起きるか、押せないならなぜかを、確定ボタンのすぐ上に出す。 */}
       <div id="github-batch-outcome" className="github__batch-outcome" aria-live="polite">
         {undecided > 0 ? (
           <>
-            <p>未決定が{undecided}件あります。すべて決めると取り込めます。</p>
+            <p className="github__batch-outcome-text">
+              未決定が{undecided}件あります。すべて決めると取り込めます。
+            </p>
             <button type="button" className="btn btn--small" onClick={goToUndecided}>
               次の未決定へ
             </button>
           </>
         ) : (
-          <p>
+          <p className="github__batch-outcome-text">
             追加 {outcome.adds}件 · 本文の置き換え {outcome.updates}件
             {outcome.unchangedUpdates > 0
               ? `（うち${outcome.unchangedUpdates}件は GitHub 側が前回の取り込みから変わっていないため、手元で直した内容が失われるだけです）`
@@ -1253,7 +1322,7 @@ function TextPreview({ path, text }: { path: string; text: string }): JSX.Elemen
         type="button"
         className="btn btn--small"
         aria-expanded={open}
-        aria-label={`${path} の本文を${open ? '閉じる' : '確認'}`}
+        aria-label={`${reveal(path)} の本文を${open ? '閉じる' : '確認'}`}
         onClick={() => setOpen((current) => !current)}
       >
         {open ? '本文を閉じる' : '本文を確認'}
@@ -1263,7 +1332,7 @@ function TextPreview({ path, text }: { path: string; text: string }): JSX.Elemen
           className="dialog__textarea github__preview"
           readOnly
           value={text}
-          aria-label={`${path} の本文`}
+          aria-label={`${reveal(path)} の本文`}
           spellCheck={false}
         />
       ) : null}
@@ -1301,7 +1370,7 @@ function BatchDecision({
       <label className="github__batch-decision-field">
         <span>同じ取り込み元があります</span>
         <select
-          aria-label={`${match.path} の取り込み方法`}
+          aria-label={`${reveal(match.path)} の取り込み方法`}
           value={choiceToValue(choice)}
           onChange={(event) => onChoose(valueToChoice(event.currentTarget.value))}
         >
@@ -1309,7 +1378,7 @@ function BatchDecision({
           <option value={choiceToValue({ action: 'add' })}>別の入力として追加</option>
           {options.map((target) => (
             <option key={target.id} value={choiceToValue({ action: 'update', inputId: target.id })}>
-              {target.label} を更新
+              {reveal(target.label)} を更新
               {isUnchangedTarget(match, target) ? '（GitHub 側は変更なし）' : ''}
             </option>
           ))}
@@ -1332,7 +1401,7 @@ function BatchDecision({
           <button
             type="button"
             className="btn btn--small"
-            aria-label={`${match.path} の更新先: 前の${UPDATE_TARGET_OPTION_LIMIT}件`}
+            aria-label={`${reveal(match.path)} の更新先: 前の${UPDATE_TARGET_OPTION_LIMIT}件`}
             disabled={range.index === 0}
             onClick={() => setTargetPage(range.index - 1)}
           >
@@ -1344,7 +1413,7 @@ function BatchDecision({
           <button
             type="button"
             className="btn btn--small"
-            aria-label={`${match.path} の更新先: 次の${UPDATE_TARGET_OPTION_LIMIT}件`}
+            aria-label={`${reveal(match.path)} の更新先: 次の${UPDATE_TARGET_OPTION_LIMIT}件`}
             disabled={range.index === range.count - 1}
             onClick={() => setTargetPage(range.index + 1)}
           >
@@ -1396,7 +1465,7 @@ function UpdateTargetByNumber({
         <input
           type="text"
           inputMode="numeric"
-          aria-label={`${path} の更新先の入力の番号`}
+          aria-label={`${reveal(path)} の更新先の入力の番号`}
           value={value}
           onChange={(event) => setValue(event.currentTarget.value.trim())}
         />
@@ -1436,7 +1505,7 @@ function CandidateView({
   return (
     <section className="github__section" aria-label="取り込む内容の確認">
       <h3 ref={headingRef} className="github__heading" tabIndex={-1}>
-        {candidate.title} を取り込む
+        {reveal(candidate.title)} を取り込む
       </h3>
       <ul className="dialog__details">
         <li>{formatSourceDetail(candidate.source)}</li>
@@ -1481,7 +1550,7 @@ function CandidateView({
                 checked={target === input.id}
                 onChange={() => setTarget(input.id)}
               />
-              <span>{input.label}</span>
+              <span>{reveal(input.label)}</span>
             </label>
           ))}
         </fieldset>

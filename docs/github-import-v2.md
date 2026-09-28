@@ -620,7 +620,7 @@ Implemented:
 Implementation decisions:
 
 - callback URL is the origin root (`https://<origin>/`) because the build uses relative asset paths (`base: './'`)
-- Client ID and App slug are build-time public values (`VITE_GITHUB_APP_CLIENT_ID`, `VITE_GITHUB_APP_SLUG`); without them the button is disabled. No runtime config endpoint. See `docs/github-app-setup.md`
+- Client ID and App slug are build-time public values (`VITE_GITHUB_APP_CLIENT_ID`, `VITE_GITHUB_APP_SLUG`); without them the button is disabled. The canonical origin (`VITE_GITHUB_APP_ORIGIN`, optional) pins the origin that matches the registered callback: on any other origin "GitHubに接続" is disabled and a link to the canonical URL is shown (no automatic redirect, because the PKCE verifier and the workspace live in origin-scoped storage). No runtime config endpoint. See `docs/github-app-setup.md`
 - directory listings are cached and matched by repository id + tree SHA + path (identical subtrees share a SHA)
 - pagination fails with an explicit error when the page cap is reached with pages remaining
 - the Vercel Function is written in JavaScript with JSDoc types (TypeScript 7 has no JS transpile API for the Vercel builder to use)

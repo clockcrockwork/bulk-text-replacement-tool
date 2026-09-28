@@ -44,6 +44,7 @@ import { formatFallbackTitle, formatIndex, timestampForFileName } from './lib/fo
 import { readInputFiles } from './lib/inputFiles';
 import { findSameSource, matchBatchSources, sourceIdentity } from './lib/inputSource';
 import { runConversion } from './lib/replace';
+import { revealUnsafeChars } from './lib/revealText';
 import {
   buildRulesFromTable,
   type Delimiter,
@@ -221,7 +222,7 @@ export function App(): JSX.Element {
       const choice = await confirm.ask({
         title: '同じ名前の入力があります',
         message: '中身を新しいものに置き換えますか。別の入力として増やすこともできます。',
-        details: duplicated.map((input) => input.title),
+        details: duplicated.map((input) => revealUnsafeChars(input.title)),
         confirmLabel: '置き換える',
         altLabel: '別の入力として追加',
       });
@@ -319,7 +320,7 @@ export function App(): JSX.Element {
       });
       github.finish();
       flash(
-        `GitHub から ${candidate.title} を追加しました` +
+        `GitHub から ${revealUnsafeChars(candidate.title)} を追加しました` +
           shiftJisNote(candidate.encoding) +
           (undoSample ? ' · サンプルを片付けました' : ''),
         undoSample,
@@ -341,7 +342,7 @@ export function App(): JSX.Element {
       });
       github.finish();
       flash(
-        `${target.title || candidate.title} を GitHub の内容で更新しました` +
+        `${revealUnsafeChars(target.title || candidate.title)} を GitHub の内容で更新しました` +
           shiftJisNote(candidate.encoding),
       );
     });
@@ -869,6 +870,8 @@ export function App(): JSX.Element {
           state={github.state}
           handlers={{ ...github, disconnect: disconnectGitHub }}
           installUrl={github.installUrl}
+          canonicalUrl={github.canonicalUrl}
+          onExportBackup={exportBackup}
           saveFailed={saveFailed}
           sameSource={githubSameSource}
           titleCollision={githubTitleCollision}
@@ -876,7 +879,6 @@ export function App(): JSX.Element {
           onAdd={addFromGitHub}
           onUpdate={updateFromGitHub}
           onApplyBatch={applyGitHubBatch}
-          onOpenBackup={openBackup}
         />
       ) : null}
 

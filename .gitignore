@@ -9,4 +9,7 @@ test-results/
 playwright-report/
 blob-report/
 .playwright/
-.env
+# 環境変数のファイルは種類を問わず追跡しない（.env.production などに secret を書いても
+# コミットされないように）。見本の .env.example だけは残す。
+.env*
+!.env.example

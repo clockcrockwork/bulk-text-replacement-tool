@@ -68,6 +68,10 @@ export function BackupDialog({
           サイトデータの削除や、Safari で数日開かなかったときに消えることがあります。
           大事な原稿は書き出して手元に置いてください。
         </p>
+        <p className="dialog__lead">
+          GitHub から取り込んだ入力は、取り込み元（リポジトリ・ブランチ・パス・コミットの
+          SHA）も一緒に書き出します。 ファイルを人に渡すと、これらも伝わります。
+        </p>
 
         <div className="dialog__row">
           <button type="button" className="btn btn--primary" onClick={onExport}>

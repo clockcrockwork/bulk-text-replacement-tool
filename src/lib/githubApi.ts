@@ -7,6 +7,7 @@ import type {
 } from '../types';
 import { isAcceptedFile } from './inputFiles';
 import { baseName, isGitSha, isRepositoryPath } from './inputSource';
+import { revealUnsafeChars } from './revealText';
 import { type DecodedText, decodeText } from './text';
 
 /**
@@ -230,6 +231,45 @@ export function classifyErrorResponse(
 function formatClock(ms: number): string {
   const date = new Date(ms);
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+/** どの取得で失敗したか。同じ失敗でも、利用者が取れる次の手は段階で変わる。 */
+export type GitHubFetchStage = 'repositories' | 'branches' | 'snapshot' | 'tree' | 'blob';
+
+/**
+ * 失敗のあとに利用者へ出す次の手。
+ *
+ * - `retry`: 同じ取得をやり直す（一時的な失敗）
+ * - `dismiss`: やり直しても同じ結果になる。知らせを閉じるだけ
+ * - `reselect`: リポジトリの一覧を取り直して選び直す（リポジトリが消えた・見えなくなった・空）
+ * - `chooseBranch`: ブランチの一覧へ戻す（選んでいたブランチが消えた・名前が変わった）
+ */
+export type GitHubRecovery = 'retry' | 'dismiss' | 'reselect' | 'chooseBranch';
+
+/**
+ * 失敗の種類と段階から、次の手を決める。
+ *
+ * 再試行は「やり直せば変わるかもしれない」失敗にだけ出す。リポジトリ一覧を取ったあとで
+ * 既定ブランチが改名・削除されると、同じ ref の解決を何度やり直しても 404 のままで、
+ * 利用者は再試行を押し続けるしかなくなる。404 は段階ごとに、変わり得る場所まで戻す。
+ */
+export function recoveryFor(error: GitHubError, stage: GitHubFetchStage): GitHubRecovery {
+  switch (error.kind) {
+    case 'listTooLong':
+      // やり直しても同じ結果で、rate limit を食うだけ。
+      return 'dismiss';
+    case 'emptyRepository':
+      // コミットが増えるまで何度やっても同じ。別のリポジトリを選んでもらう。
+      return 'reselect';
+    case 'notFound':
+      if (stage === 'snapshot') return 'chooseBranch';
+      // ブランチ一覧や、固定したコミットの tree / blob が無いのは、リポジトリごと消えたか
+      // App のアクセス対象から外れたとき。リポジトリの一覧から選び直す。
+      if (stage !== 'repositories') return 'reselect';
+      return 'retry';
+    default:
+      return 'retry';
+  }
 }
 
 /** 失敗を利用者向けの文にする。 */
@@ -499,15 +539,21 @@ export function buildCandidate(
   buffer: ArrayBuffer,
 ): CandidateResult {
   if (entry.status !== 'importable') {
-    return { kind: 'error', message: `${entry.path} は取り込めない種類のファイルです。` };
+    return {
+      kind: 'error',
+      message: `${revealUnsafeChars(entry.path)} は取り込めない種類のファイルです。`,
+    };
   }
   if (buffer.byteLength > MAX_BLOB_BYTES) {
-    return { kind: 'error', message: `${entry.path} は 100MB を超えるため取り込めません。` };
+    return {
+      kind: 'error',
+      message: `${revealUnsafeChars(entry.path)} は 100MB を超えるため取り込めません。`,
+    };
   }
   if (isLfsPointer(new Uint8Array(buffer))) {
     return {
       kind: 'error',
-      message: `${entry.path} は Git LFS のポインタです。本文は LFS 側にあり、この画面からは取り込めません。`,
+      message: `${revealUnsafeChars(entry.path)} は Git LFS のポインタです。本文は LFS 側にあり、この画面からは取り込めません。`,
     };
   }
   const { text, encoding } = decodeText(buffer);

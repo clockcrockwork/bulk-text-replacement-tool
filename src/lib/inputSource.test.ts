@@ -118,6 +118,15 @@ describe('表示', () => {
     expect(formatSourceLabel(SOURCE)).toBe('octo/novel · chapters/ch1.md');
     expect(formatSourceDetail(SOURCE)).toBe('octo/novel の main（aaaaaaa）: chapters/ch1.md');
   });
+
+  it('パスとブランチ名の双方向制御文字は見える形で出し、出自そのものは変えない', () => {
+    const source = { ...SOURCE, ref: 'fix\u202e', path: 'a/invoice\u202etxt.md' };
+    expect(formatSourceLabel(source)).toBe('octo/novel · a/invoice⟨U+202E⟩txt.md');
+    expect(formatSourceDetail(source)).toBe(
+      'octo/novel の fix⟨U+202E⟩（aaaaaaa）: a/invoice⟨U+202E⟩txt.md',
+    );
+    expect(source.path).toBe('a/invoice\u202etxt.md');
+  });
 });
 
 describe('matchBatchSources', () => {

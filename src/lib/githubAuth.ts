@@ -27,14 +27,46 @@ export const PENDING_AUTH_KEY = 'bt-github-oauth-pending';
  */
 export const PENDING_AUTH_TTL_MS = 10 * 60 * 1000;
 
-/** ビルド時に埋め込む公開設定。どちらかが無ければ GitHub 連携は使えない。 */
+/** ビルド時に埋め込む公開設定。Client ID と slug のどちらかが無ければ GitHub 連携は使えない。 */
 export interface GitHubAppConfig {
   clientId: string;
   /** インストール画面（github.com/apps/<slug>）の URL に使う。 */
   slug: string;
+  /**
+   * GitHub App の Callback URL と、トークン交換の許可リストに登録した正規のオリジン。
+   * null なら固定しない（開いているオリジンをそのまま使う。ローカル開発向け）。
+   */
+  canonicalOrigin: string | null;
 }
 
-/** `import.meta.env` から公開設定を読む。値が無い・空なら null（連携を無効にする）。 */
+/**
+ * 正規のオリジンとして受け付ける値を、`URL#origin` の形に揃える。
+ *
+ * オリジンそのもの（末尾の `/` だけは許す）以外は受け付けない。パスやクエリが付いていると
+ * callback（オリジン直下に固定）と食い違う。平文の http は、ローカルで確かめるための
+ * loopback だけ許す（本番の callback を http にすると code が平文で流れる）。
+ */
+export function normalizeCanonicalOrigin(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.username || url.password || url.search || url.hash || url.pathname !== '/') return null;
+  if (value.includes('?') || value.includes('#')) return null;
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return null;
+  return url.origin;
+}
+
+/**
+ * `import.meta.env` から公開設定を読む。値が無い・空なら null（連携を無効にする）。
+ *
+ * `VITE_GITHUB_APP_ORIGIN` は任意。書いてあるのに読めない値なら、連携ごと無効にする。
+ * 読めない値を黙って「固定しない」として扱うと、正規でないオリジンから接続を始めさせ、
+ * 交換で必ず失敗する（GitHub での承認まで済ませたあとに）状態を作るため。
+ */
 export function readGitHubAppConfig(env: Record<string, unknown>): GitHubAppConfig | null {
   const clientId = env.VITE_GITHUB_APP_CLIENT_ID;
   const slug = env.VITE_GITHUB_APP_SLUG;
@@ -42,7 +74,29 @@ export function readGitHubAppConfig(env: Record<string, unknown>): GitHubAppConf
   const trimmedId = clientId.trim();
   const trimmedSlug = slug.trim();
   if (!trimmedId || !/^[a-z0-9-]+$/i.test(trimmedSlug)) return null;
-  return { clientId: trimmedId, slug: trimmedSlug };
+  const origin = env.VITE_GITHUB_APP_ORIGIN;
+  let canonicalOrigin: string | null = null;
+  if (typeof origin === 'string' && origin.trim() !== '') {
+    canonicalOrigin = normalizeCanonicalOrigin(origin.trim());
+    if (!canonicalOrigin) return null;
+  }
+  return { clientId: trimmedId, slug: trimmedSlug, canonicalOrigin };
+}
+
+/**
+ * 今のオリジンで接続を始められないとき、正規のオリジンの URL を返す。始められるなら null。
+ *
+ * Vercel の Production は別名（`*-<team>.vercel.app` や独自ドメイン）でも同じビルドが
+ * 開ける。そこから始めると redirect_uri が GitHub App の Callback URL と一致せず、
+ * GitHub の画面か交換の許可リストで必ず止まる。承認まで進ませてから失敗させないよう、
+ * 始める前に止める。
+ *
+ * 自動では移動させない。PKCE の verifier と作業データはどちらもオリジンごとの保存先
+ * （sessionStorage / localStorage）にあり、移った先には引き継がれない。
+ */
+export function nonCanonicalTarget(config: GitHubAppConfig, currentOrigin: string): string | null {
+  if (config.canonicalOrigin === null || config.canonicalOrigin === currentOrigin) return null;
+  return callbackUrl(config.canonicalOrigin);
 }
 
 /** App のインストール・リポジトリ権限の設定画面。 */
@@ -221,6 +275,8 @@ export function parseExchangeErrorCode(value: unknown): string | null {
  * 理由コードを添えるのは、利用者から運用者へそのまま伝えてもらうため。状態コードだけだと、
  * 403 が「許可リストの取り違え」なのか「別のサイトからの送信」なのか切り分けられない。
  * 429 は Vercel Firewall のレート制限。作業データは消えていないことも伝える。
+ * 待つ時間は書かない。窓の長さはリポジトリの外（Firewall のルール）で決まり、プランによっては
+ * 60 秒を選べない。ここに数字を書くと、ルールを変えたときに画面だけ古い案内が残る。
  */
 export function describeTokenExchangeFailure(status: number, reason: string | null = null): string {
   if (status === 429) {
