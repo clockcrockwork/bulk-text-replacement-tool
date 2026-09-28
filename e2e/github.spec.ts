@@ -673,7 +673,6 @@ test('NovelText 型の深いパスで同名 body.md が複数あり、同じ blo
   // blobCache は再試行用で、同時進行中の同一 SHA リクエストを coalesce する契約ではない。
 });
 
-
 test('別ディレクトリへ移動しながら同名 body.md を個別チェックしても選択を保持する', async ({
   page,
 }) => {
