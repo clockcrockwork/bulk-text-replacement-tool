@@ -42,7 +42,7 @@ import { copyText, downloadBlob } from './lib/browser';
 import { collectRuleErrors, findUnmatchedRules } from './lib/diagnostics';
 import { formatFallbackTitle, formatIndex, timestampForFileName } from './lib/format';
 import { formatBytes } from './lib/githubApi';
-import { describeTooLargeFiles, readInputFiles } from './lib/inputFiles';
+import { describeTooLargeFiles, describeUnreadableFiles, readInputFiles } from './lib/inputFiles';
 import { describeImportTotalTooLarge } from './lib/inputLimits';
 import { findSameSource, matchBatchSources, sourceIdentity } from './lib/inputSource';
 import { runConversion } from './lib/replace';
@@ -138,8 +138,24 @@ export function App(): JSX.Element {
     // 同じファイルを選び直せるように、読み取り前に値を空へ戻す。
     event.target.value = '';
     if (!file) return;
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await file.arrayBuffer();
+    } catch (error) {
+      // クラウド上にしか無い・選んだあとで消えた、などで読めないことがある。受けないと
+      // 未処理の reject になり、選んだのに何も起きない画面に残る。
+      console.error('作業データのファイルを読めませんでした', error);
+      setPendingWorkspace(null);
+      setBackupCandidate({
+        kind: 'error',
+        fileName: file.name,
+        message:
+          'ファイルを読み込めませんでした。端末に保存されているか確かめて、選び直してください。',
+      });
+      return;
+    }
     // 作業データは自分が書き出した UTF-8 なので、文字コードの推測は気にしない。
-    const parsed = parseBackup(decodeText(await file.arrayBuffer()).text);
+    const parsed = parseBackup(decodeText(buffer).text);
     if (parsed.kind === 'ok') {
       setPendingWorkspace(parsed.workspace);
       setBackupCandidate({ kind: 'ok', fileName: file.name, summary: parsed.summary });
@@ -277,8 +293,12 @@ export function App(): JSX.Element {
 
   const addFiles = async (list: FileList | null): Promise<void> => {
     if (!list || list.length === 0) return;
-    const { inputs, skipped, tooLarge, overTotalBytes, guessedShiftJis } =
+    const { inputs, skipped, tooLarge, overTotalBytes, guessedShiftJis, unreadable } =
       await readInputFiles(list);
+    if (unreadable.length > 0) {
+      flash(describeUnreadableFiles(unreadable));
+      return;
+    }
     // どれを残すかは決められないので、合計の超過は1件も取り込まない。
     if (overTotalBytes !== null) {
       flash(`${describeImportTotalTooLarge()}（合計 ${formatBytes(overTotalBytes)}）`);

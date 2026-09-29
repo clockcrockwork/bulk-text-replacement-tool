@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createGroupId, createId } from './id';
+import { createGroupId, createId, isUsableId } from './id';
 
 describe('createId', () => {
   it('常に8文字を返す', () => {
@@ -23,5 +23,19 @@ describe('createId', () => {
 describe('createGroupId', () => {
   it('g で始まり、残りは createId と同じ形', () => {
     expect(createGroupId()).toMatch(/^g[a-z0-9]{8}$/);
+  });
+});
+
+describe('isUsableId', () => {
+  it('このアプリが作る ID は使える', () => {
+    expect(isUsableId(createId())).toBe(true);
+    expect(isUsableId(createGroupId())).toBe(true);
+    expect(isUsableId('g1')).toBe(true);
+  });
+
+  it('空文字と、普通のオブジェクトが継承しているプロパティ名は使えない', () => {
+    for (const id of ['', '__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+      expect(isUsableId(id)).toBe(false);
+    }
   });
 });

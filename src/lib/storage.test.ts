@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { isUsableId } from './id';
 import { STORAGE_CONFIRM_CODE_UNITS } from './inputLimits';
+import { runConversion } from './replace';
 import {
   clearWorkspace,
   loadWorkspace,
@@ -219,6 +221,64 @@ describe('loadWorkspace の ID / 配列の扱い', () => {
     expect(new Set(groupIds).size).toBe(2);
     expect(new Set(ruleIds).size).toBe(2);
     expect(loaded?.rules.map((rule) => rule.src)).toEqual(['a', 'b']);
+  });
+});
+
+describe('loadWorkspace の使えない ID（__proto__ など）', () => {
+  // JSON.parse は `__proto__` を自身のプロパティとして作るので、保存データに入り得る。
+  const raw = `{
+    "inputs": [{ "id": "__proto__", "title": "a.md", "text": "アリス" }],
+    "groups": [{ "id": "__proto__", "name": "A" }, { "id": "constructor", "name": "B" }],
+    "rules": [
+      { "id": "toString", "src": "アリス", "values": { "__proto__": "あー", "constructor": "びー", "valueOf": "x" } }
+    ],
+    "theme": "light"
+  }`;
+
+  it('振り直し、グループの置換先は新しい ID へ付け替えて失わない', () => {
+    stubStorage({ [STORAGE_KEY]: raw });
+    const loaded = loadWorkspace();
+    if (!loaded) throw new Error('読み込めませんでした');
+    const [groupA, groupB] = loaded.groups;
+    const [rule] = loaded.rules;
+    if (!groupA || !groupB || !rule) throw new Error('要素がありません');
+    for (const id of [groupA.id, groupB.id, rule.id, loaded.inputs[0]?.id ?? '']) {
+      expect(isUsableId(id)).toBe(true);
+    }
+    expect([groupA.name, groupB.name]).toEqual(['A', 'B']);
+    // 対応するグループの無い使えないキー（valueOf）は落とす。
+    expect(rule.values).toEqual({ [groupA.id]: 'あー', [groupB.id]: 'びー' });
+    expect(Object.getPrototypeOf(rule.values)).toBe(Object.prototype);
+  });
+
+  it('振り直した保存データで、変換は置換先どおりの結果になる', () => {
+    stubStorage({ [STORAGE_KEY]: raw });
+    const loaded = loadWorkspace();
+    if (!loaded) throw new Error('読み込めませんでした');
+    const result = runConversion(loaded);
+    expect(result.groups.map((group) => group.files[0]?.text)).toEqual(['あー', 'びー']);
+    const [rule] = loaded.rules;
+    expect(
+      result.groups.map((group) => result.hitsByGroupRule[group.id]?.[rule?.id ?? '']),
+    ).toEqual([1, 1]);
+  });
+
+  it('使えない ID が重複していたら、最初のものだけ置換先を引き継ぐ', () => {
+    stubStorage(
+      saved({
+        inputs: [],
+        groups: [
+          { id: '__proto__', name: 'A' },
+          { id: '__proto__', name: 'B' },
+        ],
+        rules: [{ id: 'r1', src: 'a', values: JSON.parse('{"__proto__": "x"}') }],
+        theme: 'light',
+      }),
+    );
+    const loaded = loadWorkspace();
+    const [groupA, groupB] = loaded?.groups ?? [];
+    expect(groupA?.id).not.toBe(groupB?.id);
+    expect(loaded?.rules[0]?.values).toEqual({ [groupA?.id ?? '']: 'x' });
   });
 });
 

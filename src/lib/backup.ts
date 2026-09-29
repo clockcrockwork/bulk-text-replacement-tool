@@ -52,6 +52,32 @@ export function buildBackup(workspace: PersistedWorkspace, at: Date): string {
   );
 }
 
+/**
+ * 復旧画面（ErrorBoundary）から退避するファイル。保存データ（localStorage の生の JSON）を、
+ * 通常の書き出しと同じ封筒（`app` / `version` / `workspace`）に包む。
+ *
+ * 以前は生の JSON をそのまま落としていたが、`parseBackup` は封筒を要求するので、
+ * 復旧画面の案内どおり「退避 → 保存データを削除 → 作業データの読み込み」と進んでも
+ * 読み戻せなかった。中身は**正規化せずにそのまま**入れる。描画が落ちた原因が中身に
+ * あるかもしれず、ここで直したり落としたりすると、手で直す材料まで失う。読み込むときは
+ * 通常の書き出しと同じ `parseBackup`（`normalizeWorkspace`）で検証する。
+ *
+ * 生の値が JSON として読めなければ、包めないのでそのまま返す（何も残らないよりはよい）。
+ */
+export function buildRecoveryBackup(raw: string, at: Date): string {
+  let workspace: unknown;
+  try {
+    workspace = JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+  return JSON.stringify(
+    { app: BACKUP_APP, version: BACKUP_VERSION, savedAt: at.toISOString(), workspace },
+    null,
+    2,
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

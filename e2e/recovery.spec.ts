@@ -50,6 +50,34 @@ test('復旧画面から保存データを退避できる', async ({ page }) => 
   expect(saved).toContain('a.txt');
 });
 
+test('復旧画面で退避したファイルは、保存データを消したあと通常の作業データの読み込みで戻せる', async ({
+  page,
+  context,
+}) => {
+  await breakRendering(page);
+  await page.goto('/');
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: '保存データをダウンロード' }).click(),
+  ]);
+  const backupPath = await download.path();
+  await page.getByRole('button', { name: '保存データを削除して初期状態に戻す' }).click();
+  await expect(page.getByRole('button', { name: '保存データをダウンロード' })).toBeDisabled();
+
+  // 落ちない状態で開き直す（init script はページごとなので、別のページでは描画が壊れない）。
+  const fresh = await context.newPage();
+  await openApp(fresh);
+  await fresh.getByRole('button', { name: '作業データ' }).click();
+  await fresh
+    .locator('dialog[aria-label="作業データ"] input[type="file"]')
+    .setInputFiles(backupPath);
+  const confirmBlock = fresh.getByRole('region', { name: '読み込む内容の確認' });
+  await expect(confirmBlock).toContainText('入力 1件');
+  await confirmBlock.getByRole('button', { name: '現在のデータを置き換える' }).click();
+  await expect(fresh.locator('.input-card__title')).toHaveValue('a.txt');
+  await expect(fresh.locator('.input-card__preview').first()).toContainText('あ');
+});
+
 test('復旧画面から保存データを消せる', async ({ page }) => {
   await breakRendering(page);
   await page.goto('/');
@@ -70,6 +98,30 @@ test('保存データが無ければ退避も削除も押せない', async ({ pa
   await expect(
     page.getByRole('button', { name: '保存データを削除して初期状態に戻す' }),
   ).toBeDisabled();
+});
+
+test('ID が __proto__ や constructor の保存データでも起動し、置換先どおりに変換できる', async ({
+  browser,
+}) => {
+  // beforeEach の仕込みを使わないよう、別のページで開く。
+  const page = await browser.newPage();
+  await seedRawWorkspace(
+    page,
+    `{
+      "theme": "light",
+      "inputs": [{ "id": "__proto__", "title": "a.txt", "text": "アリス" }],
+      "groups": [{ "id": "__proto__", "name": "A用" }, { "id": "constructor", "name": "B用" }],
+      "rules": [{ "id": "toString", "src": "アリス", "values": { "__proto__": "あー", "constructor": "びー" } }]
+    }`,
+  );
+  await openApp(page);
+  await expect(page.locator('.recovery')).toHaveCount(0);
+  await page.getByRole('button', { name: '変換' }).click();
+  await expect(page.locator('.file-card').first()).toContainText('あー');
+  await page.locator('.out-tab', { hasText: 'B用' }).click();
+  await expect(page.locator('.file-card').first()).toContainText('びー');
+  await expect(page.locator('.file-list')).not.toContainText('[object');
+  await page.close();
 });
 
 test('例外が起きなければ復旧画面は出ない', async ({ page }) => {
