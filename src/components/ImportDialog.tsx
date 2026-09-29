@@ -23,6 +23,12 @@ function describe(parsed: ParsedTable): string {
   return `${TABLE_KIND_LABEL[parsed.kind]} · 見出し＋${parsed.rows.length - 1}行 · ${columns}列`;
 }
 
+/** ダイアログの中に出す知らせ。`error` は読み込めなかったこと、`info` は確かめてほしいこと。 */
+export interface ImportNotice {
+  tone: 'error' | 'info';
+  message: string;
+}
+
 export interface ImportDialogProps {
   text: string;
   mode: ImportMode;
@@ -32,6 +38,7 @@ export interface ImportDialogProps {
   onChangeMode: (mode: ImportMode) => void;
   onPickFile: () => void;
   onFileSelected: (event: ChangeEvent<HTMLInputElement>) => void;
+  notice: ImportNotice | null;
   onClose: () => void;
   onApply: () => void;
 }
@@ -50,6 +57,7 @@ export function ImportDialog({
   onChangeMode,
   onPickFile,
   onFileSelected,
+  notice,
   onClose,
   onApply,
 }: ImportDialogProps): JSX.Element {
@@ -107,6 +115,14 @@ export function ImportDialog({
           />
           <span className="dialog__detect">{describe(parsed)}</span>
         </div>
+        {notice ? (
+          <p
+            className={notice.tone === 'error' ? 'dialog__error' : 'dialog__lead'}
+            role={notice.tone === 'error' ? 'alert' : 'status'}
+          >
+            {notice.message}
+          </p>
+        ) : null}
 
         {ragged.length > 0 ? (
           <p className="dialog__error" role="status">

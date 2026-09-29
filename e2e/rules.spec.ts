@@ -328,3 +328,79 @@ test.describe('複数行ルール', () => {
     await expect(page.locator('[data-cell="0:1"]')).toHaveText('一行目… [複数行]');
   });
 });
+
+test.describe('表のファイル', () => {
+  const fileInput = (page: import('@playwright/test').Page) =>
+    page.locator('dialog[aria-label="表から読み込み"] input[type="file"]');
+
+  test.beforeEach(async ({ page }) => {
+    await page.getByRole('button', { name: '表から読み込み' }).click();
+  });
+
+  test('5MiB を超えるファイルは読まずに、ダイアログの中で理由を出す', async ({ page }) => {
+    await fileInput(page).setInputFiles({
+      name: 'huge.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.alloc(5 * 1024 * 1024 + 1, 0x61),
+    });
+    const dialog = page.locator('dialog[aria-label="表から読み込み"]');
+    await expect(dialog.getByRole('alert')).toContainText('huge.csv は 5MiB を超えるため');
+    await expect(page.locator('.dialog__textarea')).toHaveValue('');
+  });
+
+  test('BOM 付きの UTF-16（Excel の Unicode テキスト）を文字化けさせずに読む', async ({ page }) => {
+    const text = '元テキスト\tC用\n川辺\t海辺';
+    const buffer = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+    await fileInput(page).setInputFiles({ name: 'rules.txt', mimeType: 'text/plain', buffer });
+    await expect(page.locator('.dialog__textarea')).toHaveValue(text);
+    await expect(page.locator('.dialog__detect')).toHaveText('TSV · 見出し＋1行 · 1列');
+    await expect(page.locator('dialog[aria-label="表から読み込み"]')).not.toContainText(
+      'Shift_JIS',
+    );
+  });
+
+  test('Shift_JIS と推測したことは、ダイアログの中で知らせる', async ({ page }) => {
+    // CP932 の「名前,太郎」。
+    const cp932 = Buffer.from([0x96, 0xbc, 0x91, 0x4f, 0x2c, 0x91, 0xbe, 0x98, 0x59]);
+    await fileInput(page).setInputFiles({ name: 'old.csv', mimeType: 'text/csv', buffer: cp932 });
+    await expect(page.locator('.dialog__textarea')).toHaveValue('名前,太郎');
+    await expect(
+      page.locator('dialog[aria-label="表から読み込み"]').getByRole('status'),
+    ).toContainText('old.csv を Shift_JIS として読み込みました');
+  });
+
+  test('ファイル自体を読めなかったら、ダイアログの中で理由を出す', async ({ page }) => {
+    await page.evaluate(() => {
+      File.prototype.arrayBuffer = () =>
+        Promise.reject(new DOMException('読めません', 'NotReadableError'));
+    });
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await fileInput(page).setInputFiles({
+      name: 'cloud.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from('a,b'),
+    });
+    await expect(
+      page.locator('dialog[aria-label="表から読み込み"]').getByRole('alert'),
+    ).toContainText('cloud.csv を読み込めませんでした');
+    expect(errors).toEqual([]);
+  });
+
+  test('左上のセルが空の TSV でも列がずれない', async ({ page }) => {
+    await page.getByRole('button', { name: '置き換える' }).click();
+    await page.locator('.dialog__textarea').fill('\tC用\n川辺\t海辺');
+    await expect(page.locator('.dialog__detect')).toHaveText('TSV · 見出し＋1行 · 1列');
+    await expect(page.locator('dialog[aria-label="表から読み込み"]')).not.toContainText(
+      '列数が違う行があります',
+    );
+    await page.getByRole('button', { name: '読み込む' }).click();
+    await page
+      .locator('dialog.dialog--confirm')
+      .getByRole('button', { name: '置き換える' })
+      .click();
+    await expect(page.locator('.rule-table__group-name')).toHaveValue('C用');
+    await expect(cell(page, 0, 0)).toHaveValue('川辺');
+    await expect(cell(page, 0, 1)).toHaveValue('海辺');
+  });
+});
