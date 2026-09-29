@@ -44,7 +44,7 @@ import { formatFallbackTitle, formatIndex, timestampForFileName } from './lib/fo
 import { formatBytes } from './lib/githubApi';
 import { describeTooLargeFiles, readInputFiles } from './lib/inputFiles';
 import { describeImportTotalTooLarge } from './lib/inputLimits';
-import { findSameSource, matchBatchSources, sourceIdentity } from './lib/inputSource';
+import { matchBatchSources, sourceIdentity } from './lib/inputSource';
 import { runConversion } from './lib/replace';
 import { revealUnsafeChars } from './lib/revealText';
 import { mayExceedStorage } from './lib/storage';
@@ -63,6 +63,7 @@ import {
   createInput,
   createSampleReset,
   initWorkspace,
+  inputsKeptOnAdd,
   toPersisted,
   type WorkspaceAction,
   workspaceReducer,
@@ -333,39 +334,31 @@ export function App(): JSX.Element {
   const githubCandidate = github.state.candidate;
 
   /**
-   * 候補と同じ取り込み元（リポジトリ・ブランチ・パス）の既存入力。
-   *
-   * ローカルのファイルと違い、タイトル（ファイル名）では判定しない。別のフォルダの
-   * 同名ファイルを「同じもの」として上書きさせないため。
+   * 取り込んだあとも残る既存の入力。同名や同じ取り込み元の判定は、1件でも一括でもこれで行う。
+   * 手つかずのサンプルは取り込みと同時に片付き、空欄1つだけの入力は取り込んだもので
+   * 置き換わる。消える入力との衝突を警告したり、更新先に選ばせたりしても意味が無い。
    */
-  const githubSameSource: SameSourceInput[] = githubCandidate
-    ? findSameSource(state.inputs, githubCandidate.source).map((input) => {
-        const index = state.inputs.indexOf(input);
-        return {
-          id: input.id,
-          label: `${formatIndex(index)} ${input.title || formatFallbackTitle(index)}`,
-        };
-      })
-    : [];
+  const githubKeptInputs = state.isSample ? [] : inputsKeptOnAdd(state.inputs);
+  const githubInputLabel = (input: InputText, index: number): string =>
+    `${formatIndex(index)} ${input.title || formatFallbackTitle(index)}`;
 
-  const githubTitleCollision = githubCandidate
-    ? state.inputs.some(
-        (input) =>
-          input.title === githubCandidate.title &&
-          !(
-            input.source && sourceIdentity(input.source) === sourceIdentity(githubCandidate.source)
-          ),
-      )
-    : false;
+  /**
+   * 1件の候補の、同じ取り込み元（リポジトリ・ブランチ・パス）の既存入力と、出力名の衝突。
+   *
+   * ローカルのファイルと違い、タイトル（ファイル名）では同じものと判定しない。別のフォルダの
+   * 同名ファイルを「同じもの」として上書きさせないため。一括と同じ関数で判定する
+   * （出力名の衝突も、実際の出力名の規則で比べる）。
+   */
+  const githubSingleMatch = githubCandidate
+    ? matchBatchSources(githubKeptInputs, [githubCandidate], githubInputLabel)[0]
+    : undefined;
+  const githubSameSource: SameSourceInput[] = (githubSingleMatch?.sameSource ?? []).map(
+    ({ id, label }) => ({ id, label }),
+  );
+  const githubTitleCollision = githubSingleMatch?.titleCollision ?? false;
 
-  // 手つかずのサンプルは一括取り込みの action の中で片付くので、同名や同じ取り込み元の
-  // 判定には含めない（消える入力との衝突を警告しても意味が無い）。
   const githubBatchMatches: GitHubBatchMatch[] = github.state.batchCandidates
-    ? matchBatchSources(
-        state.isSample ? [] : state.inputs,
-        github.state.batchCandidates,
-        (input, index) => `${formatIndex(index)} ${input.title || formatFallbackTitle(index)}`,
-      )
+    ? matchBatchSources(githubKeptInputs, github.state.batchCandidates, githubInputLabel)
     : [];
 
   /** Shift_JIS は推測なので、黙って取り込まず知らせる（ローカルのファイルと同じ扱い）。 */
@@ -376,7 +369,8 @@ export function App(): JSX.Element {
 
   const addFromGitHub = async (): Promise<void> => {
     const candidate = githubCandidate;
-    if (!candidate) return;
+    // 保存できない間は取り込まない（ボタンも止めている。一括の確定と同じ扱い）。
+    if (!candidate || saveFailed) return;
     const action: WorkspaceAction = {
       type: 'inputs/addMany',
       inputs: [{ ...createInput(candidate.title, candidate.text), source: candidate.source }],
@@ -399,7 +393,7 @@ export function App(): JSX.Element {
 
   const updateFromGitHub = async (inputId: string): Promise<void> => {
     const candidate = githubCandidate;
-    if (!candidate) return;
+    if (!candidate || saveFailed) return;
     const target = state.inputs.find((input) => input.id === inputId);
     if (!target) return;
     // タイトルは利用者が付け直した出力名かもしれないので残し、本文と出自だけ差し替える。
@@ -423,7 +417,7 @@ export function App(): JSX.Element {
 
   const applyGitHubBatch = async (decisions: readonly GitHubBatchDecision[]): Promise<void> => {
     const candidates = github.state.batchCandidates;
-    if (!candidates || candidates.length === 0) return;
+    if (!candidates || candidates.length === 0 || saveFailed) return;
     const byPath = new Map(decisions.map((decision) => [decision.path, decision]));
     const updates: Array<{
       id: string;

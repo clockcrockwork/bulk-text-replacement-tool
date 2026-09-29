@@ -171,6 +171,16 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
     （`parseTokenResponse`）も受け付けない。GitHub App の期限切れ設定がオフにされると
     `expires_in` が返らなくなり、「期限なし」として使い続けてしまうため。巨大な値もミリ秒に
     直すと `Infinity` になり実質無期限になるので、上限で断る。
+  - 期限の確認は **GitHub へ要求する時点**（`run` の `client()`）で行う。ダイアログを開いただけで
+    切断しない（取得済みの候補・一括の確認画面は GitHub へ要求せずに確定できるので、捨てさせない）。
+  - トークンを捨てる操作（切断 `dropConnection` と bfcache の `releaseToken`）は、どちらも
+    `forgetSession` で tree / blob の控え・再試行・「元に戻す」用の一括の控えまで捨てる。
+    残すのは `rateLimitedUntil` だけ（GitHub 側で解けていない）。片方だけに片付けを足さない。
+  - 接続の準備（乱数・PKCE のハッシュ）の失敗も受ける。受けないと `connecting` のまま戻れない。
+  - 同名・同じ取り込み元の判定は、1件でも一括でも `matchBatchSources` に
+    `inputsKeptOnAdd`（手つかずのサンプルは空、空欄1つだけの入力も除く）を渡して行う。
+    空欄1つだけの入力は一括でも置き換える（通常の取り込みと同じ）。保存に失敗している間は
+    1件の追加・更新も一括の確定も止める。
   - 接続の途中（`connecting`）で閉じたら取り消す（`attempt` の世代を進める）。トークン交換の
     fetch はコードが1回しか使えないので止めないが、閉じたあとに返った結果は捨てる。
     **`attempt`（閉じる）と `pageLeft`（bfcache）は契機が別なので、交換の結果は両方を見て捨てる**
@@ -225,6 +235,8 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
     形で見せ、一覧の偽装を防ぐ（`<bdi>` では中の RLO が効いたまま）。**変えるのは表示だけ**で、
     保存・比較・出力名には元の文字列を使う。文字の集合は `sanitizeName` と共有している。
     編集欄（`<input>`）は値を変えられないので、入力カードに見える形の名前を別に添える。
+    ダイアログの待ち・知らせ・失敗の文（`busy` / `info` / `notice` / `error.message`）は
+    名前を埋め込んで組み立てるので、組み立てる側ではなく出す所でまとめて通す。
   - トークン交換の 429 は Vercel Firewall のレート制限。`describeTokenExchangeFailure` で
     「待ってから接続し直す」と伝える。
   - **通信が止まったとき**（issue #20。詳細は `docs/github-import-v2.md` の Network stalls and

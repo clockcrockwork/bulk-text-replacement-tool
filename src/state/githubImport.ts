@@ -283,8 +283,14 @@ function reduce(state: GitHubImportState, action: GitHubImportAction): GitHubImp
       // 前の利用者の権限でリポジトリを読めてしまうので、ページを離れた時点で切断する。
       // 接続中（認可の画面へ移る途中）は変えない。戻ったときの片付けは connect/abandon が行い、
       // 認可から正しく戻る流れ（新しいページの読み込み）には関わらない。
+      // rate limit の待ちは残す。GitHub の利用者ごとに掛かるので、ページを離れても解けていない。
       return state.connection === 'connected'
-        ? { ...initialGitHubImportState, open: state.open, notice: PAGE_LEFT_NOTICE }
+        ? {
+            ...initialGitHubImportState,
+            open: state.open,
+            notice: PAGE_LEFT_NOTICE,
+            rateLimitedUntil: state.rateLimitedUntil,
+          }
         : state;
 
     case 'connect/done':
