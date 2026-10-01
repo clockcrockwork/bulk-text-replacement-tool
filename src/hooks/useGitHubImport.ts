@@ -334,6 +334,9 @@ export async function fetchBatchCandidates(
 
 const CANCELLED_NOTICE = 'GitHub への接続を取り消しました。';
 
+const CONNECT_PREPARATION_FAILED_NOTICE =
+  'GitHub への接続の準備に失敗しました。ページを再読み込みしてから、もう一度接続してください。';
+
 export interface GitHubImport {
   config: GitHubAppConfig | null;
   /** App のインストール・権限設定の画面。 */
@@ -493,13 +496,26 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
     return controller;
   };
 
-  const dropConnection = (notice: string | null): void => {
+  /**
+   * トークンと、そのトークンで取ったものに結び付いた控えをすべて捨てる。
+   *
+   * 切断（`dropConnection`）と bfcache（`releaseToken`）の両方がここを通る。以前は
+   * それぞれが別々に片付けていて、片方だけ blob の控えや「元に戻す」用の一括の控えを
+   * 残していた。接続を捨てたあとに残してよいのは、GitHub への要求そのものを止める
+   * rate limit の待ち（reducer 側の `rateLimitedUntil`）だけ。
+   */
+  const forgetSession = (): void => {
     abortRef.current?.abort();
     abortRef.current = null;
     tokenRef.current = null;
     treeCache.current.clear();
     blobCache.current.clear();
     lastTask.current = null;
+    suspendedBatch.current = null;
+  };
+
+  const dropConnection = (notice: string | null): void => {
+    forgetSession();
     dispatch({ type: 'disconnect', notice });
   };
 
@@ -893,14 +909,11 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
   // 読めてしまうので、bfcache に入る時点（persisted な pagehide）でトークンを捨てる。
   // 戻ったとき（persisted な pageshow）にも念のため同じ片付けをする。
   // タブの切り替え（visibilitychange）では切らない。ページはそのまま残っているため。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: forgetSession は ref だけを触るので、最初の描画のものを使い続けてよい（登録し直すと、その間の pagehide を取りこぼし得る）
   useEffect(() => {
     const releaseToken = (): void => {
       pageLeft.current += 1;
-      abortRef.current?.abort();
-      abortRef.current = null;
-      tokenRef.current = null;
-      treeCache.current.clear();
-      lastTask.current = null;
+      forgetSession();
       dispatch({ type: 'page/persisted' });
     };
     const onPageHide = (event: PageTransitionEvent): void => {
@@ -939,8 +952,20 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       return;
     }
     const started = attempt.current;
-    const pending = { state: randomToken(), verifier: randomToken(), createdAt: Date.now() };
-    const codeChallenge = await codeChallengeS256(pending.verifier, crypto.subtle);
+    let pending: { state: string; verifier: string; createdAt: number };
+    let codeChallenge: string;
+    try {
+      pending = { state: randomToken(), verifier: randomToken(), createdAt: Date.now() };
+      codeChallenge = await codeChallengeS256(pending.verifier, crypto.subtle);
+    } catch (error) {
+      // 準備（乱数・ハッシュ）が失敗すると、受け皿が無ければ「接続中」のまま戻れなくなる。
+      // この時点ではまだ一時情報を書いていないが、念のため消してから未接続へ戻す。
+      if (attempt.current !== started) return;
+      console.error('GitHub への接続の準備に失敗しました', error);
+      removePendingAuth();
+      dispatch({ type: 'disconnect', notice: CONNECT_PREPARATION_FAILED_NOTICE });
+      return;
+    }
     // 準備の間に閉じられていたら、認可の画面へは移らない。
     if (attempt.current !== started) return;
     try {
@@ -982,7 +1007,9 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
     open: () => {
       dispatch({ type: 'open' });
       if (state.connection !== 'connected') return;
-      if (!client()) return;
+      // トークンの期限はここでは確かめない。取得済みの候補や一括の確認画面を見直して確定する
+      // だけなら GitHub へは要求しないので、開いただけで期限切れとして切断すると、取得済みの
+      // 内容と決めた取り込み方法まで捨ててしまう。期限は GitHub へ要求する時点（`run`）で見る。
       // 閉じたときに取得を中断しているので、途中だったものをやり直す。
       const step = currentStep(state);
       if (state.repositories === null) loadRepositories();

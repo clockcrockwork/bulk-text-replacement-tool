@@ -141,7 +141,7 @@ function ErrorNotice({
 }): JSX.Element {
   return (
     <div className="dialog__error github__error" role="alert">
-      <span>{error.message}</span>
+      <span>{reveal(error.message)}</span>
       {error.recover === 'retry' ? (
         <button
           type="button"
@@ -270,9 +270,11 @@ export function GitHubImportDialog({
           />
         )}
 
+        {/* 待ち・知らせ・失敗の文にはブランチ名やファイル名が入る。組み立てた側ごとに
+            reveal し忘れないよう、出す所でまとめて通す（見える形の文字は変わらない）。 */}
         {state.busy ? (
           <p className="github__status" role="status">
-            {state.busy}…
+            {reveal(state.busy)}…
           </p>
         ) : null}
         {state.busy && state.slow ? (
@@ -284,7 +286,7 @@ export function GitHubImportDialog({
 
         {state.info ? (
           <p className="github__status" role="status">
-            {state.info}
+            {reveal(state.info)}
           </p>
         ) : null}
 
@@ -315,7 +317,8 @@ export function GitHubImportDialog({
         {connected ? (
           <p className="dialog__lead github__session-note">
             「閉じる」では、このタブの GitHub
-            との接続は残ります。共用の端末では、終わったら「接続を解除」を押してください。
+            との接続は残ります。共用の端末では、終わったら「接続を解除」を押し、必要に応じて GitHub
+            からもログアウトしてください（このアプリの切断では GitHub のログインは切れません）。
           </p>
         ) : null}
 
@@ -370,7 +373,7 @@ function ConsentView({
       </h3>
       {state.notice ? (
         <p className="dialog__error" role="alert">
-          {state.notice}
+          {reveal(state.notice)}
         </p>
       ) : null}
       {connecting && state.slow ? (
@@ -1512,6 +1515,8 @@ function CandidateView({
   titleCollision,
   onAdd,
   onUpdate,
+  saveFailed,
+  onExportBackup,
 }: ConnectedViewProps & {
   candidate: NonNullable<GitHubImportState['candidate']>;
 }): JSX.Element {
@@ -1520,6 +1525,8 @@ function CandidateView({
     sameSource.length === 1 ? (sameSource[0]?.id ?? null) : null,
   );
   const busy = state.busy !== null;
+  // 一括の確定と同じく、保存できない間は入力を変える操作を止める（取り込んでも保存されない）。
+  const blocked = busy || saveFailed;
 
   return (
     <section className="github__section" aria-label="取り込む内容の確認">
@@ -1575,6 +1582,8 @@ function CandidateView({
         </fieldset>
       ) : null}
 
+      {saveFailed ? <SaveFailedNotice onExportBackup={onExportBackup} /> : null}
+
       <div className="dialog__actions github__decision">
         {/* 取り込み済みのときは「更新 / 別の入力として追加 / キャンセル」の3択として見せる。 */}
         <button type="button" className="btn" onClick={handlers.clearCandidate} disabled={busy}>
@@ -1582,13 +1591,13 @@ function CandidateView({
         </button>
         {sameSource.length > 0 ? (
           <>
-            <button type="button" className="btn" onClick={onAdd} disabled={busy}>
+            <button type="button" className="btn" onClick={onAdd} disabled={blocked}>
               別の入力として追加
             </button>
             <button
               type="button"
               className="btn btn--primary"
-              disabled={busy || target === null}
+              disabled={blocked || target === null}
               onClick={() => {
                 if (target) onUpdate(target);
               }}
@@ -1597,7 +1606,7 @@ function CandidateView({
             </button>
           </>
         ) : (
-          <button type="button" className="btn btn--primary" onClick={onAdd} disabled={busy}>
+          <button type="button" className="btn btn--primary" onClick={onAdd} disabled={blocked}>
             入力に追加
           </button>
         )}
