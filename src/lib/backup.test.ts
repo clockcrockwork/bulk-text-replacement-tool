@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PersistedWorkspace } from '../types';
-import { BACKUP_VERSION, buildBackup, parseBackup } from './backup';
+import { BACKUP_VERSION, buildBackup, buildRecoveryBackup, parseBackup } from './backup';
 
 const WORKSPACE: PersistedWorkspace = {
   inputs: [{ id: 'i1', title: 'a.md', text: 'アリス' }],
@@ -134,5 +134,37 @@ describe('buildBackup / parseBackup', () => {
     });
     const parsed = parseBackup(text);
     expect(parsed.kind === 'ok' && parsed.summary.savedAt).toBeNull();
+  });
+});
+
+describe('buildRecoveryBackup', () => {
+  const AT = new Date('2026-01-02T03:04:05.000Z');
+
+  it('保存データの生の JSON を封筒に包み、通常の読み込みで読み戻せる', () => {
+    const raw = JSON.stringify({
+      theme: 'dark',
+      inputs: [{ id: 'i1', title: 'a.txt', text: 'あ' }],
+      groups: [{ id: 'g1', name: 'G用' }],
+      rules: [],
+    });
+    const parsed = parseBackup(buildRecoveryBackup(raw, AT));
+    expect(parsed.kind).toBe('ok');
+    if (parsed.kind !== 'ok') return;
+    expect(parsed.workspace.inputs).toEqual([{ id: 'i1', title: 'a.txt', text: 'あ' }]);
+    expect(parsed.workspace.theme).toBe('dark');
+    expect(parsed.summary.savedAt).toBe(AT.toISOString());
+  });
+
+  it('中身は正規化せずにそのまま入れる（手で直す材料を残す）', () => {
+    const raw = JSON.stringify({ inputs: 'broken', extra: { keep: true } });
+    const wrapped = JSON.parse(buildRecoveryBackup(raw, AT)) as Record<string, unknown>;
+    expect(wrapped).toMatchObject({ version: BACKUP_VERSION, savedAt: AT.toISOString() });
+    expect(wrapped.workspace).toEqual({ inputs: 'broken', extra: { keep: true } });
+    // 壊れた中身は、読み込むときに通常の書き出しと同じ検証で断る。
+    expect(parseBackup(JSON.stringify(wrapped)).kind).toBe('error');
+  });
+
+  it('JSON として読めない保存データは、包めないのでそのまま返す', () => {
+    expect(buildRecoveryBackup('{broken', AT)).toBe('{broken');
   });
 });

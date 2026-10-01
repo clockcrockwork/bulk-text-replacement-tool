@@ -4,6 +4,7 @@ import {
   ACCEPTED_EXTENSIONS,
   ACCEPTED_EXTENSIONS_LABEL,
   describeTooLargeFiles,
+  describeUnreadableFiles,
   isAcceptedFile,
   planFileImport,
   readInputFiles,
@@ -61,7 +62,26 @@ describe('readInputFiles', () => {
       tooLarge: [],
       overTotalBytes: null,
       guessedShiftJis: [],
+      unreadable: [],
     });
+  });
+
+  it('読めないファイルが1件でもあれば、名前を返して1件も取り込まない', async () => {
+    // クラウド上にしか無い・選んだあとで消えた、などで File の読み取りが失敗する。
+    class UnreadableFile extends File {
+      override arrayBuffer(): Promise<ArrayBuffer> {
+        return Promise.reject(new DOMException('読めません', 'NotReadableError'));
+      }
+    }
+    const result = await readInputFiles([
+      new File(['1'], 'ok.md'),
+      new UnreadableFile(['2'], 'cloud.md'),
+      new File(['%PDF'], 'c.pdf'),
+    ]);
+    expect(result.inputs).toEqual([]);
+    expect(result.unreadable).toEqual(['cloud.md']);
+    expect(result.skipped).toBe(1);
+    expect(result.guessedShiftJis).toEqual([]);
   });
 
   it('対応ファイルを読み込み、対象外は数えてスキップする', async () => {
@@ -174,5 +194,23 @@ describe('describeTooLargeFiles', () => {
 
   it('名前の見えない文字は見える形にする', () => {
     expect(describeTooLargeFiles(['a\u202etxt.md'])).toContain('⟨U+202E⟩');
+  });
+});
+
+describe('describeUnreadableFiles', () => {
+  it('1件なら名前を出し、取り込んでいないことを添える', () => {
+    expect(describeUnreadableFiles(['a.md'])).toBe(
+      'a.md を読み込めなかったため、1件も取り込みませんでした。ファイルが端末に保存されているか確かめて、選び直してください',
+    );
+  });
+
+  it('複数なら件数を出す', () => {
+    expect(describeUnreadableFiles(['a.md', 'b.md'])).toMatch(
+      /^2件のファイルを読み込めなかったため/,
+    );
+  });
+
+  it('名前の双方向制御文字は見える形にする', () => {
+    expect(describeUnreadableFiles(['a\u202etxt.md'])).toContain('⟨U+202E⟩');
   });
 });

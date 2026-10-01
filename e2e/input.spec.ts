@@ -261,3 +261,31 @@ test.describe('同じ名前のファイルを入れ直したとき', () => {
     );
   });
 });
+
+test('読めないファイルが混じっていたら、名前を出して1件も取り込まない', async ({ page }) => {
+  // クラウド上にしか無い・選んだあとで消えた、などで File の読み取りが失敗する状況を作る。
+  await page.evaluate(() => {
+    const original = File.prototype.arrayBuffer;
+    File.prototype.arrayBuffer = function arrayBuffer(this: File) {
+      if (this.name === 'cloud.md') {
+        return Promise.reject(new DOMException('読めません', 'NotReadableError'));
+      }
+      return original.call(this);
+    };
+  });
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles([
+      { name: 'ok.md', mimeType: 'text/markdown', buffer: Buffer.from('読める\n') },
+      { name: 'cloud.md', mimeType: 'text/markdown', buffer: Buffer.from('読めない\n') },
+    ]);
+
+  await expect(page.locator('.toast')).toContainText(
+    'cloud.md を読み込めなかったため、1件も取り込みませんでした',
+  );
+  await expect(page.locator('.input-card')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});

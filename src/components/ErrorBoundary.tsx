@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { buildRecoveryBackup } from '../lib/backup';
 import { downloadBlob } from '../lib/browser';
 import { timestampForFileName } from '../lib/format';
 import { clearWorkspace, readRawWorkspace } from '../lib/storage';
@@ -33,9 +34,11 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   private readonly handleDownload = (): void => {
     const raw = readRawWorkspace();
     if (!raw) return;
+    const at = new Date();
+    // 通常の「作業データの読み込み」でそのまま読み戻せる形にして落とす。
     downloadBlob(
-      new Blob([raw], { type: 'application/json' }),
-      `bulk-replace-backup-${timestampForFileName(new Date())}.json`,
+      new Blob([buildRecoveryBackup(raw, at)], { type: 'application/json' }),
+      `bulk-replace-backup-${timestampForFileName(at)}.json`,
     );
   };
 
@@ -57,6 +60,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           保存されているデータが原因の場合、再読み込みしても同じ状態になります。
           保存データを消すと直ることがありますが、入力した原稿もルール表も一緒に失われます。
           削除する前に「保存データをダウンロード」で手元に保存しておくことをおすすめします。
+          ダウンロードしたファイルは、あとで「作業データ」の「ファイルを選んで読み込む」から戻せます。
         </p>
         <pre className="recovery__detail">{error.message}</pre>
         <div className="recovery__actions">

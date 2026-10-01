@@ -1,5 +1,5 @@
 import type { Group, InputText, PersistedWorkspace, Rule, RuleOrder, Theme } from '../types';
-import { createGroupId, createId } from './id';
+import { createGroupId, createId, isUsableId } from './id';
 import { STORAGE_CONFIRM_CODE_UNITS } from './inputLimits';
 import { normalizeInputSource } from './inputSource';
 
@@ -20,20 +20,34 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
 }
 
-/** グループID → 置換先。文字列でない値は落とす。 */
-function normalizeValues(value: unknown): Record<string, string> {
+/**
+ * グループID → 置換先。文字列でない値は落とす。
+ *
+ * `renamed` は、使えない ID だったために振り直したグループの対応（保存データの ID → 新しい ID）。
+ * 置換先はその新しい ID へ付け替え、グループとの対応を切らない。それ以外の使えない ID の
+ * キーは、対応するグループが無いので落とす（辞書に `__proto__` などを持ち込まない）。
+ */
+function normalizeValues(
+  value: unknown,
+  renamed: ReadonlyMap<string, string>,
+): Record<string, string> {
   if (!isRecord(value)) return {};
-  const out: Record<string, string> = {};
+  const entries: Array<[string, string]> = [];
+  // Object.entries は自身のプロパティだけを返す（JSON.parse は `__proto__` も自身の
+  // プロパティとして作る）。代入ではなく fromEntries で作り、`__proto__` の setter を通さない。
   for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry === 'string') out[key] = entry;
+    if (typeof entry !== 'string') continue;
+    const id = renamed.get(key) ?? key;
+    if (isUsableId(id)) entries.push([id, entry]);
   }
-  return out;
+  return Object.fromEntries(entries);
 }
 
 function normalizeInput(value: unknown): InputText | null {
   if (!isRecord(value)) return null;
   const input: InputText = {
-    id: asString(value.id) || createId(),
+    // 空の ID は normalizeList が振り直す（ここで振ると、置換先の付け替えに記録されない）。
+    id: asString(value.id),
     title: asString(value.title),
     text: asString(value.text),
   };
@@ -46,34 +60,42 @@ function normalizeInput(value: unknown): InputText | null {
 
 function normalizeGroup(value: unknown): Group | null {
   if (!isRecord(value)) return null;
-  return { id: asString(value.id) || createGroupId(), name: asString(value.name) };
+  // 空の ID もここでは振り直さず、normalizeList に任せる。以前の ID 生成は空文字を作り得たので、
+  // `rule.values['']` に置換先が残っていることがある。ここで振ると対応（renamed）に記録されず失う。
+  return { id: asString(value.id), name: asString(value.name) };
 }
 
-function normalizeRule(value: unknown): Rule | null {
+function normalizeRule(value: unknown, renamed: ReadonlyMap<string, string>): Rule | null {
   if (!isRecord(value)) return null;
   const order: RuleOrder = value.order === 'seq' ? 'seq' : 'sim';
   return {
-    id: asString(value.id) || createId(),
+    // 空の ID は normalizeList が振り直す（ここで振ると、置換先の付け替えに記録されない）。
+    id: asString(value.id),
     src: asString(value.src),
     regex: asBoolean(value.regex, false),
     cs: asBoolean(value.cs, true),
     order,
-    values: normalizeValues(value.values),
+    values: normalizeValues(value.values, renamed),
   };
 }
 
 /**
- * 配列を正規化する。ID が重複した要素には新しい ID を振り直す。
+ * 配列を正規化する。ID が重複した要素と、使えない ID（`isUsableId`）の要素には
+ * 新しい ID を振り直す。
  *
  * ID は React のキーと `patchById` の同定に使うので、重複したまま復元すると
  * 1行編集したつもりが2行変わる・行が入れ替わるといった直しようのない挙動になる。
- * グループの ID を振り直すと `rule.values` の対応が切れるが、そもそも対応先が
+ * 重複したグループの ID を振り直すと `rule.values` の対応が切れるが、そもそも対応先が
  * 一意に決まらない状態なので、空の列として復元する方を選ぶ。
+ *
+ * 使えない ID は、最初に現れたものなら対応先が一意に決まるので `renamed` に記録する
+ * （グループなら、呼び出し側がルールの置換先を新しい ID へ付け替える）。
  */
 function normalizeList<T extends { id: string }>(
   value: unknown,
   normalize: (item: unknown) => T | null,
   createFallbackId: () => string,
+  renamed?: Map<string, string>,
 ): T[] {
   if (!Array.isArray(value)) return [];
   const out: T[] = [];
@@ -81,7 +103,14 @@ function normalizeList<T extends { id: string }>(
   for (const item of value) {
     const normalized = normalize(item);
     if (!normalized) continue;
-    if (seen.has(normalized.id)) normalized.id = createFallbackId();
+    const original = normalized.id;
+    if (seen.has(original)) {
+      normalized.id = createFallbackId();
+    } else if (!isUsableId(original)) {
+      normalized.id = createFallbackId();
+      renamed?.set(original, normalized.id);
+    }
+    seen.add(original);
     seen.add(normalized.id);
     out.push(normalized);
   }
@@ -127,14 +156,15 @@ export function clearWorkspace(): void {
 export function normalizeWorkspace(value: unknown): PersistedWorkspace | null {
   if (!isRecord(value)) return null;
 
-  const groups = normalizeList(value.groups, normalizeGroup, createGroupId);
+  const renamedGroups = new Map<string, string>();
+  const groups = normalizeList(value.groups, normalizeGroup, createGroupId, renamedGroups);
   // グループが無い状態は復元しても置換先を書く場所が無い。
   if (groups.length === 0) return null;
 
   return {
     inputs: normalizeList(value.inputs, normalizeInput, createId),
     groups,
-    rules: normalizeList(value.rules, normalizeRule, createId),
+    rules: normalizeList(value.rules, (item) => normalizeRule(item, renamedGroups), createId),
     theme: value.theme === 'dark' ? 'dark' : 'light',
     // 古い保存データには無いので、既定は「サンプルではない」。
     isSample: value.isSample === true,

@@ -73,6 +73,11 @@ export interface ReadFilesResult {
   overTotalBytes: number | null;
   /** UTF-8 として読めず Shift_JIS とみなしたファイル名。推測なので画面で知らせる。 */
   guessedShiftJis: string[];
+  /**
+   * 読めなかったファイル名（クラウド上にしか無くて未ダウンロード、選んだあとで変わった・
+   * 消えた、など）。1件でもあれば、ほかのファイルも取り込まない（`inputs` は空）。
+   */
+  unreadable: string[];
 }
 
 /** ドロップ／選択されたファイルを読み込んで入力テキストに変換する。BOM は落とす。 */
@@ -86,10 +91,31 @@ export async function readInputFiles(fileList: FileList | File[] | null): Promis
       tooLarge,
       overTotalBytes: plan.totalBytes,
       guessedShiftJis: [],
+      unreadable: [],
     };
   }
-  const decoded = await Promise.all(
+  // 1件の失敗で残りを待たずに投げると、どれが読めなかったか分からないうえ、呼び出し側で
+  // 受けなければ未処理の reject になる。全件の成否をそろえてから決める。
+  // 読めたものだけを取り込むことはしない。選んだ一式の一部だけが入ると、欠けたことに
+  // 気づかないまま変換・書き出しまで進みやすい（合計の超過と同じく、1件も取り込まない）。
+  const settled = await Promise.allSettled(
     plan.accepted.map(async (file) => ({ file, ...decodeText(await file.arrayBuffer()) })),
+  );
+  const unreadable = plan.accepted
+    .filter((_, index) => settled[index]?.status !== 'fulfilled')
+    .map((file) => file.name);
+  if (unreadable.length > 0) {
+    return {
+      inputs: [],
+      skipped: plan.unsupported,
+      tooLarge,
+      overTotalBytes: null,
+      guessedShiftJis: [],
+      unreadable,
+    };
+  }
+  const decoded = settled.flatMap((result) =>
+    result.status === 'fulfilled' ? [result.value] : [],
   );
   return {
     inputs: decoded.map(({ file, text }) => ({ id: createId(), title: file.name, text })),
@@ -99,7 +125,20 @@ export async function readInputFiles(fileList: FileList | File[] | null): Promis
     guessedShiftJis: decoded
       .filter(({ encoding }) => encoding === 'shift_jis')
       .map(({ file }) => file.name),
+    unreadable: [],
   };
+}
+
+/**
+ * 読めなかったファイルの知らせ。1件なら名前を出す。
+ * 読めた分も取り込んでいないことを添える（一部だけ入ったと思わせない）。
+ */
+export function describeUnreadableFiles(names: readonly string[]): string {
+  const subject =
+    names.length === 1
+      ? `${revealUnsafeChars(names[0] ?? '')} を`
+      : `${names.length}件のファイルを`;
+  return `${subject}読み込めなかったため、1件も取り込みませんでした。ファイルが端末に保存されているか確かめて、選び直してください`;
 }
 
 /**

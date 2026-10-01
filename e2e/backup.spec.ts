@@ -116,3 +116,21 @@ test('保存できないときは、消えるトーストではなく出した�
   await banner.getByRole('button', { name: '作業データを書き出す' }).click();
   await expect(page.locator('dialog[aria-label="作業データ"][open]')).toBeVisible();
 });
+
+test('ファイル自体を読めなかったら、理由を出して、いまのデータは消えない', async ({ page }) => {
+  await page.evaluate(() => {
+    File.prototype.arrayBuffer = () =>
+      Promise.reject(new DOMException('読めません', 'NotReadableError'));
+  });
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await openBackup(page);
+  await page
+    .locator('dialog[aria-label="作業データ"] input[type="file"]')
+    .setInputFiles({ name: 'cloud.json', mimeType: 'application/json', buffer: Buffer.from('{}') });
+
+  await expect(page.locator('.dialog__error')).toContainText('ファイルを読み込めませんでした');
+  await page.getByRole('button', { name: '閉じる' }).click();
+  await expect(page.locator('.input-card')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
