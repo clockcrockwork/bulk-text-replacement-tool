@@ -12,6 +12,7 @@ import { AppHeader } from './components/AppHeader';
 import { type BackupCandidate, BackupDialog } from './components/BackupDialog';
 import { CellEditor } from './components/CellEditor';
 import { type ConfirmChoice, ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog';
+import { ConversionStatus } from './components/ConversionStatus';
 import { DropOverlay } from './components/DropOverlay';
 import { EditorOverlay } from './components/EditorOverlay';
 import {
@@ -34,19 +35,20 @@ import {
 import { TabBar, type TabDescriptor } from './components/TabBar';
 import { Toast } from './components/Toast';
 import { useConfirm } from './hooks/useConfirm';
+import { useConversion } from './hooks/useConversion';
 import { useGitHubImport } from './hooks/useGitHubImport';
 import { useNarrowScreen } from './hooks/useNarrowScreen';
 import { usePersistedWorkspace } from './hooks/usePersistedWorkspace';
 import { type ToastAction, useToast } from './hooks/useToast';
 import { buildBackup, parseBackup } from './lib/backup';
 import { copyText, downloadBlob } from './lib/browser';
+import { describeConversionStop } from './lib/conversionProtocol';
 import { collectRuleErrors, findUnmatchedRules } from './lib/diagnostics';
 import { formatFallbackTitle, formatIndex, timestampForFileName } from './lib/format';
 import { formatBytes } from './lib/githubApi';
 import { describeTooLargeFiles, describeUnreadableFiles, readInputFiles } from './lib/inputFiles';
 import { describeImportTotalTooLarge, MAX_INPUT_BYTES } from './lib/inputLimits';
 import { matchBatchSources, sourceIdentity } from './lib/inputSource';
-import { runConversion } from './lib/replace';
 import { revealUnsafeChars } from './lib/revealText';
 import { mayExceedStorage } from './lib/storage';
 import {
@@ -105,6 +107,9 @@ export function App(): JSX.Element {
   const saveBlocked: SaveBlock | null = storageConflict ? 'conflict' : saveFailed ? 'failed' : null;
   // GitHub の認可で画面を離れる直前に、保留中の編集も含めて書き出す（書けなければ離れない）。
   const github = useGitHubImport({ beforeNavigate: flushWorkspace });
+  const conversion = useConversion();
+  /** 変換が止まった理由。次の変換か「閉じる」まで出したままにする。 */
+  const [conversionNotice, setConversionNotice] = useState<string | null>(null);
 
   // ---- 作業データ（バックアップ） --------------------------------------------
   const [backupOpen, setBackupOpen] = useState(false);
@@ -232,6 +237,14 @@ export function App(): JSX.Element {
     [state.inputs, state.groups, state.rules],
   );
   const stale = state.result !== null && signature !== state.lastSignature;
+
+  // 変換中に入力・ルールが変わったら取り消す。終わっても古い内容の結果にしかならない。
+  const runningSignature = conversion.activity?.signature ?? null;
+  useEffect(() => {
+    if (runningSignature === null || runningSignature === signature) return;
+    conversion.cancel();
+    flash('入力かルールが変わったため、変換を中止しました');
+  }, [runningSignature, signature, conversion.cancel, flash]);
   const cards = state.ruleView === 'auto' ? narrow : state.ruleView === 'card';
 
   const tabs: TabDescriptor[] = [
@@ -642,14 +655,24 @@ export function App(): JSX.Element {
       dispatch({ type: 'tab/set', tab: 'rules' });
       return;
     }
-    guard('変換', () => {
-      const result = runConversion(state);
-      dispatch({ type: 'result/set', result, signature });
-      const unmatched = findUnmatchedRules(state.rules, state.groups, result);
-      // 0件そのものは異常ではないので止めない。打ち間違いや表記違いに気づけるようにだけする。
-      if (unmatched.length > 0) {
-        flash(`変換しました（1件も置換されなかったルールが${unmatched.length}件あります）`);
-      }
+    setConversionNotice(null);
+    // 変換に渡した内容。止まった理由（どのルール・どのファイルか）もこれで組み立てる。
+    const input = { inputs: state.inputs, groups: state.groups, rules: state.rules };
+    const runSignature = signature;
+    void conversion.start(input, runSignature).then((outcome) => {
+      guard('変換', () => {
+        if (outcome.kind === 'cancelled') return;
+        if (outcome.kind === 'stopped') {
+          setConversionNotice(describeConversionStop(outcome.stop, input));
+          return;
+        }
+        dispatch({ type: 'result/set', result: outcome.result, signature: runSignature });
+        const unmatched = findUnmatchedRules(input.rules, input.groups, outcome.result);
+        // 0件そのものは異常ではないので止めない。打ち間違いや表記違いに気づけるようにだけする。
+        if (unmatched.length > 0) {
+          flash(`変換しました（1件も置換されなかったルールが${unmatched.length}件あります）`);
+        }
+      });
     });
   };
 
@@ -914,6 +937,15 @@ export function App(): JSX.Element {
           tabs={tabs}
           current={state.tab}
           onSelect={(tab) => dispatch({ type: 'tab/set', tab })}
+        />
+        <ConversionStatus
+          activity={conversion.activity}
+          notice={conversionNotice}
+          onCancel={() => {
+            conversion.cancel();
+            flash('変換を中止しました');
+          }}
+          onDismiss={() => setConversionNotice(null)}
         />
       </div>
 

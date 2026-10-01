@@ -49,6 +49,9 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   TypeScript 7 は従来の JS API を持たず、Vercel が `.ts` を変換できない恐れがあるので、
   **JSDoc 付きの JavaScript** で書き `checkJs` で型検査する。本体は `api/_lib/`
   （`_` 始まりは Function にならない）に置き、Vitest で直接テストする。
+- `src/workers/` — 変換の Web Worker（`conversion.worker.ts`）と、それを動かすクライアント
+  （`conversionClient.ts`、Worker を差し替えてテストする）。メッセージの形と止まった理由の文は
+  `src/lib/conversionProtocol.ts` の純粋関数に置く。
 - `e2e/` — Playwright。本番ビルドを `npm run preview` で配信して検証する。
 
 データの流れ: `App.tsx` が state を持ち、`src/lib/` の関数を呼んで結果を reducer に渡し、
@@ -80,6 +83,14 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   置換結果を再走査しないので連鎖しない。「順次」は単独パスなので、前のパスの結果と周囲に
   またがる一致も拾う。この挙動を変えると利用者の出力が変わるので、変更時は
   `replace.test.ts` のケースを先に見直すこと。
+- **変換は Web Worker で走らせる**（issue #31、`useConversion`）。メインスレッドで `runConversion` を
+  呼び直さない（破滅的なバックトラックでタブが固まり、始まったら止められない）。止めるのは常に
+  `terminate` で、変換ごとに Worker を作り直す。時間切れは**パス単位**（`CONVERSION_STALL_TIMEOUT_MS`、
+  進みが届くたびに数え直す）、結果の大きさは `MAX_CONVERSION_OUTPUT_CODE_UNITS` で `applyBatch` が
+  膨らむ途中で止める。止まった理由はルールの行と置換元を添えて出したままにする（消えるトーストにしない）。
+  変換中に入力・ルールが変わったら取り消す。正規表現の構文・エンジンは変えない。
+  同一オリジンの Worker にはページの `<meta>` CSP が引き継がれないので、Worker の中で通信の API を
+  塞ぐ（`blockNetworkApis`）。CSP には `worker-src 'self'` を明示している。
 - **置換先が空の行**は「削除」ではなく「そのグループでは適用しない」。ただし
   **正規表現モードでは、展開後に空文字になる置換先を書けば削除できる**
   （`applyBatch` の `if (replaced)` が偽になり、一致範囲が出力に積まれない）。

@@ -13,7 +13,7 @@
 
 この約束は二重に固定しています。
 
-- **CSP**: `connect-src 'self' https://api.github.com` で、それ以外の宛先への fetch / XHR / sendBeacon / WebSocket をブラウザ側で塞いでいます
+- **CSP**: `connect-src 'self' https://api.github.com` で、それ以外の宛先への fetch / XHR / sendBeacon / WebSocket をブラウザ側で塞いでいます（変換を走らせる Web Worker にはページの CSP が引き継がれないので、Worker の中では通信の API そのものを最初に塞いでいます）
 - **E2E**: 原稿とルールに目印を仕込み、どのリクエストの URL・ヘッダ・本文にも現れないことを検証しています。GitHub を使わない流れでは GitHub にもサーバーにも一切つながないこと、GitHub から取り込んだ本文がサーバーへ送られないことも見ています（`e2e/privacy.spec.ts`）
 
 ## できること

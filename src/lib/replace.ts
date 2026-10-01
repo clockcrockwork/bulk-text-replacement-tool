@@ -122,6 +122,22 @@ export function buildBatches(
   return batches;
 }
 
+/**
+ * 変換結果が上限（`MAX_CONVERSION_OUTPUT_CODE_UNITS`）を超えた。どのルールの置換で
+ * 超えたかを持つ（`runConversion` がグループとファイルを添える）。`ruleId` が null なのは、
+ * 置換で膨らんだのではなく、入力を多くのグループへ複製した合計が超えたとき。
+ */
+export class ConversionOutputLimitError extends Error {
+  constructor(
+    readonly ruleId: string | null,
+    readonly groupId: string | null = null,
+    readonly inputIndex: number | null = null,
+  ) {
+    super('変換結果が上限を超えました');
+    this.name = 'ConversionOutputLimitError';
+  }
+}
+
 /** 1つの一致候補。同じ位置で競合したときの優先順位付けに `order` を使う。 */
 interface Candidate {
   start: number;
@@ -186,12 +202,16 @@ function collectCandidates(text: string, batch: Batch): Candidate[] {
  * 一致も拾える。
  *
  * @param hits ルールIDごとの置換件数。呼び出し側のカウンタを破壊的に更新する。
+ * @param limit 新しいテキストの長さの上限（UTF-16 のコード単位）。置換で超えたら、
+ *   組み立て終わるのを待たずに `ConversionOutputLimitError` で止める（膨らみきってから
+ *   測ると、その前にタブが落ちる）。
  * @returns 新しいテキストと、このパスでの置換件数。
  */
 export function applyBatch(
   marked: MarkedText,
   batch: Batch,
   hits: Record<string, number>,
+  limit = Number.POSITIVE_INFINITY,
 ): { marked: MarkedText; hits: number } {
   const { text, ranges } = marked;
   const candidates = collectCandidates(text, batch);
@@ -202,6 +222,14 @@ export function applyBatch(
   const carry = createRangeCarrier(ranges);
   let pos = 0;
   let total = 0;
+  let lastRuleId: string | null = null;
+  /**
+   * 上限を超えた。置換の前から超えている（入力をグループへ複製した合計で超えた）なら、
+   * このパスのルールのせいにしない。
+   */
+  const overflow = (ruleId: string | null): never => {
+    throw new ConversionOutputLimitError(text.length > limit ? null : ruleId);
+  };
 
   for (const candidate of candidates) {
     if (candidate.start < pos) continue; // 採用済みの範囲と重なる候補は捨てる
@@ -213,10 +241,14 @@ export function applyBatch(
       ? expandReplacement(candidate.item.replacement, candidate.match)
       : candidate.item.replacement;
     if (replaced) {
+      // 組み立て済みの長さは減らないので、超えた時点で確定する。残りの部分は足さない
+      // （同じパスの後ろの置換で縮むことがあり、見込みで止めると収まる変換まで止める）。
+      if (out.length + replaced.length > limit) overflow(candidate.item.ruleId);
       pushRange(outRanges, out.length, out.length + replaced.length);
       out += replaced;
     }
     hits[candidate.item.ruleId] = (hits[candidate.item.ruleId] ?? 0) + 1;
+    lastRuleId = candidate.item.ruleId;
     total += 1;
     pos = candidate.end;
   }
@@ -224,6 +256,7 @@ export function applyBatch(
     carry(pos, text.length, out.length, outRanges);
     out += text.slice(pos);
   }
+  if (out.length > limit) overflow(lastRuleId);
 
   return { marked: { text: out, ranges: outRanges }, hits: total };
 }
@@ -247,11 +280,32 @@ export interface ConversionInput {
   rules: readonly Rule[];
 }
 
+/** 変換の進み。どのグループのどのファイルに、どのルール（同時適用のまとまり）を当てるか。 */
+export interface ConversionProgress {
+  groupIndex: number;
+  inputIndex: number;
+  /** これから当てるパスのルール ID（同時適用なら複数）。 */
+  ruleIds: string[];
+}
+
+export interface ConversionOptions {
+  /** 結果の本文の合計の上限（UTF-16 のコード単位）。超えたら `ConversionOutputLimitError`。 */
+  maxOutputCodeUnits?: number;
+  /**
+   * 各パスを当てる直前に呼ぶ。止まったパス（破滅的なバックトラックなど）を特定するのに
+   * 使うので、間引かずに毎回呼ぶ。
+   */
+  onPass?: (progress: ConversionProgress) => void;
+}
+
 /**
  * 全入力 × 全グループの変換を実行する。副作用はなく、同じ入力なら常に同じ結果を返す
  * （`at` のみ実行時刻）。
  */
-export function runConversion({ inputs, groups, rules }: ConversionInput): ConversionResult {
+export function runConversion(
+  { inputs, groups, rules }: ConversionInput,
+  { maxOutputCodeUnits = Number.POSITIVE_INFINITY, onPass }: ConversionOptions = {},
+): ConversionResult {
   const compiled = rules.map((rule) => compileRule(rule));
   const fileNames = resolveFileNames(inputs.map((input) => input.title));
   // ZIP のディレクトリ名。画面のタブ名にもこれをそのまま使う。
@@ -259,6 +313,8 @@ export function runConversion({ inputs, groups, rules }: ConversionInput): Conve
   // 分からないのに、ZIP の中では別ディレクトリ、という食い違いが起きる。
   const dirNames = resolveDirNames(groups.map((group) => group.name));
   const hitsByGroupRule: Record<string, Record<string, number>> = {};
+  /** ここまでに作った結果の本文の長さの合計。 */
+  let used = 0;
 
   const resultGroups: ResultGroup[] = groups.map((group, groupIndex) => {
     // 置換元が入っている行は、0件でもヒット数を表示したいので先に 0 で埋める。
@@ -275,9 +331,22 @@ export function runConversion({ inputs, groups, rules }: ConversionInput): Conve
       let marked = createMarkedText(input.text);
       let fileHits = 0;
       for (const batch of batches) {
-        const applied = applyBatch(marked, batch, hits);
-        marked = applied.marked;
-        fileHits += applied.hits;
+        onPass?.({ groupIndex, inputIndex, ruleIds: batch.map((item) => item.ruleId) });
+        try {
+          const applied = applyBatch(marked, batch, hits, maxOutputCodeUnits - used);
+          marked = applied.marked;
+          fileHits += applied.hits;
+        } catch (error) {
+          if (error instanceof ConversionOutputLimitError) {
+            throw new ConversionOutputLimitError(error.ruleId, group.id, inputIndex);
+          }
+          throw error;
+        }
+      }
+      // 置換が1件も無いファイルも、結果として複製を持つので数える。
+      used += marked.text.length;
+      if (used > maxOutputCodeUnits) {
+        throw new ConversionOutputLimitError(null, group.id, inputIndex);
       }
       return {
         title: fileNames[inputIndex] ?? `text-${inputIndex + 1}.txt`,

@@ -50,6 +50,10 @@ export default defineConfig({
     // 配布物に含める理由が無い。
     sourcemap: false,
   },
+  // 変換の Worker（src/workers/conversion.worker.ts）は `type: 'module'` で作る。
+  worker: {
+    format: 'es',
+  },
   preview: {
     headers: readAppHeaders(),
   },

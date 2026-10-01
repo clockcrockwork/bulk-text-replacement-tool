@@ -36,6 +36,18 @@ export const MAX_IMPORT_TOTAL_BYTES = 5 * MiB;
 export const STORAGE_CONFIRM_CODE_UNITS = 4 * MiB;
 
 /**
+ * 1回の変換で作る結果の本文の合計（UTF-16 のコード単位）の上限（issue #31）。
+ *
+ * 置換先の展開（`$&` の繰り返しなど）と順次適用の連鎖で、結果は入力から急に膨らみ得る。
+ * 入力の上限（5MiB）は結果の大きさを抑えないので、膨らむ途中で止める（`applyBatch`）。
+ * 結果は表示用の断片と、Worker からの受け渡しで何度か複製されるので、iOS のタブが
+ * 落ちない程度に抑える。保存できるワークスペースの目安（`STORAGE_CONFIRM_CODE_UNITS`）の
+ * 8倍で、上限まで入れた入力を8グループに変換できる。数え方で値が変わる「文字数」として
+ * 画面に出さない（`format.ts`）。
+ */
+export const MAX_CONVERSION_OUTPUT_CODE_UNITS = 32 * MiB;
+
+/**
  * 画面に出す上限の表記（「5MiB」）。
  *
  * 境界は 1024 倍の単位で決めているので、表記も MiB にする。「5MB」と書くと、5,100,000 バイトの

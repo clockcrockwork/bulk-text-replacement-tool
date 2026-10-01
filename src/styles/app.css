@@ -19,6 +19,28 @@
   background: var(--color-bg);
 }
 
+/* 変換の進みと、止まった理由。タブを切り替えても見えるよう上部の帯に入れる。 */
+.conversion-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px var(--gutter);
+  color: var(--color-text);
+  font-size: 13px;
+  background: var(--color-surface-strong);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.conversion-status--error {
+  border-left: 3px solid var(--color-accent);
+}
+
+.conversion-status__text {
+  flex: 1 1 240px;
+}
+
 .app__main {
   display: flex;
   flex: 1;

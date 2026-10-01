@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Group, InputText, Rule, RuleOrder } from '../types';
-import { advanceStringIndex, createMarkedText, runConversion, toSegments } from './replace';
+import {
+  advanceStringIndex,
+  ConversionOutputLimitError,
+  type ConversionProgress,
+  createMarkedText,
+  runConversion,
+  toSegments,
+} from './replace';
 
 const GROUP_A: Group = { id: 'ga', name: 'A用' };
 
@@ -336,5 +343,112 @@ describe('advanceStringIndex', () => {
     expect(advanceStringIndex(`${loneHigh}a`, 0)).toBe(1);
     expect(advanceStringIndex(`${loneLow}a`, 0)).toBe(1);
     expect(advanceStringIndex(`a${loneHigh}`, 1)).toBe(2);
+  });
+});
+
+describe('変換結果の上限（issue #31）', () => {
+  const groups: Group[] = [GROUP_A, { id: 'gb', name: 'B用' }];
+
+  it('上限以内なら、上限を渡さないときと同じ結果になる', () => {
+    const rules = [rule('r1', 'a', { ga: 'xyz', gb: 'b' })];
+    const inputs = [input('a.txt', 'aaa')];
+    const limited = runConversion({ inputs, groups, rules }, { maxOutputCodeUnits: 12 });
+    const free = runConversion({ inputs, groups, rules });
+    expect(limited.groups.map((g) => g.files[0]?.text)).toEqual(
+      free.groups.map((g) => g.files[0]?.text),
+    );
+  });
+
+  it('置換で膨らんで上限を超えたら、どのルール・グループ・ファイルかを添えて止める', () => {
+    // 順次適用で毎回2倍になる（$& の繰り返し）。
+    const rules = [
+      rule('r1', '.+', { ga: '$&$&' }, { regex: true, order: 'seq' }),
+      rule('r2', '.+', { ga: '$&$&' }, { regex: true, order: 'seq' }),
+      rule('r3', '.+', { ga: '$&$&' }, { regex: true, order: 'seq' }),
+    ];
+    const inputs = [input('a.txt', 'ab'), input('b.txt', 'abcd')];
+    let error: unknown;
+    try {
+      runConversion({ inputs, groups: [GROUP_A], rules }, { maxOutputCodeUnits: 40 });
+    } catch (caught) {
+      error = caught;
+    }
+    // a.txt は 2 → 16 で収まり（残り 24）、b.txt は 4 → 8 → 16 → 32 の3回目で超える。
+    expect(error).toBeInstanceOf(ConversionOutputLimitError);
+    expect(error).toMatchObject({ ruleId: 'r3', groupId: 'ga', inputIndex: 1 });
+  });
+
+  it('置換が無くても、グループへ複製した合計が上限を超えたら止める', () => {
+    const inputs = [input('a.txt', 'abcdef')];
+    expect(() => runConversion({ inputs, groups, rules: [] }, { maxOutputCodeUnits: 10 })).toThrow(
+      ConversionOutputLimitError,
+    );
+    try {
+      runConversion({ inputs, groups, rules: [] }, { maxOutputCodeUnits: 10 });
+    } catch (error) {
+      expect(error).toMatchObject({ ruleId: null, groupId: 'gb', inputIndex: 0 });
+    }
+  });
+
+  it('同じパスの後ろの置換で縮んで収まるなら、途中で止めない', () => {
+    // 先頭の x で 1 増え、後ろの a×8 で 7 減る。残りを見込みで足すと途中で超えて見える。
+    const rules = [rule('r1', 'x', { ga: 'yy' }), rule('r2', 'aaaaaaaa', { ga: 'a' })];
+    const { groups: out } = runConversion(
+      { inputs: [input('a.txt', 'xaaaaaaaa')], groups: [GROUP_A], rules },
+      { maxOutputCodeUnits: 9 },
+    );
+    expect(out[0]?.files[0]?.text).toBe('yya');
+  });
+
+  it('パスの最後の複写で超えたら、そのパスで置換したルールを示す', () => {
+    // 先頭の置換は上限内に収まり、後ろの未置換の部分を足したところで超える。
+    const rules = [rule('r1', 'x', { ga: 'yyyy' })];
+    expect(() =>
+      runConversion(
+        { inputs: [input('a.txt', 'xabcd')], groups: [GROUP_A], rules },
+        { maxOutputCodeUnits: 6 },
+      ),
+    ).toThrow(expect.objectContaining({ ruleId: 'r1', groupId: 'ga', inputIndex: 0 }));
+  });
+
+  it('置換の前から上限を超えている入力は、ルールのせいにしない', () => {
+    const rules = [rule('r1', 'x', { ga: 'y' })];
+    expect(() =>
+      runConversion(
+        { inputs: [input('a.txt', 'xabcdef')], groups: [GROUP_A], rules },
+        { maxOutputCodeUnits: 3 },
+      ),
+    ).toThrow(expect.objectContaining({ ruleId: null }));
+  });
+
+  it('上限ちょうどは超えていない', () => {
+    const rules = [rule('r1', 'a', { ga: 'bb' })];
+    const { groups: out } = runConversion(
+      { inputs: [input('a.txt', 'aa')], groups: [GROUP_A], rules },
+      { maxOutputCodeUnits: 4 },
+    );
+    expect(out[0]?.files[0]?.text).toBe('bbbb');
+  });
+});
+
+describe('変換の進み（onPass）', () => {
+  it('各パスを当てる直前に、グループ・ファイル・パスのルールを知らせる', () => {
+    const rules = [
+      rule('r1', 'a', { ga: 'b' }),
+      rule('r2', 'c', { ga: 'd' }),
+      rule('r3', 'e', { ga: 'f' }, { order: 'seq' }),
+      rule('r4', 'g', {}),
+    ];
+    const seen: ConversionProgress[] = [];
+    runConversion(
+      { inputs: [input('a.txt', 'x'), input('b.txt', 'y')], groups: [GROUP_A], rules },
+      { onPass: (progress) => seen.push(progress) },
+    );
+    expect(seen).toEqual([
+      { groupIndex: 0, inputIndex: 0, ruleIds: ['r1', 'r2'] },
+      { groupIndex: 0, inputIndex: 0, ruleIds: ['r3'] },
+      { groupIndex: 0, inputIndex: 1, ruleIds: ['r1', 'r2'] },
+      { groupIndex: 0, inputIndex: 1, ruleIds: ['r3'] },
+    ]);
   });
 });
