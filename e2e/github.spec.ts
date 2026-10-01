@@ -625,6 +625,169 @@ test('同じbasenameの別パスを一括選択すると衝突を知らせ、別
   await expect(page.locator('.input-card__source')).toHaveText([/a\/ch1\.md/, /b\/ch1\.md/]);
 });
 
+test('NovelText 型の深いパスで同名 body.md が複数あり、同じ blob / tree SHA でもすべて別入力にする', async ({
+  page,
+}) => {
+  const shared = '同じ本文\n';
+  const repository = novelRepository({
+    branches: {
+      main: [
+        { path: '作品/texts/CT-0001/body.md', content: shared },
+        { path: '作品/texts/CT-0002/body.md', content: shared },
+        { path: '作品/texts/CT-0003/body.md', content: '別の本文\n' },
+      ],
+    },
+  });
+  const mock = new GitHubMock([repository]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await entry(page, '作品/').click();
+  await dialog(page).getByRole('checkbox', { name: 'texts フォルダを選択' }).check();
+  const batch = await fetchSelection(page, 3);
+
+  // basename は全部 body.md でも、取り込み元は path で別物。warning のみで確定を妨げない。
+  await expect(batch.locator('.github__batch-warning')).toHaveCount(3);
+  const commit = batch.getByRole('button', { name: '3ファイルを取り込む' });
+  await expect(commit).toBeEnabled();
+  await commit.click();
+
+  await expect(page.locator('.input-card')).toHaveCount(4);
+  await expect(page.locator('.input-card__source')).toHaveText([
+    /作品\/texts\/CT-0001\/body\.md/,
+    /作品\/texts\/CT-0002\/body\.md/,
+    /作品\/texts\/CT-0003\/body\.md/,
+  ]);
+
+  // 入力名が同じでも変換対象から落とさない。出力名だけ既存規則で安全に重複解決する。
+  await page.getByRole('button', { name: '変換' }).click();
+  await expect(page.locator('.file-card__path')).toHaveText([
+    'A用/local.md',
+    'A用/body.md',
+    'A用/body (2).md',
+    'A用/body (3).md',
+  ]);
+
+  // 同一内容で blob SHA が同じでも、source.path は別なので入力は3件残る。
+  // blobCache は再試行用で、同時進行中の同一 SHA リクエストを coalesce する契約ではない。
+});
+
+test('別ディレクトリへ移動しながら同名 body.md を個別チェックしても選択を保持する', async ({
+  page,
+}) => {
+  const repository = novelRepository({
+    branches: {
+      main: [
+        { path: '作品/texts/CT-0001/body.md', content: '本文1\\n' },
+        { path: '作品/texts/CT-0002/body.md', content: '本文2\\n' },
+      ],
+    },
+  });
+  const mock = new GitHubMock([repository]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await entry(page, '作品/').click();
+  await entry(page, 'texts/').click();
+
+  await entry(page, 'CT-0001/').click();
+  await dialog(page).getByRole('checkbox', { name: 'body.md を選択' }).check();
+  await dialog(page).getByRole('button', { name: '上の階層へ' }).click();
+
+  await entry(page, 'CT-0002/').click();
+  await dialog(page).getByRole('checkbox', { name: 'body.md を選択' }).check();
+
+  const batch = await fetchSelection(page, 2);
+  await expect(batch.locator('.github__batch-warning')).toHaveCount(2);
+  await batch.getByRole('button', { name: '2ファイルを取り込む' }).click();
+
+  await expect(page.locator('.input-card__source')).toHaveText([
+    /作品\/texts\/CT-0001\/body\.md/,
+    /作品\/texts\/CT-0002\/body\.md/,
+  ]);
+});
+
+test('NovelText 実構成相当の36個の body.md を一括で別入力として保持し、出力名だけ重複解決する', async ({
+  page,
+}) => {
+  const files = Array.from({ length: 36 }, (_, index) => {
+    const id = String(index + 1).padStart(4, '0');
+    return {
+      path: `ほどけない、と気づくまで/texts/CT-${id}/body.md`,
+      content: `本文 ${id}\\n`,
+    };
+  });
+  const mock = new GitHubMock([
+    novelRepository({
+      branches: { main: files },
+    }),
+  ]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await entry(page, 'ほどけない、と気づくまで/').click();
+  await dialog(page).getByRole('checkbox', { name: 'texts フォルダを選択' }).check();
+  const batch = await fetchSelection(page, 36);
+  await expect(batch.locator('.github__batch-warning')).toHaveCount(36);
+
+  const commit = batch.getByRole('button', { name: '36ファイルを取り込む' });
+  await expect(commit).toBeEnabled();
+  await commit.click();
+
+  await expect(page.locator('.input-card')).toHaveCount(37);
+  await expect(page.locator('.input-card__source')).toHaveCount(36);
+  await expect(page.locator('.input-card__source').first()).toContainText(
+    'ほどけない、と気づくまで/texts/CT-0001/body.md',
+  );
+  await expect(page.locator('.input-card__source').last()).toContainText(
+    'ほどけない、と気づくまで/texts/CT-0036/body.md',
+  );
+
+  await page.getByRole('button', { name: '変換' }).click();
+  const paths = page.locator('.file-card__path');
+  await expect(paths).toHaveCount(37);
+  await expect(paths.nth(1)).toHaveText('A用/body.md');
+  await expect(paths.last()).toHaveText('A用/body (36).md');
+});
+
+test('既存workspaceに body.md があっても、別pathのGitHub body.mdは追加できる', async ({ page }) => {
+  const repository = novelRepository({
+    branches: {
+      main: [{ path: '作品/texts/CT-0001/body.md', content: 'GitHub本文\\n' }],
+    },
+  });
+  const mock = new GitHubMock([repository]);
+  await mock.install(page);
+  await seedWorkspace(page, {
+    inputs: [{ id: 'existing', title: 'body.md', text: '既存本文\\n' }],
+    groups: [{ id: 'g1', name: 'A用' }],
+    rules: [],
+  });
+  await openApp(page);
+  await connect(page);
+  await openRepository(page);
+
+  await entry(page, '作品/').click();
+  await entry(page, 'texts/').click();
+  await entry(page, 'CT-0001/').click();
+  await entry(page, 'body.md').click();
+
+  const confirm = dialog(page).getByRole('region', { name: '取り込む内容の確認' });
+  await expect(confirm).toContainText('同じファイル名の入力が別にあります');
+  await expect(confirm.getByRole('group')).toHaveCount(0);
+  await confirm.getByRole('button', { name: '入力に追加' }).click();
+
+  await expect(page.locator('.input-card')).toHaveCount(2);
+  const titles = page.locator('.input-card__title');
+  await expect(titles.nth(0)).toHaveValue('body.md');
+  await expect(titles.nth(1)).toHaveValue('body.md');
+  await expect(page.locator('.input-card__source')).toHaveCount(1);
+  await expect(page.locator('.input-card__source')).toContainText('作品/texts/CT-0001/body.md');
+});
+
 test('未展開のフォルダを選ぶと、blob を取る前に正確な件数と容量を見せ、戻れば選択は残る', async ({
   page,
 }) => {
