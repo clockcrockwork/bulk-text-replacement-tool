@@ -297,6 +297,9 @@ export function applyBatch(
     if (candidate.start > pos) {
       carry(pos, candidate.start, out.length, outRanges);
       out += text.slice(pos, candidate.start);
+      // 元の部分を足しただけで超えたなら、超えさせたのはそれまでに置換したルール。ここで
+      // 止めないと、次の候補（長さを変えない置換でも）のせいにしてしまう。
+      if (out.length > limit) overflow(lastRuleId);
     }
     // 組み立て済みの長さは減らないので、超えた時点で確定する。残りの部分は足さない
     // （同じパスの後ろの置換で縮むことがあり、見込みで止めると収まる変換まで止める）。

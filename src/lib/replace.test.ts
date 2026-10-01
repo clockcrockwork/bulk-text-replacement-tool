@@ -383,13 +383,8 @@ describe('変換結果の上限（issue #31）', () => {
   it('置換が無くても、グループへ複製した合計が上限を超えたら止める', () => {
     const inputs = [input('a.txt', 'abcdef')];
     expect(() => runConversion({ inputs, groups, rules: [] }, { maxOutputCodeUnits: 10 })).toThrow(
-      ConversionOutputLimitError,
+      expect.objectContaining({ ruleId: null, groupId: 'gb', inputIndex: 0 }),
     );
-    try {
-      runConversion({ inputs, groups, rules: [] }, { maxOutputCodeUnits: 10 });
-    } catch (error) {
-      expect(error).toMatchObject({ ruleId: null, groupId: 'gb', inputIndex: 0 });
-    }
   });
 
   it('同じパスの後ろの置換で縮んで収まるなら、途中で止めない', () => {
@@ -411,6 +406,17 @@ describe('変換結果の上限（issue #31）', () => {
         { maxOutputCodeUnits: 6 },
       ),
     ).toThrow(expect.objectContaining({ ruleId: 'r1', groupId: 'ga', inputIndex: 0 }));
+  });
+
+  it('置換のあとの元の部分で超えたら、次の候補ではなく膨らませたルールを示す', () => {
+    // A で 1 → 3 に伸び、そのあと元の x×8 を足した時点で 11 > 10。B は長さを変えない。
+    const rules = [rule('A', 'a', { ga: 'AAA' }), rule('B', 'b', { ga: 'B' })];
+    expect(() =>
+      runConversion(
+        { inputs: [input('a.txt', `a${'x'.repeat(8)}b`)], groups: [GROUP_A], rules },
+        { maxOutputCodeUnits: 10 },
+      ),
+    ).toThrow(expect.objectContaining({ ruleId: 'A' }));
   });
 
   it('置換の前から上限を超えている入力は、ルールのせいにしない', () => {

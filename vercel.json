@@ -18,6 +18,15 @@
           "value": "camera=(), microphone=(), geolocation=(), payment=(), usb=(), display-capture=()"
         }
       ]
+    },
+    {
+      "source": "/assets/conversion.worker-(.*).js",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'none'; frame-ancestors 'none'"
+        }
+      ]
     }
   ]
 }

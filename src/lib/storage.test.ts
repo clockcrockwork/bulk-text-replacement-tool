@@ -13,6 +13,7 @@ import {
   readRawWorkspace,
   STORAGE_KEY,
   saveWorkspace,
+  writeSerializedWorkspace,
   writeWorkspace,
 } from './storage';
 
@@ -350,6 +351,16 @@ describe('writeWorkspace', () => {
     stubStorage({}, true);
     expect(writeWorkspace(workspace)).toBeNull();
     expect(saveWorkspace(workspace)).toBe(false);
+  });
+});
+
+describe('writeSerializedWorkspace', () => {
+  it('渡した文字列をそのまま書き、書けなければ false', () => {
+    const store = stubStorage();
+    expect(writeSerializedWorkspace('{"a":1}')).toBe(true);
+    expect(store[STORAGE_KEY]).toBe('{"a":1}');
+    stubStorage({}, true);
+    expect(writeSerializedWorkspace('{"a":1}')).toBe(false);
   });
 });
 

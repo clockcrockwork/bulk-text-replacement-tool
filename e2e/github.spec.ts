@@ -2340,6 +2340,35 @@ test('ブラウザへの保存に失敗している間は、画面遷移する�
   expect(mock.authorizeCalls).toEqual([]);
 });
 
+test('別のタブと食い違っている間は、画面遷移する接続を始めさせない', async ({ page, context }) => {
+  const mock = new GitHubMock([REPO]);
+  await mock.install(page);
+  await seed(page);
+  await openApp(page);
+  // 別のタブが作業データを保存する。
+  const other = await context.newPage();
+  await other.goto('/');
+  await other.evaluate((key) => {
+    const saved = JSON.parse(localStorage.getItem(key) ?? '{}');
+    saved.inputs = [{ id: 'other', title: 'from-other.md', text: '別のタブ' }];
+    localStorage.setItem(key, JSON.stringify(saved));
+  }, STORAGE_KEY);
+  await expect(
+    page.getByRole('alert').filter({ hasText: '別のタブで作業データが更新されました' }),
+  ).toBeVisible();
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await expect(dialog(page).getByRole('alert')).toContainText(
+    '別のタブで作業データが更新されたため、このタブからは保存していません',
+  );
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeDisabled();
+  expect(mock.authorizeCalls).toEqual([]);
+  // 別のタブの保存はそのまま残っている。
+  expect(await page.evaluate((key) => localStorage.getItem(key), STORAGE_KEY)).toContain(
+    'from-other.md',
+  );
+});
+
 test('保存の直前（デバウンス中）に接続しても、書き出せなければ画面遷移しない', async ({ page }) => {
   const mock = new GitHubMock([REPO]);
   await mock.install(page);

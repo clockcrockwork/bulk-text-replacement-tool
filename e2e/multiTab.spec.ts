@@ -1,6 +1,6 @@
 import { type BrowserContext, expect, type Page, test } from '@playwright/test';
 import { STORAGE_KEY } from '../src/lib/storage';
-import { openApp, seedBasic } from './fixtures';
+import { BASIC_GROUPS, BASIC_INPUT, BASIC_RULES, openApp, seedBasic } from './fixtures';
 
 /**
  * 同じオリジンを複数のタブで開いたとき（issue #30）。
@@ -21,13 +21,18 @@ async function savedTitle(page: Page): Promise<string | undefined> {
   return parsed.inputs?.[0]?.title;
 }
 
-async function openTwoTabs(page: Page, context: BrowserContext): Promise<Page> {
-  await seedBasic(page);
-  await openApp(page);
+/** 2つめのタブを、仕込みをせずに開く。 */
+async function openPeerTab(context: BrowserContext): Promise<Page> {
   const other = await context.newPage();
   await openApp(other);
   await expect(other.locator('.input-card__title')).toHaveValue('story.md');
   return other;
+}
+
+async function openTwoTabs(page: Page, context: BrowserContext): Promise<Page> {
+  await seedBasic(page);
+  await openApp(page);
+  return openPeerTab(context);
 }
 
 test('別のタブが保存したら、警告を出してこのタブからは保存しない', async ({ page, context }) => {
@@ -91,13 +96,29 @@ test('「再読み込み」を確認したら、別のタブが保存した内�
   expect(await savedTitle(page)).toBe('from-other.md');
 });
 
-test('別のタブが同じ内容を保存しただけなら、警告を出さない', async ({ page, context }) => {
-  const other = await openTwoTabs(page, context);
-  // 開いた直後の自動保存（同じ内容）を待ってから、どちらにも警告が無いことを見る。
-  await other.waitForTimeout(800);
-  await page.waitForTimeout(800);
+test('別のタブが同じ内容を今の形で書き直しただけなら、警告を出さずに保存を続ける', async ({
+  page,
+  context,
+}) => {
+  // 仕込みは古い形（isSample が無い）。別のタブがそれを今の形で保存し直した状態を作る。
+  await seedBasic(page);
+  await openApp(page);
+  const other = await openPeerTab(context);
+  await other.evaluate(([key, value]) => localStorage.setItem(key, value), [
+    STORAGE_KEY,
+    JSON.stringify({
+      inputs: [BASIC_INPUT],
+      groups: BASIC_GROUPS,
+      rules: BASIC_RULES,
+      theme: 'light',
+      isSample: false,
+    }),
+  ] as const);
+
+  // 食い違いにしていなければ、このタブの編集はそのまま保存される。
+  await page.locator('.input-card__title').fill('after.md');
+  await expect.poll(() => savedTitle(page)).toBe('after.md');
   await expect(page.getByRole('alert').filter({ hasText: CONFLICT })).toHaveCount(0);
-  await expect(other.getByRole('alert').filter({ hasText: CONFLICT })).toHaveCount(0);
 });
 
 test('食い違いの間は、作業データの書き出しへ案内する', async ({ page, context }) => {

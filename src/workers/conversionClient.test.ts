@@ -7,6 +7,7 @@ import { type ConversionWorker, startConversion } from './conversionClient';
 class FakeWorker implements ConversionWorker {
   onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
+  onmessageerror: ((event: MessageEvent<unknown>) => void) | null = null;
   readonly posted: unknown[] = [];
   terminated = false;
 
@@ -113,6 +114,14 @@ describe('startConversion', () => {
   it('Worker のエラー（読み込めない・想定外の例外）でも待ち続けない', async () => {
     const { worker, run } = start();
     worker.fail();
+    await expect(run.outcome).resolves.toEqual({ kind: 'stopped', stop: { kind: 'failed' } });
+    expect(worker.terminated).toBe(true);
+  });
+
+  it('結果を受け取れなかったら（messageerror）、時間切れを待たずに失敗として返す', async () => {
+    const { worker, run } = start(1000);
+    worker.send({ kind: 'progress', progress: PROGRESS });
+    worker.onmessageerror?.(new MessageEvent('messageerror'));
     await expect(run.outcome).resolves.toEqual({ kind: 'stopped', stop: { kind: 'failed' } });
     expect(worker.terminated).toBe(true);
   });

@@ -128,3 +128,25 @@ test('サンプルを編集したら、以降は自動で片付けない', async
   await expect(page.locator('.input-card')).toHaveCount(2);
   await expect(page.locator('.input-card__title').first()).toHaveValue('書き換えた.md');
 });
+
+test('保存データが無いまま2つのタブで同時に開いても、手つかずのサンプル同士で食い違いにしない', async ({
+  browser,
+}) => {
+  // 既定の page は beforeEach で開いてしまうので、時計を止めた別のコンテキストで開く。
+  // 両方のタブを開き終えてから、起動直後の保存の時刻まで進める。
+  const context = await browser.newContext();
+  await context.clock.install();
+  const first = await context.newPage();
+  const second = await context.newPage();
+  await openApp(first);
+  await openApp(second);
+  await context.clock.runFor(2_000);
+  for (const tab of [first, second]) {
+    await expect(
+      tab.getByRole('alert').filter({ hasText: '別のタブで作業データが更新されました' }),
+    ).toHaveCount(0);
+  }
+  // 手つかずのサンプルは書いていない（書くと、ID の違う同じサンプルで相手を食い違いにする）。
+  expect(await first.evaluate(() => localStorage.length)).toBe(0);
+  await context.close();
+});

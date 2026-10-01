@@ -25,6 +25,7 @@ export interface ConversionWorker {
   terminate: () => void;
   onmessage: ((event: MessageEvent<unknown>) => void) | null;
   onerror: ((event: ErrorEvent) => void) | null;
+  onmessageerror: ((event: MessageEvent<unknown>) => void) | null;
 }
 
 export interface ConversionRunOptions {
@@ -121,6 +122,11 @@ export function startConversion(
         finish({ kind: 'stopped', stop: { kind: 'failed' } });
         return;
     }
+  };
+  // 結果をこちらで復元できなかった（大きすぎる・複製できない）。受けないと、最後の進みから
+  // 時間切れまで待ったうえで「ルールが終わらなかった」と誤って知らせる。
+  worker.onmessageerror = () => {
+    finish({ kind: 'stopped', stop: { kind: 'failed' } });
   };
   worker.onerror = (event) => {
     // スクリプトを読めない・Worker の中の想定外の例外。ここで受けないと待ち続ける。

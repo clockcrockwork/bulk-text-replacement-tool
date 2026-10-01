@@ -243,12 +243,17 @@ export function App(): JSX.Element {
   const stale = state.result !== null && signature !== state.lastSignature;
 
   // 変換中に入力・ルールが変わったら取り消す。終わっても古い内容の結果にしかならない。
+  // 知らせはトーストにせず変換の帯に出す。変えた操作のハンドラが出したトースト（GitHub の
+  // 一括取り込みの「元に戻す」など）のあとにこの effect が走るので、トーストにすると上書きして
+  // 取り消す手段を消してしまう（トーストは1つしか出ない）。
   const runningSignature = conversion.activity?.signature ?? null;
   useEffect(() => {
     if (runningSignature === null || runningSignature === signature) return;
     conversion.cancel();
-    flash('入力かルールが変わったため、変換を中止しました');
-  }, [runningSignature, signature, conversion.cancel, flash]);
+    setConversionNotice(
+      '入力かルールが変わったため、変換を中止しました。もう一度変換してください。',
+    );
+  }, [runningSignature, signature, conversion.cancel]);
   const cards = state.ruleView === 'auto' ? narrow : state.ruleView === 'card';
 
   const tabs: TabDescriptor[] = [

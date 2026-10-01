@@ -211,12 +211,17 @@ export function mayExceedStorage(workspace: PersistedWorkspace): boolean {
  * 見分けるのに使う（`isForeignWorkspaceChange`）。
  */
 export function writeWorkspace(workspace: PersistedWorkspace): string | null {
+  const raw = serializeWorkspace(workspace);
+  return writeSerializedWorkspace(raw) ? raw : null;
+}
+
+/** 保存する形（`serializeWorkspace`）にした文字列をそのまま書く。書けたかどうかを返す。 */
+export function writeSerializedWorkspace(raw: string): boolean {
   try {
-    const raw = serializeWorkspace(workspace);
     localStorage.setItem(STORAGE_KEY, raw);
-    return raw;
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
 

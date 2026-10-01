@@ -5,6 +5,7 @@ import {
   isForeignWorkspaceValue,
   peekWorkspace,
   serializeWorkspace,
+  writeSerializedWorkspace,
   writeWorkspace,
 } from '../lib/storage';
 import type { PersistedWorkspace } from '../types';
@@ -140,8 +141,8 @@ export function usePersistedWorkspace(workspace: PersistedWorkspace): PersistedW
   }, [enterConflict]);
 
   /** 書き出して、成否を状態に反映する。 */
-  const write = useCallback((value: PersistedWorkspace): boolean => {
-    const raw = writeWorkspace(value);
+  /** 書いた結果を状態に反映する。 */
+  const settle = useCallback((value: PersistedWorkspace, raw: string | null): boolean => {
     failedRef.current = raw === null;
     setFailed(raw === null);
     if (raw === null) return false;
@@ -150,10 +151,36 @@ export function usePersistedWorkspace(workspace: PersistedWorkspace): PersistedW
     return true;
   }, []);
 
-  /** 通常の保存。食い違いがある間・他のタブが書いていたら書かない。 */
+  /** 書き出して、成否を状態に反映する。 */
+  const write = useCallback(
+    (value: PersistedWorkspace): boolean => settle(value, writeWorkspace(value)),
+    [settle],
+  );
+
+  /**
+   * 通常の保存。食い違いがある間・他のタブが書いていたら書かない。
+   *
+   * 書く内容が、保存データにあると分かっている値（`known`）と同じなら書かない。書いても
+   * 中身は変わらず、かえって別のタブを食い違いにする。保存データが空のまま2つのタブを同時に
+   * 開くと、どちらも手つかずのサンプル（ID は乱数）を起動直後に保存し、互いに相手を
+   * 「別のタブで更新された」と判定していた（レビュー）。
+   */
   const save = useCallback(
-    (value: PersistedWorkspace): boolean => !detectForeignWrite() && write(value),
-    [detectForeignWrite, write],
+    (value: PersistedWorkspace): boolean => {
+      if (detectForeignWrite()) return false;
+      const raw = serializeWorkspace(value);
+      if (known.current.includes(raw)) {
+        // 書いていないので、保存データは知っている値のどれか（古い形のままのこともある）。
+        // `known` は置き換えない。置き換えると、残っている古い形の値を知らない値と見なして
+        // 自分で食い違いにする。
+        failedRef.current = false;
+        setFailed(false);
+        workspaceRecovery.noteSaved(value);
+        return true;
+      }
+      return settle(value, writeSerializedWorkspace(raw) ? raw : null);
+    },
+    [detectForeignWrite, settle],
   );
 
   useLayoutEffect(() => {
@@ -180,6 +207,10 @@ export function usePersistedWorkspace(workspace: PersistedWorkspace): PersistedW
   const overwrite = (): boolean => {
     conflictRef.current = false;
     setConflict(false);
+    // 別のタブの値は承知のうえで上書きする。書けなかったとき（容量超過）に、次の保存で
+    // その値を「知らない値」と見て食い違いの警告へ戻らないよう、先に知っている値にする。
+    const current = peekWorkspace();
+    if (current) known.current = [current.raw];
     return write({ inputs, groups, rules, theme, isSample });
   };
 

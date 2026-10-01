@@ -1,16 +1,26 @@
 import { readFileSync } from 'node:fs';
 import react from '@vitejs/plugin-react';
+import type { Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
 
 /** vercel.json で、アプリの配信物（`/api/` 以外）に付けるヘッダの対象。 */
 const APP_HEADERS_SOURCE = '/((?!api/).*)';
+
+/**
+ * vercel.json で、変換の Worker のスクリプトに付けるヘッダの対象と、preview で同じ応答を
+ * 見分ける形。同一オリジンの Worker にはページの `<meta>` の CSP が引き継がれず、Worker は
+ * 自分のスクリプトの応答ヘッダの CSP に従う。原稿とルールが渡る Worker から通信できないよう、
+ * ヘッダで `default-src 'none'` を付ける（Worker の中で API を塞ぐのは二重目の守り）。
+ */
+const WORKER_HEADERS_SOURCE = '/assets/conversion.worker-(.*).js';
+const WORKER_SCRIPT_PATH = /\/assets\/conversion\.worker-[^/]+\.js$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
- * vercel.json がアプリの配信物に付けるヘッダを読む。
+ * vercel.json の規則（`source`）が付けるヘッダを読む。
  *
  * `vite preview`（E2E の配信元）でも同じヘッダを返すために使う。値を2か所に書くと、
  * 本番だけ別のヘッダで動き、E2E では OAuth の戻りや描画を壊すヘッダに気付けない。
@@ -18,16 +28,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * preview には `/api/` が無いので食い違いは出ないが、除外が効くことは Vercel 上で確かめる。
  * 形が想定と違えば設定の読み込みで落とす（黙ってヘッダ無しで検証しない）。
  */
-function readAppHeaders(): Record<string, string> {
+function readHeaders(source: string): Record<string, string> {
   const config: unknown = JSON.parse(
     readFileSync(new URL('./vercel.json', import.meta.url), 'utf8'),
   );
   const rules: readonly unknown[] =
     isRecord(config) && Array.isArray(config.headers) ? config.headers : [];
-  const rule = rules.find((item) => isRecord(item) && item.source === APP_HEADERS_SOURCE);
+  const rule = rules.find((item) => isRecord(item) && item.source === source);
   const entries = isRecord(rule) ? rule.headers : null;
   if (!Array.isArray(entries)) {
-    throw new Error(`vercel.json に ${APP_HEADERS_SOURCE} のヘッダがありません`);
+    throw new Error(`vercel.json に ${source} のヘッダがありません`);
   }
   const list: readonly unknown[] = entries;
   const headers: Record<string, string> = {};
@@ -40,9 +50,35 @@ function readAppHeaders(): Record<string, string> {
   return headers;
 }
 
+/**
+ * preview でも、Worker のスクリプトにだけ vercel.json と同じヘッダを付ける。`preview.headers` は
+ * すべての応答に付くので、パスで分ける規則はここで再現する。`preview.headers` はこのあとで
+ * 同じキーを付け直すので、ヘッダを送る直前（`writeHead`）に上書きする（Vercel でも同じキーは
+ * 後の規則が勝つ）。
+ */
+function workerHeadersInPreview(): Plugin {
+  const headers = readHeaders(WORKER_HEADERS_SOURCE);
+  return {
+    name: 'worker-headers-in-preview',
+    configurePreviewServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const path = (req.url ?? '').split('?')[0] ?? '';
+        if (WORKER_SCRIPT_PATH.test(path)) {
+          const writeHead = res.writeHead.bind(res);
+          res.writeHead = ((...args: Parameters<typeof res.writeHead>) => {
+            for (const [key, value] of Object.entries(headers)) res.setHeader(key, value);
+            return writeHead(...args);
+          }) as typeof res.writeHead;
+        }
+        next();
+      });
+    },
+  };
+}
+
 export default defineConfig({
   base: './',
-  plugins: [react()],
+  plugins: [react(), workerHeadersInPreview()],
   build: {
     outDir: 'dist',
     // 本番には出さない。本体 269KB に対して map は 1.2MB あり、配信物の大半が
@@ -55,7 +91,7 @@ export default defineConfig({
     format: 'es',
   },
   preview: {
-    headers: readAppHeaders(),
+    headers: readHeaders(APP_HEADERS_SOURCE),
   },
   test: {
     environment: 'node',

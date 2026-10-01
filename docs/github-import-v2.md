@@ -277,6 +277,7 @@ Only failures specific to the recursive request or the size of its response fall
 | `timeout` | yes |
 | `server` (5xx) | yes |
 | `unauthorized`, `rateLimited`, `sso`, `forbidden`, `notFound`, `offline` | no |
+| `emptyRepository`, `invalidResponse`, `listTooLong` | no |
 | `network` (generic) | no |
 
 Non-recursive traversal costs one request per directory instead of one per selected root. Each request still goes through the same rate-limit handling, and a rate limit hit during the fallback fails the preparation instead of continuing with a partial list. While the fallback runs, the busy line shows how many directories have been listed; each new count is visible progress and restarts the slow notice.

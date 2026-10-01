@@ -50,8 +50,9 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   **JSDoc 付きの JavaScript** で書き `checkJs` で型検査する。本体は `api/_lib/`
   （`_` 始まりは Function にならない）に置き、Vitest で直接テストする。
 - `src/workers/` — 変換の Web Worker（`conversion.worker.ts`）と、それを動かすクライアント
-  （`conversionClient.ts`、Worker を差し替えてテストする）。メッセージの形と止まった理由の文は
-  `src/lib/conversionProtocol.ts` の純粋関数に置く。
+  （`conversionClient.ts`、Worker を差し替えてテストする）、Worker の中で通信の API を塞ぐ
+  `blockNetwork.ts`。メッセージの形と止まった理由の文は `src/lib/conversionProtocol.ts` の
+  純粋関数に置く。
 - `e2e/` — Playwright。本番ビルドを `npm run preview` で配信して検証する。
 
 データの流れ: `App.tsx` が state を持ち、`src/lib/` の関数を呼んで結果を reducer に渡し、
@@ -89,10 +90,16 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   進みが届くたびに数え直す）、結果の大きさは `MAX_CONVERSION_OUTPUT_CODE_UNITS` で `applyBatch` が
   膨らむ途中で止める（参照の展開も `expandReplacement` に残りの予算を渡し、展開の途中で止める）。
   一致候補は全部ためて並べ替えず、ルールごとの「次の一致」をヒープで併合する
-  （`createCandidateStream`。採用順は並べ替えと同じで、`replace.test.ts` が旧実装と比べて固定）。止まった理由はルールの行と置換元を添えて出したままにする（消えるトーストにしない）。
-  変換中に入力・ルールが変わったら取り消す。正規表現の構文・エンジンは変えない。
-  同一オリジンの Worker にはページの `<meta>` CSP が引き継がれないので、Worker の中で通信の API を
-  塞ぐ（`blockNetworkApis`）。CSP には `worker-src 'self'` を明示している。
+  （`createCandidateStream`。採用順は並べ替えと同じで、`replace.test.ts` が旧実装と比べて固定）。
+  上限を超えさせたルールの判定は、置換を足したときと、置換のあとの元の部分を足したときの両方で
+  行う（後者を見ないと、次の候補のルールのせいにする）。
+  止まった理由はルールの行と置換元を添えて出したままにする（消えるトーストにしない）。
+  変換中に入力・ルールが変わったら取り消し、その知らせも変換の帯に出す（トーストにすると、
+  変えた操作が出した「元に戻す」付きのトーストを上書きする）。正規表現の構文・エンジンは変えない。
+  同一オリジンの Worker にはページの `<meta>` CSP が引き継がれない。Worker のスクリプトには
+  `vercel.json` のヘッダで `default-src 'none'` の CSP を付け（`vite preview` も
+  `workerHeadersInPreview` で同じ値を返す）、Worker の中でも通信の API を塞ぐ（`blockNetworkApis`）。
+  ページの CSP には `worker-src 'self'` を明示している。
 - **置換先が空の行**は「削除」ではなく「そのグループでは適用しない」。ただし
   **正規表現モードでは、展開後に空文字になる置換先を書けば削除できる**
   （`applyBatch` の `if (replaced)` が偽になり、一致範囲が出力に積まれない）。
@@ -136,7 +143,10 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   読み直しと書き込みはタブをまたいで原子的ではないが、その隙間で同時に書いた場合も互いの
   `storage` イベントで両方のタブが警告になる（黙って負ける側を作らない）。保証はそこまで。
   確認ダイアログなどを await したあとの確定は、描画時の `saveBlocked` ではなく `canSave()` で
-  最新の可否を見る。利用者が選んだ「上書き」だけは読み直さずに書く。出したままの警告で
+  最新の可否を見る。利用者が選んだ「上書き」だけは読み直さずに書く（書く前に相手の値を
+  「知っている値」にし、書けなかったときに食い違いの警告へ戻らないようにする）。
+  書く内容が「知っている値」と同じなら書かない（保存データが空のまま2つのタブを開くと、
+  ID の違う手つかずのサンプル同士で互いを食い違いにしていた）。出したままの警告で
   「再読み込み」「作業データを書き出す」「このタブの内容で続ける（上書き）」を選んでもらう
   （前と後ろは取り返しがつかないので確認を挟む）。自動で merge しない・どちらかを勝手に正にしない。
   食い違いの間は保存失敗と同じく GitHub の取り込みの確定と接続を止める（`saveBlocked`）。
@@ -299,6 +309,10 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   `Permissions-Policy`）。COOP の下でも OAuth の往復で sessionStorage が残ることは E2E が
   見るが、実機の Safari は手で確かめる（docs §5）。`vite preview` も同じ値を返すので、E2E は
   このヘッダの下で走る（共有するのは値だけで、`/api/` を除くパス条件は Preview で確かめる）。
+  変換の Worker のスクリプト（`/assets/conversion.worker-*.js`）には別の規則で
+  `default-src 'none'; frame-ancestors 'none'` の CSP を足している。アプリの規則にも当たるので、
+  どちらの値が残っても、両方が届いても塞ぐ向きにしかならない値にしてある（Worker 用の規則が
+  後勝ちになることは Preview の実物の応答ヘッダで確かめる）。
   `Referrer-Policy` は `strict-origin` から動かさない。既定の `strict-origin-when-cross-origin`
   は同一オリジンの要求に URL 全体を送るので、認可から戻った直後の `/assets/*.js` の Referer に
   code / state が載る。`no-referrer` は Origin ヘッダにも効き、`null` になる経路がある
