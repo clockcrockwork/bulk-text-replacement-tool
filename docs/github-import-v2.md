@@ -134,7 +134,9 @@ Do not store it in:
 
 Reload, tab close, or expiry ends the GitHub connection. Reconnect instead of implementing refresh-token persistence in V2.
 
-The in-app disconnect button is labelled **このタブの接続を解除**. It only discards the in-memory token and the cached listings of this tab. It does not revoke the user's authorization or uninstall the GitHub App on GitHub; the dialog says that access granted to the App is changed from the GitHub settings, so a local disconnect is not mistaken for a revocation.
+Expiry is checked when the next GitHub request is about to be sent (the single request entry point), not when the dialog is merely reopened. Reviewing and committing candidates that were already fetched needs no request, so an expired token does not discard them; the next action that needs GitHub disconnects with the expiry notice.
+
+The in-app disconnect button is labelled **このタブの接続を解除**. It only discards the in-memory token and what was fetched with it in this tab: cached listings and blobs, a multi-file import in progress, and the batch kept for undo (after a disconnect, undo restores the workspace but does not reopen a confirmation). Leaving the page into the bfcache discards the same set. The only thing both keep is the rate-limit wait (§6), because GitHub has not lifted it. It does not revoke the user's authorization or uninstall the GitHub App on GitHub; the dialog says that access granted to the App is changed from the GitHub settings, so a local disconnect is not mistaken for a revocation. It also does not sign the user out of GitHub; on a shared device the dialog and README suggest signing out of GitHub as well when needed. Revoking the authorization from the app is out of scope: the token is memory-only and expiring, and a revoke call would widen the backend surface.
 
 ## 4. Repository and branch selection
 
@@ -281,7 +283,7 @@ Respect rate-limit signals the browser can actually read: `x-ratelimit-remaining
 
 The error message shows when a rate limit is expected to lift (`x-ratelimit-reset`, or at least one minute for a secondary limit). Until that time, **while the same page stays loaded, no request is sent to GitHub from any path**:
 
-- The deadline is kept in the picker state, separate from the error message. Dismissing the error, changing the selection, closing and reopening the dialog, or disconnecting in the tab does not clear it.
+- The deadline is kept in the picker state, separate from the error message. Dismissing the error, changing the selection, closing and reopening the dialog, disconnecting in the tab, or leaving the page into the bfcache does not clear it.
 - The guarantee ends with the document. Reloading the page, or reconnecting through the OAuth redirect (which reloads the app), starts without a deadline. The first request after that learns the limit again from GitHub's response and restores the wait, so at most one request leaks per page load. The deadline is not persisted: `sessionStorage` holds only the OAuth `state` and PKCE verifier across the redirect, and one extra request does not justify another stored value.
 - Every GitHub request goes through one entry point in the hook. Before the deadline, that entry point does not send the request; it shows the rate-limit message again instead.
 - The buttons that would send requests are disabled until the deadline: **再試行**, **選択したファイルを確認**, and the plan step's fetch button. When the error message is gone, a status line still says why they are disabled.
@@ -357,7 +359,7 @@ A batch in progress lives in memory only (private repository contents are not pe
 
 While blobs are being fetched, the status shows how many have completed (「選択したファイルを取得しています（37 / 500）」). A static message during a long fetch reads as a hang, and a user who closes or retries at that point throws the work away.
 
-If saving to the browser is already failing, the plan step's fetch button and the confirmation step's commit button are disabled, with a notice that offers 「作業データを書き出す」 inside the dialog. The app-level warning sits behind the modal and cannot be used from there, and an import applied while saving fails is lost on reload together with the earlier unsaved edits.
+If saving to the browser is already failing, the plan step's fetch button, the confirmation step's commit button, and the single-file **入力に追加** / **別の入力として追加** / **更新する** buttons are disabled, with a notice that offers 「作業データを書き出す」 inside the dialog. The app-level warning sits behind the modal and cannot be used from there, and an import applied while saving fails is lost on reload together with the earlier unsaved edits.
 
 The backdrop closes a dialog only when the pointer was also pressed on the backdrop. `click` fires on the common ancestor of the press and release targets, so selecting text inside the dialog and releasing outside would otherwise count as a backdrop click (`useBackdropClose`, shared by every dialog in the app). Choices are rechecked against the current workspace when shown: an update choice whose target input no longer has the same source is dropped and must be made again (never guessed).
 
@@ -379,6 +381,8 @@ Both import paths offer **元に戻す** in the toast:
 An earlier revision of this spec gave the multi-file path no undo, because undo would have discarded every imported file. Keeping the candidates removes that cost.
 
 The toast still says that the sample was cleared, so the removal is never silent.
+
+Like the local import, when the workspace holds only one input and it is blank, both GitHub paths replace it with the imported files instead of keeping an empty input first. The multi-file action does this inside the same reducer action. A blank input chosen as an update target is never dropped.
 
 ## 8. Input provenance
 
@@ -456,7 +460,7 @@ Do not show an overwrite prompt only because basenames match.
 
 Candidate summary should warn about filename collisions and show full source paths.
 
-The collision warning uses the same rules as the output file names (`outputFileName` and the case-insensitive key of `dedupeNames`), not raw title equality. `A.md` / `a.md`, or `a?.md` / `a*.md`, become the same output name and one of them gets ` (2)`, so they are warned about as well. Inputs of an untouched sample are left out of the comparison, because the same import clears them (§7 **Untouched sample workspace**).
+The collision warning uses the same rules as the output file names (`outputFileName` and the case-insensitive key of `dedupeNames`), not raw title equality. `A.md` / `a.md`, or `a?.md` / `a*.md`, become the same output name and one of them gets ` (2)`, so they are warned about as well. Inputs of an untouched sample are left out of the comparison, because the same import clears them (§7 **Untouched sample workspace**). So is a single blank input, which the import replaces (§7). The single-file and multi-file paths use the same comparison (`matchBatchSources` over `inputsKeptOnAdd`), so the same-source targets and the collision warning never differ between them.
 
 Final output filename collision continues to use the existing output filename dedupe logic.
 
@@ -773,7 +777,7 @@ Implemented:
 - disconnecting with a batch in progress asks for confirmation; a backdrop click closes a dialog only when the press also started on the backdrop
 - the plan counts selected entries that cannot be imported, by kind; the confirmation says the import is not a sync
 - fetch progress is shown as completed / total; a batch in progress warns before unload and says it is memory-only
-- while browser saving fails, batch fetch and commit are disabled and the dialog offers a backup export
+- while browser saving fails, batch fetch and commit and the single-file add / update are disabled and the dialog offers a backup export
 - closing the dialog keeps the plan, fetched candidates, and choices; only 選択へ戻る (or a selection/snapshot change, disconnect, or commit) discards them
 - the rate-limit wait holds while the page stays loaded; a reload or OAuth round-trip re-learns it from the first response
 - the filename collision warning follows the output-name rules and ignores an untouched sample

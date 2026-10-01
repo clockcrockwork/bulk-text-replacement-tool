@@ -107,6 +107,20 @@ describe('接続', () => {
     });
   });
 
+  it('bfcache で切断しても rate limit の待ちは残す（ページを離れても GitHub 側では解けていない）', () => {
+    const limited = run(
+      [{ type: 'fail', error: { message: 'm', recover: 'retry' }, rateLimitedUntil: 123_000 }],
+      PINNED,
+    );
+    const left = githubImportReducer(limited, { type: 'page/persisted' });
+    expect(left).toMatchObject({
+      connection: 'disconnected',
+      snapshot: null,
+      notice: PAGE_LEFT_NOTICE,
+      rateLimitedUntil: 123_000,
+    });
+  });
+
   it('接続中（認可の画面へ移る途中）と未接続は bfcache の出入りで変えない', () => {
     const connecting = run([{ type: 'open' }, { type: 'connect/start' }]);
     expect(githubImportReducer(connecting, { type: 'page/persisted' })).toBe(connecting);
