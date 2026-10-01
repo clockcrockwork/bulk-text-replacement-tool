@@ -94,7 +94,7 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   復旧画面（`ErrorBoundary`）が退避するファイルも同じ封筒（`buildRecoveryBackup`）にして、
   通常の読み込みで戻せるようにする。中身は正規化せずに入れる（手で直す材料を残す）。
 - **取り込む大きさの上限**（`src/lib/inputLimits.ts`、根拠は `docs/resource-policy.md`）:
-  1ファイル 5MiB と1回の取り込みの合計 5MiB は **hard cap**。ローカルと GitHub で同じ定数を使い、
+  1ファイル 5MiB と1回の取り込みの合計 5MiB は **hard cap**。ローカル・GitHub・表のファイルで同じ定数を使い、
   decode する前のバイト数で判定する（`planFileImport` は読む前に `File.size` で外す。GitHub は
   一覧の `size`、`size === null` なら `getBlob` が読みながら数えて `reader.cancel()` で打ち切る）。
   一括の合計は並行する取得で**共有する予算を届いた分ずつ差し引く**（`BlobReadLimit.take`）。読み終えて
@@ -130,6 +130,10 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   true のときだけで、1文字でも直したらユーザーの作業なので勝手に消さない。
   片付けは取り消せるようトーストに「元に戻す」を添える。**トーストは1つしか出ないので、
   片付けと本来の通知を別々に flash しない**（後から出た方が前を消す）。
+- **表の読み込み**（`parseTable`）: 「実質空か」の判定と「データから削るもの」を分ける。削るのは
+  前後の空白だけの行だけで、全文を trim しない（左上の空セル・最後の空セルのタブが落ちて列がずれる）。
+  表のダイアログの知らせ（ファイルの上限・読めない・Shift_JIS）はダイアログの中に出す（トーストは
+  モーダルの背後に隠れる）。
 - **表の書き出し**（`src/lib/table.ts`）: CSV / TSV とも、区切り・改行・引用符を含むセルを
   クォートする。TSV だけ空白へ潰す実装に戻さない（自分で書き出したものを読み戻すと
   値が変わる状態になる）。列数が見出しと食い違う表は `findRaggedRows` で検出し、
@@ -177,6 +181,16 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
     （`parseTokenResponse`）も受け付けない。GitHub App の期限切れ設定がオフにされると
     `expires_in` が返らなくなり、「期限なし」として使い続けてしまうため。巨大な値もミリ秒に
     直すと `Infinity` になり実質無期限になるので、上限で断る。
+  - 期限の確認は **GitHub へ要求する時点**（`run` の `client()`）で行う。ダイアログを開いただけで
+    切断しない（取得済みの候補・一括の確認画面は GitHub へ要求せずに確定できるので、捨てさせない）。
+  - トークンを捨てる操作（切断 `dropConnection` と bfcache の `releaseToken`）は、どちらも
+    `forgetSession` で tree / blob の控え・再試行・「元に戻す」用の一括の控えまで捨てる。
+    残すのは `rateLimitedUntil` だけ（GitHub 側で解けていない）。片方だけに片付けを足さない。
+  - 接続の準備（乱数・PKCE のハッシュ）の失敗も受ける。受けないと `connecting` のまま戻れない。
+  - 同名・同じ取り込み元の判定は、1件でも一括でも `matchBatchSources` に
+    `inputsKeptOnAdd`（手つかずのサンプルは空、空欄1つだけの入力も除く）を渡して行う。
+    空欄1つだけの入力は一括でも置き換える（通常の取り込みと同じ）。保存に失敗している間は
+    1件の追加・更新も一括の確定も止める。
   - 接続の途中（`connecting`）で閉じたら取り消す（`attempt` の世代を進める）。トークン交換の
     fetch はコードが1回しか使えないので止めないが、閉じたあとに返った結果は捨てる。
     **`attempt`（閉じる）と `pageLeft`（bfcache）は契機が別なので、交換の結果は両方を見て捨てる**
@@ -231,6 +245,8 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
     形で見せ、一覧の偽装を防ぐ（`<bdi>` では中の RLO が効いたまま）。**変えるのは表示だけ**で、
     保存・比較・出力名には元の文字列を使う。文字の集合は `sanitizeName` と共有している。
     編集欄（`<input>`）は値を変えられないので、入力カードに見える形の名前を別に添える。
+    ダイアログの待ち・知らせ・失敗の文（`busy` / `info` / `notice` / `error.message`）は
+    名前を埋め込んで組み立てるので、組み立てる側ではなく出す所でまとめて通す。
   - トークン交換の 429 は Vercel Firewall のレート制限。`describeTokenExchangeFailure` で
     「待ってから接続し直す」と伝える。
   - **通信が止まったとき**（issue #20。詳細は `docs/github-import-v2.md` の Network stalls and
@@ -277,7 +293,8 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
 - **ファイルの読み取り失敗**（クラウド上にしか無い・選んだあとで消えた）は受けて画面に返す。
   複数の原稿は `allSettled` で全件の成否をそろえ、1件でも読めなければ名前を出して
   **1件も取り込まない**（読めた分だけ入れる形にしない）。
-- **文字コード**: 取り込みは `decodeText`（UTF-8 → 失敗したら Shift_JIS）。`File.text()` を
+- **文字コード**: 取り込みは `decodeText`（UTF-16 の BOM があればそれに従う → UTF-8 → 失敗したら Shift_JIS）。
+  BOM の無い UTF-16 は推測しない。`File.text()` を
   直接使わない。書き出しの BOM は `withBom`。出力は常に UTF-8 で、入力の文字コードは
   持ち回らない。Shift_JIS は**推測**なので、そう読んだことは画面で知らせる
   （`decodeText` が `encoding` を返す）。黙って取り込むと、文字化けした原稿が
