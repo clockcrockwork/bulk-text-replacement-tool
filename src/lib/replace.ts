@@ -131,6 +131,20 @@ interface Candidate {
   order: number;
 }
 
+/**
+ * 空一致の後に `lastIndex` を進める位置。ECMAScript の AdvanceStringIndex に当たる。
+ *
+ * 正規表現は常に `u` 付きなので、1 code unit だけ進めると補助面の文字（`😀` `𠮷`）の
+ * サロゲートペアの途中を指し、エンジンが文字の先頭へ戻して同じ空一致を返し続ける
+ * （`^` × `😀abc` で止まらなくなる）。コードポイント単位で進めて必ず前へ進ませる。
+ * 対になっていないサロゲートは 1 code unit として進める。
+ */
+export function advanceStringIndex(text: string, index: number): number {
+  if (index + 1 >= text.length) return index + 1;
+  const codePoint = text.codePointAt(index);
+  return codePoint !== undefined && codePoint > 0xffff ? index + 2 : index + 1;
+}
+
 /** バッチ内の全ルールで、テキスト全体から一致候補を集める。 */
 function collectCandidates(text: string, batch: Batch): Candidate[] {
   const candidates: Candidate[] = [];
@@ -139,8 +153,8 @@ function collectCandidates(text: string, batch: Batch): Candidate[] {
     let match = item.re.exec(text);
     while (match !== null) {
       if (match[0].length === 0) {
-        // 空一致は無限ループになるので1文字進めて読み飛ばす。
-        item.re.lastIndex += 1;
+        // 空一致は無限ループになるので読み飛ばす。
+        item.re.lastIndex = advanceStringIndex(text, item.re.lastIndex);
       } else {
         candidates.push({
           start: match.index,

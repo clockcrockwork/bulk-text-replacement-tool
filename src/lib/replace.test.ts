@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Group, InputText, Rule, RuleOrder } from '../types';
-import { createMarkedText, runConversion, toSegments } from './replace';
+import { advanceStringIndex, createMarkedText, runConversion, toSegments } from './replace';
 
 const GROUP_A: Group = { id: 'ga', name: 'A用' };
 
@@ -153,6 +153,35 @@ describe('runConversion', () => {
     expect(file.hits).toBe(0);
   });
 
+  // u フラグ付きの正規表現は、サロゲートペアの途中を指す lastIndex を文字の先頭へ戻す。
+  // 1 code unit ずつ進めると同じ空一致が返り続け、変換が終わらなくなっていた。
+  it.each([
+    ['^', '😀abc'],
+    ['^', '𠮷abc'],
+    ['\\s*', '本😀'],
+    ['x*', '𠮷野家'],
+    ['x*', '😀'],
+    ['(?=😀)', 'a😀b😀'],
+    ['\\b', '😀a😀'],
+    ['$', 'abc😀'],
+  ])('補助面の文字を含む入力で空一致しても終わる（%s × %s）', (src, text) => {
+    const { file } = convertOne(text, [rule('r1', src, { ga: '-' }, { regex: true })]);
+    expect(file.text).toBe(text);
+    expect(file.hits).toBe(0);
+  });
+
+  it('空一致を読み飛ばした後も、補助面の文字の後ろの一致を拾う', () => {
+    const { file } = convertOne('😀a😀aa𠮷', [rule('r1', 'a*', { ga: 'X' }, { regex: true })]);
+    expect(file.text).toBe('😀X😀X𠮷');
+    expect(file.hits).toBe(2);
+  });
+
+  it('空一致を読み飛ばしても、補助面の文字そのものへの一致は分断しない', () => {
+    const { file } = convertOne('a😀b', [rule('r1', '😀?', { ga: '[$&]' }, { regex: true })]);
+    expect(file.text).toBe('a[😀]b');
+    expect(file.hits).toBe(1);
+  });
+
   it('ヒット数をグループ×ルールで数える', () => {
     const { result, file } = convertOne('aa b', [
       rule('r1', 'a', { ga: 'X' }),
@@ -281,5 +310,31 @@ describe('グループ名の一意化', () => {
       rules: [],
     });
     expect(result.groups.map((group) => group.name)).toEqual(['group-1', 'group-2']);
+  });
+});
+
+describe('advanceStringIndex', () => {
+  it('BMP の文字は 1 code unit 進める', () => {
+    expect(advanceStringIndex('本a', 0)).toBe(1);
+    expect(advanceStringIndex('本a', 1)).toBe(2);
+  });
+
+  it('補助面の文字はサロゲートペアの 2 code unit 進める', () => {
+    expect(advanceStringIndex('😀a', 0)).toBe(2);
+    expect(advanceStringIndex('a𠮷', 1)).toBe(3);
+  });
+
+  it('末尾とその先では 1 進める', () => {
+    expect(advanceStringIndex('ab', 1)).toBe(2);
+    expect(advanceStringIndex('ab', 2)).toBe(3);
+    expect(advanceStringIndex('', 0)).toBe(1);
+  });
+
+  it('対になっていないサロゲートは 1 code unit 進める', () => {
+    const loneHigh = String.fromCharCode(0xd83d);
+    const loneLow = String.fromCharCode(0xde00);
+    expect(advanceStringIndex(`${loneHigh}a`, 0)).toBe(1);
+    expect(advanceStringIndex(`${loneLow}a`, 0)).toBe(1);
+    expect(advanceStringIndex(`a${loneHigh}`, 1)).toBe(2);
   });
 });
