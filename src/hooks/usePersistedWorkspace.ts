@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createRecoverySnapshot } from '../lib/recoverySnapshot';
-import { isForeignWorkspaceChange, serializeWorkspace, writeWorkspace } from '../lib/storage';
+import {
+  isForeignWorkspaceChange,
+  isForeignWorkspaceValue,
+  peekWorkspace,
+  serializeWorkspace,
+  writeWorkspace,
+} from '../lib/storage';
 import type { PersistedWorkspace } from '../types';
 
 const SAVE_DEBOUNCE_MS = 400;
@@ -35,6 +41,11 @@ export interface PersistedWorkspaceStatus {
    * 利用者が「このタブの内容で続ける」を選んだときだけ呼ぶ。
    */
   overwrite: () => boolean;
+  /**
+   * いま保存できるか（保存に失敗しておらず、別のタブとの食い違いも無い）。await を挟んだ
+   * 確定の直前に呼ぶ。描画中の `saveFailed` / `conflict` は、そのレンダーの時点の値でしかない。
+   */
+  canSave: () => boolean;
 }
 
 /**
@@ -73,25 +84,27 @@ export function usePersistedWorkspace(workspace: PersistedWorkspace): PersistedW
    */
   const latest = useRef(workspace);
   /**
-   * このタブが最後に書いた保存データの文字列。`storage` イベントで届いた値と比べ、
-   * 他のタブが違う内容を書いたときだけ食い違いとする。
+   * 保存データはこれのはず、とこのタブが分かっている値。保存の直前と `storage` イベントで
+   * 今の値と比べ、知らない値なら他のタブが書いた（消した）とみなす。
    *
-   * 起動時は、読み込んだ状態を保存する形にしたもの。保存データの生の文字列にすると、
-   * 古い版の形（キーの順・欠けた項目）で保存されていたとき、同じデータを開いた別のタブが
-   * 最初の保存で今の形に書き直しただけで食い違いになる。
+   * 書いたあとは書いた文字列だけ。起動時は、読んだ生の文字列と、読み込んだ状態を今の形で
+   * 保存し直した文字列の両方。生の文字列だけだと、古い版の形（キーの順・欠けた項目）で
+   * 保存されていたとき、同じデータを開いた別のタブが今の形に書き直しただけで食い違いになる。
    */
-  const [initialSerialized] = useState(() =>
+  const [initialKnown] = useState<readonly (string | null)[]>(() => [
+    peekWorkspace()?.raw ?? null,
     serializeWorkspace({ inputs, groups, rules, theme, isSample }),
-  );
-  const lastWritten = useRef<string | null>(initialSerialized);
+  ]);
+  const known = useRef(initialKnown);
   /**
    * 直近の保存に失敗しているか。
    *
    * 失敗を握り潰すと、保存されないまま編集が続き、リロードした時点でその間の
    * 作業が消える。消えるトーストではなく、直るまで出したままにできるよう
-   * 状態として返す。
+   * 状態として返す。ref は `canSave` が読む（await のあとの古いレンダーからも最新を見る）。
    */
   const [failed, setFailed] = useState(false);
+  const failedRef = useRef(false);
   /**
    * 別のタブとの食い違い。ref は離れるときの保存とデバウンスの保存が読む
    * （どちらも依存配列の外から呼ばれる）。
@@ -99,19 +112,49 @@ export function usePersistedWorkspace(workspace: PersistedWorkspace): PersistedW
   const [conflict, setConflict] = useState(false);
   const conflictRef = useRef(false);
 
+  // 以下の関数が読むのは ref と state の setter だけなので、どのレンダーで作っても振る舞いは同じ。
+
+  const enterConflict = useCallback((): void => {
+    conflictRef.current = true;
+    setConflict(true);
+    // 保存データはもうこのタブの内容ではない。落ちたときは最新の状態を救う。
+    workspaceRecovery.forgetSaved();
+  }, []);
+
   /**
-   * 書き出して、成否を状態に反映する。食い違いがある間は書かない。
-   * 読むのは ref と state の setter だけなので、どのレンダーで作っても振る舞いは同じ。
+   * 保存データを読み直し、他のタブが書いていたら食い違いへ移る。
+   *
+   * `storage` イベントは非同期に届くので、他のタブが書いた直後、イベントが届く前に
+   * このタブが保存すると、相手の編集を黙って上書きする（レビュー R1）。書く直前に読み直す。
+   * 読み直しと書き込みは1つの同期処理の中で続けて行うが、タブをまたいで原子的ではない。
+   * その隙間で2つのタブが同時に書いた場合も、互いの書き込みの `storage` イベントが相手に
+   * 届くので、両方のタブが食い違いの警告になる（どちらかが黙って負けることはない）。
    */
-  const save = useCallback((value: PersistedWorkspace): boolean => {
-    if (conflictRef.current) return false;
+  const detectForeignWrite = useCallback((): boolean => {
+    if (conflictRef.current) return true;
+    const current = peekWorkspace();
+    // 読めないなら判定できない。書き込みも失敗するので、保存失敗として出る。
+    if (current === null || !isForeignWorkspaceValue(current.raw, known.current)) return false;
+    enterConflict();
+    return true;
+  }, [enterConflict]);
+
+  /** 書き出して、成否を状態に反映する。 */
+  const write = useCallback((value: PersistedWorkspace): boolean => {
     const raw = writeWorkspace(value);
+    failedRef.current = raw === null;
     setFailed(raw === null);
     if (raw === null) return false;
-    lastWritten.current = raw;
+    known.current = [raw];
     workspaceRecovery.noteSaved(value);
     return true;
   }, []);
+
+  /** 通常の保存。食い違いがある間・他のタブが書いていたら書かない。 */
+  const save = useCallback(
+    (value: PersistedWorkspace): boolean => !detectForeignWrite() && write(value),
+    [detectForeignWrite, write],
+  );
 
   useLayoutEffect(() => {
     latest.current = { inputs, groups, rules, theme, isSample };
@@ -133,11 +176,19 @@ export function usePersistedWorkspace(workspace: PersistedWorkspace): PersistedW
    */
   const flush = (): boolean => save({ inputs, groups, rules, theme, isSample });
 
+  /** 利用者が選んだ上書き。他のタブの値を承知で書くので、読み直さずに書く。 */
   const overwrite = (): boolean => {
     conflictRef.current = false;
     setConflict(false);
-    return save({ inputs, groups, rules, theme, isSample });
+    return write({ inputs, groups, rules, theme, isSample });
   };
+
+  /**
+   * いま保存できるか。確認ダイアログなどを await したあと、確定する直前に呼ぶ
+   * （レビュー R3）。待っている間に別のタブが保存したり保存に失敗したりしても、
+   * 呼び出し元のレンダーの値は古いまま。ref と保存データの読み直しで最新を見る。
+   */
+  const canSave = (): boolean => !failedRef.current && !detectForeignWrite();
 
   useEffect(() => {
     const flushOnLeave = (): void => {
@@ -148,11 +199,7 @@ export function usePersistedWorkspace(workspace: PersistedWorkspace): PersistedW
     };
     const onStorage = (event: StorageEvent): void => {
       if (conflictRef.current) return;
-      if (!isForeignWorkspaceChange(event, lastWritten.current)) return;
-      conflictRef.current = true;
-      setConflict(true);
-      // 保存データはもうこのタブの内容ではない。落ちたときは最新の状態を救う。
-      workspaceRecovery.forgetSaved();
+      if (isForeignWorkspaceChange(event, known.current)) enterConflict();
     };
     window.addEventListener('pagehide', flushOnLeave);
     document.addEventListener('visibilitychange', onVisibilityChange);
@@ -162,7 +209,7 @@ export function usePersistedWorkspace(workspace: PersistedWorkspace): PersistedW
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('storage', onStorage);
     };
-  }, [save]);
+  }, [save, enterConflict]);
 
-  return { saveFailed: failed, conflict, flush, overwrite };
+  return { saveFailed: failed, conflict, flush, overwrite, canSave };
 }

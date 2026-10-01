@@ -2678,6 +2678,44 @@ test.describe('取り込む大きさの上限（5MiB）', () => {
   });
 });
 
+test('確認ダイアログを待つ間に別のタブが保存したら、取り込みを確定しない', async ({
+  page,
+  context,
+}) => {
+  const MiB = 1024 * 1024;
+  const mock = new GitHubMock([
+    novelRepository({
+      branches: { main: [{ path: 'large.md', content: 'a'.repeat(4.5 * MiB) }] },
+    }),
+  ]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+  await entry(page, 'large.md').click();
+  const confirm = dialog(page).getByRole('region', { name: '取り込む内容の確認' });
+  await confirm.getByRole('button', { name: '入力に追加' }).click();
+  const storage = page.getByRole('dialog', { name: 'ブラウザに保存できない可能性があります' });
+  await expect(storage).toBeVisible();
+
+  // 確認を待っている間に、別のタブが作業データを保存する。
+  const other = await context.newPage();
+  await other.goto('/');
+  await other.evaluate((key) => {
+    const saved = JSON.parse(localStorage.getItem(key) ?? '{}');
+    saved.inputs = [{ id: 'other', title: 'from-other.md', text: '別のタブ' }];
+    localStorage.setItem(key, JSON.stringify(saved));
+  }, STORAGE_KEY);
+
+  await storage.getByRole('button', { name: '取り込む' }).click();
+  await expect(dialog(page).getByRole('alert')).toContainText(
+    '別のタブで作業データが更新されたため',
+  );
+  await expect(page.locator('.input-card')).toHaveCount(1);
+  // 別のタブの保存はそのまま残っている。
+  const saved = await page.evaluate((key) => localStorage.getItem(key), STORAGE_KEY);
+  expect(saved).toContain('from-other.md');
+});
+
 // ---- 通信が止まったとき（issue #20） ----------------------------------------------
 //
 // 応答を止めたまま `page.clock` で時間を進め、案内 → 中断 → 次の手の流れを見る。

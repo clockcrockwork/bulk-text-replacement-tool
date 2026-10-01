@@ -99,6 +99,10 @@ export function App(): JSX.Element {
     conflict: storageConflict,
     flush: flushWorkspace,
     overwrite: overwriteWorkspace,
+    // 確認ダイアログを待ったあと、確定する直前に呼ぶ（レビュー R3）。入口で見た `saveBlocked` は
+    // そのレンダーの値なので、待っている間に別のタブが保存したり保存に失敗したりしても変わらない。
+    // 保存できなければ確定しない。ダイアログは開いたままで、再描画で保存できない理由が出る。
+    canSave: canSaveWorkspace,
   } = usePersistedWorkspace(state);
   /**
    * いまブラウザへ保存できない理由。別のタブとの食い違いを先に見る（このタブからは書いて
@@ -456,6 +460,7 @@ export function App(): JSX.Element {
     if (!(await confirmStorage(withSampleClear([action]), [revealUnsafeChars(candidate.title)]))) {
       return;
     }
+    if (!canSaveWorkspace()) return;
     guard('GitHub からの取り込み', () => {
       const undoSample = clearSampleBeforeAdding();
       dispatch(action);
@@ -483,6 +488,7 @@ export function App(): JSX.Element {
     if (!(await confirmStorage([action], [revealUnsafeChars(target.title || candidate.title)]))) {
       return;
     }
+    if (!canSaveWorkspace()) return;
     guard('GitHub からの取り込み', () => {
       dispatch(action);
       github.finish();
@@ -535,6 +541,7 @@ export function App(): JSX.Element {
       sampleReset: createSampleReset(),
     };
     if (!(await confirmStorage([action], [`取り込むファイル ${candidates.length}件`]))) return;
+    if (!canSaveWorkspace()) return;
 
     guard('GitHub からの一括取り込み', () => {
       // 「元に戻す」は、取り込む前の内容（片付けたサンプルを含む）へ戻し、一括の確認画面も

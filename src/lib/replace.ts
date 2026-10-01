@@ -161,40 +161,100 @@ export function advanceStringIndex(text: string, index: number): number {
   return codePoint !== undefined && codePoint > 0xffff ? index + 2 : index + 1;
 }
 
-/** バッチ内の全ルールで、テキスト全体から一致候補を集める。 */
-function collectCandidates(text: string, batch: Batch): Candidate[] {
-  const candidates: Candidate[] = [];
+/** 採用する順。開始が早い順 → 一致が長い順 → ルール定義順。 */
+function compareCandidates(a: Candidate, b: Candidate): number {
+  return a.start - b.start || b.end - b.start - (a.end - a.start) || a.order - b.order;
+}
+
+/**
+ * ルールの次の一致（空一致は読み飛ばす）。`re.lastIndex` から続きを探すので、1つのルールの
+ * 一致は、テキスト全体を先頭から走査したときと同じ並びで、開始位置の昇順に出てくる。
+ */
+function nextCandidate(text: string, item: BatchItem, order: number): Candidate | null {
+  for (let match = item.re.exec(text); match !== null; match = item.re.exec(text)) {
+    if (match[0].length > 0) {
+      return { start: match.index, end: match.index + match[0].length, item, match, order };
+    }
+    // 空一致は無限ループになるので読み飛ばす。
+    item.re.lastIndex = advanceStringIndex(text, item.re.lastIndex);
+  }
+  return null;
+}
+
+/**
+ * バッチ内の全ルールの一致を、採用する順（`compareCandidates`）に1つずつ取り出す。
+ *
+ * 以前は全ルールの全一致を配列に集めてから並べ替えていた。1文字ごとに一致するルールなどで
+ * 候補が入力の長さだけでき、出力の上限より先に一致の配列でメモリが膨らんでいた
+ * （issue #31 のレビュー R4）。各ルールは一致を開始位置の昇順に出すので、ルールごとの
+ * 「次の一致」だけをヒープに持って併合すれば、並べ替えた全候補と同じ順に取り出せる。
+ * 持つのはルールの数だけ。読み飛ばす候補も含め、各ルールの一致を1回ずつ探す手間は同じ。
+ */
+function createCandidateStream(text: string, batch: Batch): () => Candidate | null {
+  const heap: Candidate[] = [];
+  const less = (i: number, j: number): boolean => {
+    const a = heap[i];
+    const b = heap[j];
+    return a !== undefined && b !== undefined && compareCandidates(a, b) < 0;
+  };
+  const swap = (i: number, j: number): void => {
+    const a = heap[i];
+    const b = heap[j];
+    if (a === undefined || b === undefined) return;
+    heap[i] = b;
+    heap[j] = a;
+  };
+  const push = (candidate: Candidate): void => {
+    heap.push(candidate);
+    let i = heap.length - 1;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (!less(i, parent)) break;
+      swap(i, parent);
+      i = parent;
+    }
+  };
+  const pop = (): Candidate | null => {
+    const top = heap[0];
+    const last = heap.pop();
+    if (top === undefined || last === undefined) return null;
+    if (heap.length === 0) return top;
+    heap[0] = last;
+    let i = 0;
+    for (;;) {
+      const left = i * 2 + 1;
+      const right = left + 1;
+      let smallest = i;
+      if (left < heap.length && less(left, smallest)) smallest = left;
+      if (right < heap.length && less(right, smallest)) smallest = right;
+      if (smallest === i) break;
+      swap(i, smallest);
+      i = smallest;
+    }
+    return top;
+  };
+
   batch.forEach((item, order) => {
     item.re.lastIndex = 0;
-    let match = item.re.exec(text);
-    while (match !== null) {
-      if (match[0].length === 0) {
-        // 空一致は無限ループになるので読み飛ばす。
-        item.re.lastIndex = advanceStringIndex(text, item.re.lastIndex);
-      } else {
-        candidates.push({
-          start: match.index,
-          end: match.index + match[0].length,
-          item,
-          match,
-          order,
-        });
-      }
-      match = item.re.exec(text);
-    }
+    const first = nextCandidate(text, item, order);
+    if (first) push(first);
   });
-  // 開始が早い順 → 一致が長い順 → ルール定義順
-  candidates.sort(
-    (a, b) => a.start - b.start || b.end - b.start - (a.end - a.start) || a.order - b.order,
-  );
-  return candidates;
+
+  return () => {
+    const candidate = pop();
+    if (!candidate) return null;
+    // 取り出したルールの次の一致を補充する。これで常に、各ルールの未採用の先頭が揃う。
+    const following = nextCandidate(text, candidate.item, candidate.order);
+    if (following) push(following);
+    return candidate;
+  };
 }
 
 /**
  * テキスト全体に1パスぶんの置換を適用する。
  *
- * 同じパス内のルールは「同時」に走る: このパスの開始時点のテキストを一度だけ走査して
- * 候補を集め、開始位置が早い順 → 一致が長い順 → ルール定義順で採用する。
+ * 同じパス内のルールは「同時」に走る: このパスの開始時点のテキストを各ルールで一度だけ
+ * 走査し、開始位置が早い順 → 一致が長い順 → ルール定義順で採用する。
  * 置換で生まれたテキストを同じパス内で再走査することはないので、ルールは連鎖しない。
  *
  * パスをまたぐ場合（順次適用や、順次を挟んだ次の同時パス）は、その時点の
@@ -214,8 +274,9 @@ export function applyBatch(
   limit = Number.POSITIVE_INFINITY,
 ): { marked: MarkedText; hits: number } {
   const { text, ranges } = marked;
-  const candidates = collectCandidates(text, batch);
-  if (candidates.length === 0) return { marked, hits: 0 };
+  const nextInOrder = createCandidateStream(text, batch);
+  let candidate = nextInOrder();
+  if (!candidate) return { marked, hits: 0 };
 
   let out = '';
   const outRanges: HitRange[] = [];
@@ -231,19 +292,21 @@ export function applyBatch(
     throw new ConversionOutputLimitError(text.length > limit ? null : ruleId);
   };
 
-  for (const candidate of candidates) {
+  for (; candidate !== null; candidate = nextInOrder()) {
     if (candidate.start < pos) continue; // 採用済みの範囲と重なる候補は捨てる
     if (candidate.start > pos) {
       carry(pos, candidate.start, out.length, outRanges);
       out += text.slice(pos, candidate.start);
     }
+    // 組み立て済みの長さは減らないので、超えた時点で確定する。残りの部分は足さない
+    // （同じパスの後ろの置換で縮むことがあり、見込みで止めると収まる変換まで止める）。
+    // 参照の展開には残りの予算を渡し、展開の途中で超えたら組み立てさせない。
+    const room = limit - out.length;
     const replaced = candidate.item.isRegex
-      ? expandReplacement(candidate.item.replacement, candidate.match)
+      ? expandReplacement(candidate.item.replacement, candidate.match, room)
       : candidate.item.replacement;
+    if (replaced === null || replaced.length > room) overflow(candidate.item.ruleId);
     if (replaced) {
-      // 組み立て済みの長さは減らないので、超えた時点で確定する。残りの部分は足さない
-      // （同じパスの後ろの置換で縮むことがあり、見込みで止めると収まる変換まで止める）。
-      if (out.length + replaced.length > limit) overflow(candidate.item.ruleId);
       pushRange(outRanges, out.length, out.length + replaced.length);
       out += replaced;
     }

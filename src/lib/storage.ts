@@ -231,6 +231,19 @@ export function saveWorkspace(workspace: PersistedWorkspace): boolean {
   return writeWorkspace(workspace) !== null;
 }
 
+/**
+ * 保存データをいま読んだ値。読めない環境（localStorage が例外を投げる）なら null。
+ * `readRawWorkspace` と違い「保存データが無い」（`raw: null`）と「読めない」を分ける。
+ * 読めないのを「無い」と取り違えると、別のタブが消したと誤って判定する。
+ */
+export function peekWorkspace(): { raw: string | null } | null {
+  try {
+    return { raw: localStorage.getItem(STORAGE_KEY) };
+  } catch {
+    return null;
+  }
+}
+
 /** `storage` イベントのうち、判定に使う部分。 */
 export interface StorageChange {
   /** 変わったキー。`localStorage.clear()` なら null。 */
@@ -239,21 +252,34 @@ export interface StorageChange {
 }
 
 /**
+ * 保存データの値が、このタブの知らない値か（他のタブが書いた・消した）。
+ *
+ * `known` は、このタブが「保存データはこれのはず」と分かっている値。書いたあとは書いた文字列、
+ * 起動時は読んだ生の文字列と、それを今の形で保存し直した文字列の両方（別のタブが同じ内容を
+ * 今の形で書き直しただけで食い違いにしない）。
+ */
+export function isForeignWorkspaceValue(
+  value: string | null,
+  known: readonly (string | null)[],
+): boolean {
+  return !known.includes(value);
+}
+
+/**
  * `storage` イベントが、他のタブによる作業データの書き換えか。
  *
  * `storage` イベントは書いたタブ自身には届かず、同じオリジンの他のタブにだけ届く。
- * 届いた値がこのタブの最後に書いた（読んだ）文字列と同じなら、中身は食い違っていない
- * （別のタブが同じ内容を書いただけ）ので数えない。数えると、片方のタブが読み込んだ内容を
- * そのまま書き戻しただけで、もう片方に「更新されました」が出続ける。
+ * 届いた値がこのタブの知っている値（`known`）なら、中身は食い違っていない（別のタブが
+ * 同じ内容を書いただけ）ので数えない。数えると、片方のタブが読み込んだ内容をそのまま
+ * 書き戻しただけで、もう片方に「更新されました」が出続ける。
  * `clear()`（キーが null）は作業データも消すので、消えた値（null）として比べる。
  */
 export function isForeignWorkspaceChange(
   change: StorageChange,
-  lastWritten: string | null,
+  known: readonly (string | null)[],
 ): boolean {
   if (change.key !== null && change.key !== STORAGE_KEY) return false;
-  const value = change.key === null ? null : change.newValue;
-  return value !== lastWritten;
+  return isForeignWorkspaceValue(change.key === null ? null : change.newValue, known);
 }
 
 /** OS のダークモード設定を初期テーマとして使う。 */

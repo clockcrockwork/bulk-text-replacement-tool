@@ -108,3 +108,27 @@ test('食い違いの間は、作業データの書き出しへ案内する', as
   const dialog = page.locator('dialog[aria-label="作業データ"]');
   await expect(dialog).toBeVisible();
 });
+
+test('別のタブの storage イベントが届く前でも、保存の直前に気づいて上書きしない', async ({
+  page,
+  context,
+}) => {
+  await seedBasic(page);
+  await openApp(page);
+  // このタブには storage イベントを届けない（届くのが遅れた状態を作る）。
+  const late = await context.newPage();
+  await late.addInitScript(() => {
+    window.addEventListener('storage', (event) => event.stopImmediatePropagation(), true);
+  });
+  await openApp(late);
+  await expect(late.locator('.input-card__title')).toHaveValue('story.md');
+  // 開いた直後の自動保存（同じ内容）を待つ。
+  await late.waitForTimeout(800);
+
+  await page.locator('.input-card__title').fill('from-other.md');
+  await expect.poll(() => savedTitle(page)).toBe('from-other.md');
+
+  await late.locator('.input-card__title').fill('from-late.md');
+  await expect(late.getByRole('alert').filter({ hasText: CONFLICT })).toBeVisible();
+  expect(await savedTitle(late)).toBe('from-other.md');
+});

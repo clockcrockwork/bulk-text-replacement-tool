@@ -5,8 +5,10 @@ import { runConversion } from './replace';
 import {
   clearWorkspace,
   isForeignWorkspaceChange,
+  isForeignWorkspaceValue,
   loadWorkspace,
   mayExceedStorage,
+  peekWorkspace,
   preferredTheme,
   readRawWorkspace,
   STORAGE_KEY,
@@ -352,27 +354,51 @@ describe('writeWorkspace', () => {
 });
 
 describe('isForeignWorkspaceChange', () => {
-  it('作業データのキーに、このタブが最後に書いたものと違う値が来たら他のタブの書き換え', () => {
-    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: 'b' }, 'a')).toBe(true);
-    // このタブがまだ何も書いていなくても、届いた値があれば食い違っている。
-    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: 'b' }, null)).toBe(true);
+  it('作業データのキーに、このタブの知らない値が来たら他のタブの書き換え', () => {
+    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: 'b' }, ['a'])).toBe(true);
+    // このタブがまだ何も書いていなくても、届いた値が知らないものなら食い違っている。
+    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: 'b' }, [null])).toBe(true);
   });
 
-  it('同じ内容が書かれただけなら数えない（読み込んだ内容の書き戻しで警告を出さない）', () => {
-    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: 'a' }, 'a')).toBe(false);
+  it('知っている値が書かれただけなら数えない（読み込んだ内容の書き戻しで警告を出さない）', () => {
+    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: 'a' }, ['a'])).toBe(false);
+    // 起動時は、読んだ生の値と今の形で書き直した値のどちらも知っている値。
+    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: 'a2' }, ['a1', 'a2'])).toBe(
+      false,
+    );
   });
 
   it('作業データが消されたら（removeItem / clear）他のタブの書き換えとして数える', () => {
-    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: null }, 'a')).toBe(true);
-    expect(isForeignWorkspaceChange({ key: null, newValue: null }, 'a')).toBe(true);
+    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: null }, ['a'])).toBe(true);
+    expect(isForeignWorkspaceChange({ key: null, newValue: null }, ['a'])).toBe(true);
   });
 
-  it('このタブも何も書いていないなら、clear() は食い違いにならない', () => {
-    expect(isForeignWorkspaceChange({ key: null, newValue: null }, null)).toBe(false);
+  it('このタブも保存データが無いと知っているなら、clear() は食い違いにならない', () => {
+    expect(isForeignWorkspaceChange({ key: null, newValue: null }, [null, 'x'])).toBe(false);
   });
 
   it('作業データ以外のキーは見ない', () => {
-    expect(isForeignWorkspaceChange({ key: 'other', newValue: 'b' }, 'a')).toBe(false);
+    expect(isForeignWorkspaceChange({ key: 'other', newValue: 'b' }, ['a'])).toBe(false);
+  });
+});
+
+describe('peekWorkspace / isForeignWorkspaceValue', () => {
+  it('保存データの今の値を読む。無ければ raw が null', () => {
+    stubStorage(saved({ a: 1 }));
+    expect(peekWorkspace()).toEqual({ raw: JSON.stringify({ a: 1 }) });
+    stubStorage();
+    expect(peekWorkspace()).toEqual({ raw: null });
+  });
+
+  it('読めない環境では null（「無い」と取り違えない）', () => {
+    stubStorage({}, true);
+    expect(peekWorkspace()).toBeNull();
+  });
+
+  it('知っている値かどうかで判定する', () => {
+    expect(isForeignWorkspaceValue('a', ['a'])).toBe(false);
+    expect(isForeignWorkspaceValue('b', ['a'])).toBe(true);
+    expect(isForeignWorkspaceValue(null, ['a'])).toBe(true);
   });
 });
 
