@@ -105,6 +105,8 @@ export class GitHubMock {
   failPaths: string[] = [];
   /** recursive tree 応答をこの回数だけ truncated にする。fallback E2E 用。 */
   recursiveTreeTruncations = 0;
+  /** recursive tree 応答をこの回数だけ 502 にする。5xx からの fallback E2E 用。 */
+  recursiveTreeServerErrors = 0;
   /** true の間、tree 応答から blob の size を省く（大きさ不明の項目の E2E 用）。 */
   omitTreeSizes = false;
   /** 200 以外なら、トークン交換がその状態コードで失敗する（429 は Vercel Firewall の制限）。 */
@@ -300,6 +302,10 @@ export class GitHubMock {
     if (!object || !('tree' in object)) return this.json(route, 404, { message: 'Not Found' });
     const withoutSizes = (items: TreeItem[]): TreeItem[] =>
       this.omitTreeSizes ? items.map(({ size: _size, ...rest }) => rest) : items;
+    if (recursive && this.recursiveTreeServerErrors > 0) {
+      this.recursiveTreeServerErrors -= 1;
+      return this.json(route, 502, { message: 'Server Error' });
+    }
     if (recursive) {
       const entries = withoutSizes(this.recursiveTree(treeSha));
       const truncated = this.recursiveTreeTruncations > 0;

@@ -4,6 +4,7 @@ import {
   BLOB_STALL_TIMEOUT_MS,
   blobTooLargeMessage,
   buildCandidate,
+  canFallBackFromRecursiveTree,
   classifyErrorResponse,
   classifyFetchFailure,
   classifyTreeEntry,
@@ -253,6 +254,31 @@ describe('recoveryFor', () => {
     for (const kind of kinds) {
       for (const stage of stages) expect(recoveryFor(error(kind), stage)).toBe('retry');
     }
+  });
+});
+
+describe('canFallBackFromRecursiveTree', () => {
+  const error = (kind: GitHubErrorKind) => ({ kind, status: null, resetAt: null });
+
+  it('時間切れと 5xx だけ、非再帰の列挙へ移る', () => {
+    expect(canFallBackFromRecursiveTree(timeoutError(RECURSIVE_TREE_TIMEOUT_MS, false))).toBe(true);
+    expect(canFallBackFromRecursiveTree(error('server'))).toBe(true);
+  });
+
+  it('非再帰でも結果が変わらない失敗では移らない', () => {
+    const kinds: GitHubErrorKind[] = [
+      'unauthorized',
+      'rateLimited',
+      'sso',
+      'forbidden',
+      'notFound',
+      'emptyRepository',
+      'offline',
+      'network',
+      'invalidResponse',
+      'listTooLong',
+    ];
+    for (const kind of kinds) expect(canFallBackFromRecursiveTree(error(kind))).toBe(false);
   });
 });
 

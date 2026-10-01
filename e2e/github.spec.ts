@@ -506,6 +506,27 @@ test('recursive tree が truncated なら partial list を捨て、非再帰 tra
   expect(batchTreeCalls.some((request) => !request.url.includes('recursive=1'))).toBe(true);
 });
 
+test('recursive tree が 5xx なら、失敗にせず非再帰 traversal で完全列挙する', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  mock.recursiveTreeServerErrors = 1;
+  const before = mock.requests.length;
+  const batch = await fetchSelection(page, 2);
+  await expect(batch).toContainText('chapters/ch1.md');
+  await expect(batch).toContainText('chapters/ch2.txt');
+
+  const batchTreeCalls = mock.requests
+    .slice(before)
+    .filter((request) => request.url.includes('/git/trees/'));
+  // 再帰は最初の1回だけ。以降は1階層ずつ辿る。
+  expect(batchTreeCalls.filter((request) => request.url.includes('recursive=1'))).toHaveLength(1);
+  expect(batchTreeCalls.some((request) => !request.url.includes('recursive=1'))).toBe(true);
+});
+
 test('複数取得の途中でblobが1件でも失敗したら入力を1件も変更せず、再試行後にまとめて反映する', async ({
   page,
 }) => {

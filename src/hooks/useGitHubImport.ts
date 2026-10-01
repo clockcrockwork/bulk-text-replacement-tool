@@ -10,6 +10,7 @@ import { mapWithConcurrency } from '../lib/concurrency';
 import {
   blobTooLargeMessage,
   buildCandidate,
+  canFallBackFromRecursiveTree,
   compareCodePoints,
   describeGitHubError,
   type GitHubCandidate,
@@ -142,6 +143,34 @@ async function loadBatchTree(
   }
 }
 
+/**
+ * 部分木を再帰 tree で一度に読む。使えなければ、なぜ使えないかを返す。
+ *
+ * - `truncated`: GitHub が応答を打ち切った。その partial list は絶対に使わずに捨てる。
+ * - `failed`: 再帰の要求・応答の大きさに固有の失敗（`canFallBackFromRecursiveTree`）。
+ *
+ * それ以外の失敗は非再帰でも同じ結果なので、そのまま投げて `recoveryFor` に任せる。
+ */
+async function tryRecursiveTree(
+  api: GitHubClient,
+  snapshot: GitHubSnapshot,
+  step: { path: string; treeSha: string },
+  signal: AbortSignal,
+): Promise<NormalizedTree | 'truncated' | 'failed'> {
+  try {
+    const tree = await loadBatchTree(api, snapshot, step, signal, true);
+    return tree.truncated ? 'truncated' : tree;
+  } catch (error) {
+    if (
+      error instanceof GitHubBatchRequestError &&
+      canFallBackFromRecursiveTree(error.requestError.detail)
+    ) {
+      return 'failed';
+    }
+    throw error;
+  }
+}
+
 /** 選択範囲を列挙した結果。 */
 export interface SelectedEntries {
   /** 取り込める（対応する）ファイル。パス順。 */
@@ -159,11 +188,18 @@ export async function enumerateSelectedEntries(
   selection: GitHubTreeSelection,
   knownEntries: ReadonlyMap<string, GitHubTreeEntry>,
   signal: AbortSignal,
+  /**
+   * 非再帰で1階層を読み終えるたびに、読んだフォルダの数を知らせる。再帰 tree が使えず
+   * 1つずつ辿るときは長くかかるので、進んでいることを画面に出す。
+   */
+  onDirectoryListed?: (listed: number) => void,
 ): Promise<SelectedEntries> {
-  const queue: Array<{ path: string; treeSha: string }> = [];
+  // `recursive` が false の場所は、再帰 tree を試さずに1階層ずつ辿る。
+  const queue: Array<{ path: string; treeSha: string; recursive: boolean }> = [];
   const files: GitHubTreeEntry[] = [];
   const excluded: GitHubTreeEntry[] = [];
   const seen = new Set<string>();
+  let listed = 0;
 
   const collect = (entries: readonly GitHubTreeEntry[]): void => {
     for (const entry of entries) {
@@ -176,7 +212,7 @@ export async function enumerateSelectedEntries(
 
   for (const path of includedSelectionRoots(selection)) {
     if (path === '') {
-      queue.push({ path: '', treeSha: snapshot.treeSha });
+      queue.push({ path: '', treeSha: snapshot.treeSha, recursive: true });
       continue;
     }
     // 規則は画面に出たチェックボックスからしか作られないので、項目は読み込み済みのはず。
@@ -189,7 +225,7 @@ export async function enumerateSelectedEntries(
       );
     }
     if (entry.status === 'dir') {
-      queue.push({ path: entry.path, treeSha: entry.sha });
+      queue.push({ path: entry.path, treeSha: entry.sha, recursive: true });
     } else {
       collect([entry]);
     }
@@ -200,14 +236,19 @@ export async function enumerateSelectedEntries(
     const step = queue.shift();
     if (!step) break;
 
-    // まず recursive API で subtree を1回で列挙する。partial response は絶対に使わない。
-    const recursiveTree = await loadBatchTree(api, snapshot, step, signal, true);
-    if (!recursiveTree.truncated) {
-      collect(recursiveTree.entries);
-      continue;
+    // 子の場所で再帰 tree を試すか。打ち切り（truncated）なら、子の部分木は小さいので
+    // もう一度試す価値がある。要求そのものが時間切れ・5xx だったなら、子でも同じ待ちを
+    // 階層の数だけ繰り返しかねないので、以降は1階層ずつにする。
+    let childrenRecursive = false;
+    if (step.recursive) {
+      const recursive = await tryRecursiveTree(api, snapshot, step, signal);
+      if (typeof recursive !== 'string') {
+        collect(recursive.entries);
+        continue;
+      }
+      childrenRecursive = recursive === 'truncated';
     }
 
-    // GitHub が recursive 応答を打ち切ったら、その partial list は捨てる。
     // 非再帰で1階層を取り直し、必要な子 tree だけを queue に積んで完全列挙する。
     const directTree = await loadBatchTree(api, snapshot, step, signal, false);
     if (directTree.truncated) {
@@ -218,9 +259,11 @@ export async function enumerateSelectedEntries(
     collect(directTree.entries);
     for (const entry of directTree.entries) {
       if (entry.status === 'dir' && selectionMayContainSelected(selection, entry.path)) {
-        queue.push({ path: entry.path, treeSha: entry.sha });
+        queue.push({ path: entry.path, treeSha: entry.sha, recursive: childrenRecursive });
       }
     }
+    listed += 1;
+    onDirectoryListed?.(listed);
   }
 
   files.sort((a, b) => compareCodePoints(a.path, b.path));
@@ -639,6 +682,16 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
           selection,
           knownEntries,
           signal,
+          // 再帰 tree が使えず1階層ずつ辿っているときは、読んだフォルダの数を見せる。
+          // 数が進んだのは画面で分かる進みなので、「時間がかかっています」を数え直す。
+          (listed) => {
+            if (signal.aborted) return;
+            dispatch({
+              type: 'busy',
+              label: `選択範囲を1フォルダずつ確認しています（${listed}フォルダ確認済み・ファイルの本文はまだ取得していません）`,
+            });
+            slowRef.current?.restart();
+          },
         );
         if (found.files.length === 0) {
           throw new GitHubBatchPreparationError(

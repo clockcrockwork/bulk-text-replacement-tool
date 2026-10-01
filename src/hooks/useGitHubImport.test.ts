@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createGitHubClient, GitHubBlobTooLargeError, type GitHubClient } from '../github/client';
+import {
+  createGitHubClient,
+  GitHubBlobTooLargeError,
+  type GitHubClient,
+  GitHubRequestError,
+} from '../github/client';
+import { type GitHubError, RECURSIVE_TREE_TIMEOUT_MS, timeoutError } from '../lib/githubApi';
 import { emptyTreeSelection, setTreeSelection } from '../lib/githubSelection';
 import { MAX_IMPORT_TOTAL_BYTES, MAX_INPUT_BYTES } from '../lib/inputLimits';
 import type { GitHubRepository, GitHubSnapshot, GitHubTreeEntry } from '../types';
@@ -172,6 +178,103 @@ describe('enumerateSelectedEntries', () => {
     );
 
     expect(files.map((item) => item.path)).toEqual(['chapters/drafts/keep.md', 'chapters/live.md']);
+  });
+
+  it('再帰 tree が時間切れ・5xx なら、非再帰で1階層ずつ辿り、子でも再帰を試さない', async () => {
+    const failures: GitHubError[] = [
+      timeoutError(RECURSIVE_TREE_TIMEOUT_MS, false),
+      { kind: 'server', status: 502, resetAt: null },
+    ];
+    for (const failure of failures) {
+      const recursiveCalls: string[] = [];
+      const directCalls: string[] = [];
+      const listed: number[] = [];
+      const api = client({
+        getTreeRecursive: async (_snapshot, _sha, dir) => {
+          recursiveCalls.push(dir);
+          throw new GitHubRequestError(failure);
+        },
+        getTree: async (_snapshot, _sha, dir) => {
+          directCalls.push(dir);
+          if (dir === 'chapters') {
+            return {
+              entries: [entry('chapters/part1', 'dir', SHA_A), entry('chapters/ch1.md')],
+              truncated: false,
+            };
+          }
+          return { entries: [entry('chapters/part1/ch2.md')], truncated: false };
+        },
+      });
+      const selection = setTreeSelection(emptyTreeSelection(), 'chapters', true);
+
+      const { files } = await enumerateSelectedEntries(
+        api,
+        SNAPSHOT,
+        selection,
+        new Map([['chapters', entry('chapters', 'dir', SHA_C)]]),
+        new AbortController().signal,
+        (count) => listed.push(count),
+      );
+
+      expect(recursiveCalls).toEqual(['chapters']);
+      expect(directCalls).toEqual(['chapters', 'chapters/part1']);
+      expect(listed).toEqual([1, 2]);
+      expect(files.map((item) => item.path)).toEqual(['chapters/ch1.md', 'chapters/part1/ch2.md']);
+    }
+  });
+
+  it('再帰 tree の失敗が時間切れ・5xx 以外なら、非再帰へ移らずにそのまま失敗にする', async () => {
+    const kinds: GitHubError['kind'][] = [
+      'unauthorized',
+      'rateLimited',
+      'sso',
+      'forbidden',
+      'notFound',
+      'offline',
+      'network',
+    ];
+    for (const kind of kinds) {
+      const directCalls: string[] = [];
+      const api = client({
+        getTreeRecursive: async () => {
+          throw new GitHubRequestError({ kind, status: null, resetAt: null });
+        },
+        getTree: async (_snapshot, _sha, dir) => {
+          directCalls.push(dir);
+          return { entries: [], truncated: false };
+        },
+      });
+      const selection = setTreeSelection(emptyTreeSelection(), 'chapters', true);
+
+      const failure = enumerateSelectedEntries(
+        api,
+        SNAPSHOT,
+        selection,
+        new Map([['chapters', entry('chapters', 'dir', SHA_C)]]),
+        new AbortController().signal,
+      );
+      await expect(failure).rejects.toMatchObject({
+        path: 'chapters',
+        requestError: { detail: { kind } },
+      });
+      expect(directCalls).toEqual([]);
+    }
+  });
+
+  it('非再帰へ移ったあとの1階層の取得が失敗したら、その失敗をそのまま返す', async () => {
+    const api = client({
+      getTreeRecursive: async () => {
+        throw new GitHubRequestError(timeoutError(RECURSIVE_TREE_TIMEOUT_MS, false));
+      },
+      getTree: async () => {
+        throw new GitHubRequestError({ kind: 'rateLimited', status: 403, resetAt: 1 });
+      },
+    });
+    const selection = setTreeSelection(emptyTreeSelection(), '', true);
+
+    await expect(
+      enumerateSelectedEntries(api, SNAPSHOT, selection, new Map(), new AbortController().signal),
+    ).rejects.toMatchObject({ path: 'ルート', requestError: { detail: { kind: 'rateLimited' } } });
   });
 
   it('非再帰でも打ち切られた一覧は、途中までで成功させずに止める', async () => {

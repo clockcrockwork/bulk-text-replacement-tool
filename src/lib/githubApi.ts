@@ -331,6 +331,19 @@ export function recoveryFor(error: GitHubError, stage: GitHubFetchStage): GitHub
   }
 }
 
+/**
+ * 再帰 tree の要求が失敗したとき、非再帰の列挙（1階層ずつ）へ移ってよいか。
+ *
+ * 移るのは「再帰の要求・応答の大きさに固有の問題」だけ（時間切れ・5xx）。大きな部分木の
+ * 再帰 tree は GitHub 側で重く、ここで落ちても1階層ずつなら取れることがある。
+ * 権限・利用上限・SSO・404・オフラインは非再帰でも同じ結果になり、要求を増やして
+ * rate limit を食うだけなので、今までどおり `recoveryFor` で次の手を決める。
+ * 一般の network 失敗も、応答の大きさではなく経路の問題とみなして移らない。
+ */
+export function canFallBackFromRecursiveTree(error: GitHubError): boolean {
+  return error.kind === 'timeout' || error.kind === 'server';
+}
+
 /** 失敗を利用者向けの文にする。 */
 export function describeGitHubError(error: GitHubError): string {
   switch (error.kind) {
