@@ -20,7 +20,7 @@ import {
   GitHubImportDialog,
   type SameSourceInput,
 } from './components/GitHubImportDialog';
-import { ImportDialog } from './components/ImportDialog';
+import { ImportDialog, type ImportNotice } from './components/ImportDialog';
 import { InputPanel } from './components/InputPanel';
 import { OutputPanel } from './components/OutputPanel';
 import { RulesPanel } from './components/RulesPanel';
@@ -43,8 +43,8 @@ import { collectRuleErrors, findUnmatchedRules } from './lib/diagnostics';
 import { formatFallbackTitle, formatIndex, timestampForFileName } from './lib/format';
 import { formatBytes } from './lib/githubApi';
 import { describeTooLargeFiles, describeUnreadableFiles, readInputFiles } from './lib/inputFiles';
-import { describeImportTotalTooLarge } from './lib/inputLimits';
-import { findSameSource, matchBatchSources, sourceIdentity } from './lib/inputSource';
+import { describeImportTotalTooLarge, MAX_INPUT_BYTES } from './lib/inputLimits';
+import { matchBatchSources, sourceIdentity } from './lib/inputSource';
 import { runConversion } from './lib/replace';
 import { revealUnsafeChars } from './lib/revealText';
 import { mayExceedStorage } from './lib/storage';
@@ -55,7 +55,7 @@ import {
   parseTable,
   rulesToDelimited,
 } from './lib/table';
-import { decodeText, withBom } from './lib/text';
+import { decodeText, type TextEncoding, withBom } from './lib/text';
 import { createZip } from './lib/zip';
 import {
   createEmptyRule,
@@ -63,6 +63,7 @@ import {
   createInput,
   createSampleReset,
   initWorkspace,
+  inputsKeptOnAdd,
   toPersisted,
   type WorkspaceAction,
   workspaceReducer,
@@ -353,50 +354,43 @@ export function App(): JSX.Element {
   const githubCandidate = github.state.candidate;
 
   /**
-   * 候補と同じ取り込み元（リポジトリ・ブランチ・パス）の既存入力。
-   *
-   * ローカルのファイルと違い、タイトル（ファイル名）では判定しない。別のフォルダの
-   * 同名ファイルを「同じもの」として上書きさせないため。
+   * 取り込んだあとも残る既存の入力。同名や同じ取り込み元の判定は、1件でも一括でもこれで行う。
+   * 手つかずのサンプルは取り込みと同時に片付き、空欄1つだけの入力は取り込んだもので
+   * 置き換わる。消える入力との衝突を警告したり、更新先に選ばせたりしても意味が無い。
    */
-  const githubSameSource: SameSourceInput[] = githubCandidate
-    ? findSameSource(state.inputs, githubCandidate.source).map((input) => {
-        const index = state.inputs.indexOf(input);
-        return {
-          id: input.id,
-          label: `${formatIndex(index)} ${input.title || formatFallbackTitle(index)}`,
-        };
-      })
-    : [];
+  const githubKeptInputs = state.isSample ? [] : inputsKeptOnAdd(state.inputs);
+  const githubInputLabel = (input: InputText, index: number): string =>
+    `${formatIndex(index)} ${input.title || formatFallbackTitle(index)}`;
 
-  const githubTitleCollision = githubCandidate
-    ? state.inputs.some(
-        (input) =>
-          input.title === githubCandidate.title &&
-          !(
-            input.source && sourceIdentity(input.source) === sourceIdentity(githubCandidate.source)
-          ),
-      )
-    : false;
+  /**
+   * 1件の候補の、同じ取り込み元（リポジトリ・ブランチ・パス）の既存入力と、出力名の衝突。
+   *
+   * ローカルのファイルと違い、タイトル（ファイル名）では同じものと判定しない。別のフォルダの
+   * 同名ファイルを「同じもの」として上書きさせないため。一括と同じ関数で判定する
+   * （出力名の衝突も、実際の出力名の規則で比べる）。
+   */
+  const githubSingleMatch = githubCandidate
+    ? matchBatchSources(githubKeptInputs, [githubCandidate], githubInputLabel)[0]
+    : undefined;
+  const githubSameSource: SameSourceInput[] = (githubSingleMatch?.sameSource ?? []).map(
+    ({ id, label }) => ({ id, label }),
+  );
+  const githubTitleCollision = githubSingleMatch?.titleCollision ?? false;
 
-  // 手つかずのサンプルは一括取り込みの action の中で片付くので、同名や同じ取り込み元の
-  // 判定には含めない（消える入力との衝突を警告しても意味が無い）。
   const githubBatchMatches: GitHubBatchMatch[] = github.state.batchCandidates
-    ? matchBatchSources(
-        state.isSample ? [] : state.inputs,
-        github.state.batchCandidates,
-        (input, index) => `${formatIndex(index)} ${input.title || formatFallbackTitle(index)}`,
-      )
+    ? matchBatchSources(githubKeptInputs, github.state.batchCandidates, githubInputLabel)
     : [];
 
   /** Shift_JIS は推測なので、黙って取り込まず知らせる（ローカルのファイルと同じ扱い）。 */
-  const shiftJisNote = (encoding: 'utf-8' | 'shift_jis'): string =>
+  const shiftJisNote = (encoding: TextEncoding): string =>
     encoding === 'shift_jis'
       ? ' · Shift_JIS として読み込みました（文字化けが無いか確認してください）'
       : '';
 
   const addFromGitHub = async (): Promise<void> => {
     const candidate = githubCandidate;
-    if (!candidate) return;
+    // 保存できない間は取り込まない（ボタンも止めている。一括の確定と同じ扱い）。
+    if (!candidate || saveFailed) return;
     const action: WorkspaceAction = {
       type: 'inputs/addMany',
       inputs: [{ ...createInput(candidate.title, candidate.text), source: candidate.source }],
@@ -419,7 +413,7 @@ export function App(): JSX.Element {
 
   const updateFromGitHub = async (inputId: string): Promise<void> => {
     const candidate = githubCandidate;
-    if (!candidate) return;
+    if (!candidate || saveFailed) return;
     const target = state.inputs.find((input) => input.id === inputId);
     if (!target) return;
     // タイトルは利用者が付け直した出力名かもしれないので残し、本文と出自だけ差し替える。
@@ -443,7 +437,7 @@ export function App(): JSX.Element {
 
   const applyGitHubBatch = async (decisions: readonly GitHubBatchDecision[]): Promise<void> => {
     const candidates = github.state.batchCandidates;
-    if (!candidates || candidates.length === 0) return;
+    if (!candidates || candidates.length === 0 || saveFailed) return;
     const byPath = new Map(decisions.map((decision) => [decision.path, decision]));
     const updates: Array<{
       id: string;
@@ -659,6 +653,9 @@ export function App(): JSX.Element {
 
   // ---- 表インポート --------------------------------------------------------
 
+  /** 表のダイアログの中に出す知らせ（ファイルを読めなかった、Shift_JIS と推測した、など）。 */
+  const [importNotice, setImportNotice] = useState<ImportNotice | null>(null);
+
   const parsedImport = useMemo(
     () => (state.importOpen ? parseTable(state.importText) : { rows: [], kind: null }),
     [state.importOpen, state.importText],
@@ -672,7 +669,7 @@ export function App(): JSX.Element {
       currentRules: state.rules,
     });
     if (!built) {
-      flash('見出し行＋1行以上の表が必要です');
+      setImportNotice({ tone: 'error', message: '見出し行＋1行以上の表が必要です' });
       return;
     }
 
@@ -787,11 +784,35 @@ export function App(): JSX.Element {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    const { text, encoding } = decodeText(await file.arrayBuffer());
-    dispatch({ type: 'import/setText', text });
-    if (encoding === 'shift_jis') {
-      flash(`${file.name} を Shift_JIS として読み込みました。文字化けが無いか確かめてください`);
+    // 原稿と同じ上限を、読む前に大きさで掛ける。表は全文を入力欄に載せて打鍵のたびに
+    // 解析し直すので、読んでから断ると断る前にタブが止まる（docs/resource-policy.md）。
+    const tooLarge = file.size > MAX_INPUT_BYTES ? describeTooLargeFiles([file.name]) : null;
+    if (tooLarge) {
+      setImportNotice({ tone: 'error', message: tooLarge });
+      return;
     }
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await file.arrayBuffer();
+    } catch (error) {
+      console.error('表のファイルを読めませんでした', error);
+      setImportNotice({
+        tone: 'error',
+        message: `${revealUnsafeChars(file.name)} を読み込めませんでした。端末に保存されているか確かめて、選び直してください`,
+      });
+      return;
+    }
+    const { text, encoding } = decodeText(buffer);
+    dispatch({ type: 'import/setText', text });
+    // ダイアログの中に出す。トーストはモーダルの背後に隠れて見えない。
+    setImportNotice(
+      encoding === 'shift_jis'
+        ? {
+            tone: 'info',
+            message: `${revealUnsafeChars(file.name)} を Shift_JIS として読み込みました。文字化けが無いか確かめてください`,
+          }
+        : null,
+    );
   };
 
   /**
@@ -898,7 +919,10 @@ export function App(): JSX.Element {
             onAddRule={() => dispatch({ type: 'rules/add', rule: createEmptyRule() })}
             ruleHandlers={ruleHandlers}
             groupHandlers={groupHandlers}
-            onOpenImport={() => dispatch({ type: 'import/open' })}
+            onOpenImport={() => {
+              setImportNotice(null);
+              dispatch({ type: 'import/open' });
+            }}
             onExportCsv={() => exportRules(',')}
             onExportTsv={() => exportRules('\t')}
           />
@@ -953,11 +977,19 @@ export function App(): JSX.Element {
           mode={state.importMode}
           parsed={parsedImport}
           fileInputRef={tableFileInputRef}
-          onChangeText={(text) => dispatch({ type: 'import/setText', text })}
+          onChangeText={(text) => {
+            // 知らせは直前の操作についてのもの。書き換えたら古くなる。
+            setImportNotice(null);
+            dispatch({ type: 'import/setText', text });
+          }}
           onChangeMode={(mode) => dispatch({ type: 'import/setMode', mode })}
           onPickFile={() => tableFileInputRef.current?.click()}
           onFileSelected={(event) => void onTableFileSelected(event)}
-          onClose={() => dispatch({ type: 'import/close' })}
+          notice={importNotice}
+          onClose={() => {
+            setImportNotice(null);
+            dispatch({ type: 'import/close' });
+          }}
           onApply={() => void applyImport()}
         />
       ) : null}
