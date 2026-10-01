@@ -102,6 +102,9 @@ export type GitHubBatchMatch = BatchSourceMatch;
 
 export type { GitHubBatchDecision } from '../lib/githubBatchReview';
 
+/** ブラウザへ保存できない理由（`saveBlocked`）。 */
+export type SaveBlock = 'failed' | 'conflict';
+
 interface GitHubImportDialogProps {
   state: GitHubImportState;
   handlers: GitHubDialogHandlers;
@@ -111,10 +114,11 @@ interface GitHubImportDialogProps {
   /** 作業データを書き出す（「作業データ」ダイアログの書き出しと同じ処理）。 */
   onExportBackup: () => void;
   /**
-   * ブラウザへの保存に失敗しているか。
+   * ブラウザへ保存できない状態か、その理由。保存に失敗している（`failed`）か、
+   * 別のタブが作業データを書き換えたためこのタブからは保存していない（`conflict`）。
    * 認可は画面遷移を伴うので、保存できていない作業はそこで失われる。
    */
-  saveFailed: boolean;
+  saveBlocked: SaveBlock | null;
   sameSource: readonly SameSourceInput[];
   /** 候補と同じファイル名の、別の入力があるか。 */
   titleCollision: boolean;
@@ -200,7 +204,7 @@ export function GitHubImportDialog({
   installUrl,
   canonicalUrl,
   onExportBackup,
-  saveFailed,
+  saveBlocked,
   sameSource,
   titleCollision,
   batchMatches,
@@ -256,7 +260,7 @@ export function GitHubImportDialog({
             onAdd={onAdd}
             onUpdate={onUpdate}
             onApplyBatch={onApplyBatch}
-            saveFailed={saveFailed}
+            saveBlocked={saveBlocked}
             onExportBackup={onExportBackup}
           />
         ) : (
@@ -264,7 +268,7 @@ export function GitHubImportDialog({
             state={state}
             canonicalUrl={canonicalUrl}
             onExportBackup={onExportBackup}
-            saveFailed={saveFailed}
+            saveBlocked={saveBlocked}
             headingRef={headingRef}
             onConnect={handlers.connect}
           />
@@ -348,7 +352,7 @@ interface ConsentViewProps {
   state: GitHubImportState;
   canonicalUrl: string | null;
   onExportBackup: () => void;
-  saveFailed: boolean;
+  saveBlocked: SaveBlock | null;
   headingRef: RefObject<HTMLHeadingElement | null>;
   onConnect: () => void;
 }
@@ -361,7 +365,7 @@ function ConsentView({
   state,
   canonicalUrl,
   onExportBackup,
-  saveFailed,
+  saveBlocked,
   headingRef,
   onConnect,
 }: ConsentViewProps): JSX.Element {
@@ -423,11 +427,12 @@ function ConsentView({
       ) : null}
       {/* 書き出しはその場で行えるようにする。モーダルの外にある「作業データ」を探させると、
           閉じたあとに書き出し忘れたまま作業を続けやすい。書き出す処理は既存のものと同じ。 */}
-      {saveFailed ? (
+      {saveBlocked ? (
         <div className="dialog__error github__save-failed" role="alert">
           <p className="github__save-failed-text">
-            いまブラウザへの保存に失敗しています。接続では GitHub の画面へ移動するため、
-            保存できていない作業が失われます。先に作業データを書き出してください。
+            {saveBlocked === 'conflict'
+              ? '別のタブで作業データが更新されたため、このタブからは保存していません。接続では GitHub の画面へ移動するため、このタブの作業が失われます。先に作業データを書き出すか、このダイアログを閉じて、どちらの内容で続けるかを選んでください。'
+              : 'いまブラウザへの保存に失敗しています。接続では GitHub の画面へ移動するため、保存できていない作業が失われます。先に作業データを書き出してください。'}
           </p>
           <div className="dialog__row">
             <button type="button" className="btn btn--small" onClick={onExportBackup}>
@@ -442,7 +447,7 @@ function ConsentView({
           type="button"
           className="btn btn--primary"
           onClick={onConnect}
-          disabled={connecting || saveFailed || canonicalUrl !== null}
+          disabled={connecting || saveBlocked !== null || canonicalUrl !== null}
         >
           <Icon name="branch" size={15} />
           <span>GitHubに接続</span>
@@ -465,7 +470,7 @@ interface ConnectedViewProps {
   onAdd: () => void;
   onUpdate: (inputId: string) => void;
   onApplyBatch: (decisions: readonly GitHubBatchDecision[]) => void;
-  saveFailed: boolean;
+  saveBlocked: SaveBlock | null;
   onExportBackup: () => void;
 }
 
@@ -551,7 +556,7 @@ function ConnectedView(props: ConnectedViewProps): JSX.Element | null {
           handlers={handlers}
           headingRef={headingRef}
           plan={state.batchPlan}
-          saveFailed={props.saveFailed}
+          saveBlocked={props.saveBlocked}
           onExportBackup={props.onExportBackup}
         />
       ) : state.candidate ? (
@@ -948,13 +953,19 @@ const BATCH_MEMORY_NOTE =
  * それまでの保存できていない編集ごと失われる。背後の警告は操作できないので、
  * 書き出しへの道をここにも置く。
  */
-function SaveFailedNotice({ onExportBackup }: { onExportBackup: () => void }): JSX.Element {
+function SaveFailedNotice({
+  reason,
+  onExportBackup,
+}: {
+  reason: SaveBlock;
+  onExportBackup: () => void;
+}): JSX.Element {
   return (
     <div className="dialog__error github__save-failed" role="alert">
       <p className="github__save-failed-text">
-        いまブラウザへの保存に失敗しています。このまま取り込んでも保存されず、再読み込みや
-        タブを閉じると失われます。先に作業データを書き出すか、入力を減らして保存できる状態に
-        してください。
+        {reason === 'conflict'
+          ? '別のタブで作業データが更新されたため、このタブからは保存していません。このまま取り込んでも保存されません。先に作業データを書き出すか、このダイアログを閉じて、どちらの内容で続けるかを選んでください。'
+          : 'いまブラウザへの保存に失敗しています。このまま取り込んでも保存されず、再読み込みやタブを閉じると失われます。先に作業データを書き出すか、入力を減らして保存できる状態にしてください。'}
       </p>
       <button type="button" className="btn btn--small" onClick={onExportBackup}>
         作業データを書き出す
@@ -984,14 +995,14 @@ function BatchPlanView({
   handlers,
   headingRef,
   plan: batchPlan,
-  saveFailed,
+  saveBlocked,
   onExportBackup,
 }: {
   state: GitHubImportState;
   handlers: GitHubDialogHandlers;
   headingRef: RefObject<HTMLHeadingElement | null>;
   plan: GitHubBatchPlan;
-  saveFailed: boolean;
+  saveBlocked: SaveBlock | null;
   onExportBackup: () => void;
 }): JSX.Element {
   const { entries } = batchPlan;
@@ -1026,7 +1037,9 @@ function BatchPlanView({
         </li>
         <li>{BATCH_MEMORY_NOTE}</li>
       </ul>
-      {saveFailed ? <SaveFailedNotice onExportBackup={onExportBackup} /> : null}
+      {saveBlocked ? (
+        <SaveFailedNotice reason={saveBlocked} onExportBackup={onExportBackup} />
+      ) : null}
       {plan.overLimit ? (
         <p className="dialog__error" role="alert">
           {describeImportTotalTooLarge()}
@@ -1061,7 +1074,7 @@ function BatchPlanView({
         <button
           type="button"
           className="btn btn--primary"
-          disabled={state.busy !== null || rateLimited || saveFailed || plan.overLimit}
+          disabled={state.busy !== null || rateLimited || saveBlocked !== null || plan.overLimit}
           onClick={handlers.fetchBatch}
         >
           {plan.files}ファイルを取得
@@ -1134,7 +1147,7 @@ function BatchCandidateView({
   candidates,
   batchMatches,
   onApplyBatch,
-  saveFailed,
+  saveBlocked,
   onExportBackup,
 }: ConnectedViewProps & {
   candidates: NonNullable<GitHubImportState['batchCandidates']>;
@@ -1289,7 +1302,9 @@ function BatchCandidateView({
         onGo={setPageIndex}
       />
 
-      {saveFailed ? <SaveFailedNotice onExportBackup={onExportBackup} /> : null}
+      {saveBlocked ? (
+        <SaveFailedNotice reason={saveBlocked} onExportBackup={onExportBackup} />
+      ) : null}
 
       {/* 確定すると何が起きるか、押せないならなぜかを、確定ボタンのすぐ上に出す。 */}
       <div id="github-batch-outcome" className="github__batch-outcome" aria-live="polite">
@@ -1320,7 +1335,7 @@ function BatchCandidateView({
           type="button"
           className="btn btn--primary"
           aria-describedby="github-batch-outcome"
-          disabled={state.busy !== null || undecided > 0 || saveFailed}
+          disabled={state.busy !== null || undecided > 0 || saveBlocked !== null}
           onClick={() => onApplyBatch(toBatchDecisions(batchMatches, choices))}
         >
           {candidates.length}ファイルを取り込む
@@ -1515,7 +1530,7 @@ function CandidateView({
   titleCollision,
   onAdd,
   onUpdate,
-  saveFailed,
+  saveBlocked,
   onExportBackup,
 }: ConnectedViewProps & {
   candidate: NonNullable<GitHubImportState['candidate']>;
@@ -1526,7 +1541,7 @@ function CandidateView({
   );
   const busy = state.busy !== null;
   // 一括の確定と同じく、保存できない間は入力を変える操作を止める（取り込んでも保存されない）。
-  const blocked = busy || saveFailed;
+  const blocked = busy || saveBlocked !== null;
 
   return (
     <section className="github__section" aria-label="取り込む内容の確認">
@@ -1582,7 +1597,9 @@ function CandidateView({
         </fieldset>
       ) : null}
 
-      {saveFailed ? <SaveFailedNotice onExportBackup={onExportBackup} /> : null}
+      {saveBlocked ? (
+        <SaveFailedNotice reason={saveBlocked} onExportBackup={onExportBackup} />
+      ) : null}
 
       <div className="dialog__actions github__decision">
         {/* 取り込み済みのときは「更新 / 別の入力として追加 / キャンセル」の3択として見せる。 */}

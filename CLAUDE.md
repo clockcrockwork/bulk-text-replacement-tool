@@ -93,6 +93,10 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   （取り込み側で緩めると、保存データ経由では防いだ壊れ方をファイル経由で作れる）。
   復旧画面（`ErrorBoundary`）が退避するファイルも同じ封筒（`buildRecoveryBackup`）にして、
   通常の読み込みで戻せるようにする。中身は正規化せずに入れる（手で直す材料を残す）。
+  復旧画面は保存データに加えて、**保存データに入っていない最新の作業**も退避できる
+  （`workspaceRecovery`、issue #32）。控えは `usePersistedWorkspace` が**レンダー中に**更新する
+  （落ちた状態は commit されないので、effect だと落ちる原因の操作が入らない）。保存に成功した値・
+  起動時の値と同じなら出さない。
 - **取り込む大きさの上限**（`src/lib/inputLimits.ts`、根拠は `docs/resource-policy.md`）:
   1ファイル 5MiB と1回の取り込みの合計 5MiB は **hard cap**。ローカル・GitHub・表のファイルで同じ定数を使い、
   decode する前のバイト数で判定する（`planFileImport` は読む前に `File.size` で外す。GitHub は
@@ -111,6 +115,12 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   iOS の実測のあと。
 - **保存の失敗**は握り潰さない。`saveWorkspace` は成否を返し、失敗は消えるトーストでは
   なく出したままの警告にする（見落としたときに失う設計にしない）。
+- **複数タブ**（issue #30）: どのタブも同じキーへ保存するので、`storage` イベントで他のタブの
+  書き込みを検知したら（`isForeignWorkspaceChange`。自分が最後に書いた文字列と同じ値なら数えない）、
+  このタブの保存を**すべて**止める（デバウンス・離れるときの保険・`flush`）。出したままの警告で
+  「再読み込み」「作業データを書き出す」「このタブの内容で続ける（上書き）」を選んでもらう
+  （前と後ろは取り返しがつかないので確認を挟む）。自動で merge しない・どちらかを勝手に正にしない。
+  食い違いの間は保存失敗と同じく GitHub の取り込みの確定と接続を止める（`saveBlocked`）。
 - **永続化**（`src/lib/storage.ts`）: キーは `bt-bulk-replace-v1`。読み込み時に各要素を検証・
   正規化しており、ここを緩めると壊れた保存データで起動時に落ち、リロードしても直らない
   （復旧不能）状態を作れる。入力の出自（`source`）は `normalizeInputSource` で検証し、

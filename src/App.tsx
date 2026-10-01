@@ -19,6 +19,7 @@ import {
   type GitHubBatchMatch,
   GitHubImportDialog,
   type SameSourceInput,
+  type SaveBlock,
 } from './components/GitHubImportDialog';
 import { ImportDialog, type ImportNotice } from './components/ImportDialog';
 import { InputPanel } from './components/InputPanel';
@@ -91,7 +92,17 @@ export function App(): JSX.Element {
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
 
-  const { saveFailed, flush: flushWorkspace } = usePersistedWorkspace(state);
+  const {
+    saveFailed,
+    conflict: storageConflict,
+    flush: flushWorkspace,
+    overwrite: overwriteWorkspace,
+  } = usePersistedWorkspace(state);
+  /**
+   * いまブラウザへ保存できない理由。別のタブとの食い違いを先に見る（このタブからは書いて
+   * いないので、`saveFailed` は直前の結果のまま古い）。取り込みは保存できる状態でだけ確定する。
+   */
+  const saveBlocked: SaveBlock | null = storageConflict ? 'conflict' : saveFailed ? 'failed' : null;
   // GitHub の認可で画面を離れる直前に、保留中の編集も含めて書き出す（書けなければ離れない）。
   const github = useGitHubImport({ beforeNavigate: flushWorkspace });
 
@@ -132,6 +143,40 @@ export function App(): JSX.Element {
       );
       flash('作業データを書き出しました');
     });
+  };
+
+  // ---- 別のタブとの食い違い（issue #30） --------------------------------------
+  // どちらも取り返しがつかない（このタブの作業か、別のタブの作業が消える）ので確認を挟む。
+  // 書き出しは `openBackup`（保存失敗の警告と同じ入口）。
+
+  const reloadFromOtherTab = (): void => {
+    void confirmThen(
+      {
+        title: '別のタブの内容を読み込む',
+        message:
+          'ページを読み込み直し、別のタブが保存した作業データに切り替えます。このタブで保存していない変更は失われます。',
+        details: [
+          '別のタブで更新されたあとの、このタブでの変更',
+          'GitHub との接続（読み込み直すと接続し直しになります）',
+        ],
+        confirmLabel: '再読み込みする',
+      },
+      () => location.reload(),
+    );
+  };
+
+  const keepThisTab = (): void => {
+    void confirmThen(
+      {
+        title: 'このタブの内容で上書きする',
+        message:
+          '別のタブが保存した作業データを、このタブの内容で上書きして保存を再開します。別のタブでの変更は失われます。',
+        details: ['別のタブで保存された作業データ（原稿・ルール表）'],
+        confirmLabel: '上書きして続ける',
+      },
+      // 書けなければ保存失敗の警告（出したまま）に切り替わるので、ここでは何も足さない。
+      () => void overwriteWorkspace(),
+    );
   };
 
   const selectBackupFile = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
@@ -390,7 +435,7 @@ export function App(): JSX.Element {
   const addFromGitHub = async (): Promise<void> => {
     const candidate = githubCandidate;
     // 保存できない間は取り込まない（ボタンも止めている。一括の確定と同じ扱い）。
-    if (!candidate || saveFailed) return;
+    if (!candidate || saveBlocked) return;
     const action: WorkspaceAction = {
       type: 'inputs/addMany',
       inputs: [{ ...createInput(candidate.title, candidate.text), source: candidate.source }],
@@ -413,7 +458,7 @@ export function App(): JSX.Element {
 
   const updateFromGitHub = async (inputId: string): Promise<void> => {
     const candidate = githubCandidate;
-    if (!candidate || saveFailed) return;
+    if (!candidate || saveBlocked) return;
     const target = state.inputs.find((input) => input.id === inputId);
     if (!target) return;
     // タイトルは利用者が付け直した出力名かもしれないので残し、本文と出自だけ差し替える。
@@ -437,7 +482,7 @@ export function App(): JSX.Element {
 
   const applyGitHubBatch = async (decisions: readonly GitHubBatchDecision[]): Promise<void> => {
     const candidates = github.state.batchCandidates;
-    if (!candidates || candidates.length === 0 || saveFailed) return;
+    if (!candidates || candidates.length === 0 || saveBlocked) return;
     const byPath = new Map(decisions.map((decision) => [decision.path, decision]));
     const updates: Array<{
       id: string;
@@ -1001,7 +1046,7 @@ export function App(): JSX.Element {
           installUrl={github.installUrl}
           canonicalUrl={github.canonicalUrl}
           onExportBackup={exportBackup}
-          saveFailed={saveFailed}
+          saveBlocked={saveBlocked}
           sameSource={githubSameSource}
           titleCollision={githubTitleCollision}
           batchMatches={githubBatchMatches}
@@ -1011,7 +1056,24 @@ export function App(): JSX.Element {
         />
       ) : null}
 
-      {saveFailed ? (
+      {storageConflict ? (
+        <div className="save-error" role="alert">
+          <span>
+            別のタブで作業データが更新されました。上書きし合わないよう、このタブからの保存を止めています。
+          </span>
+          <div className="save-error__actions">
+            <button type="button" className="btn btn--small" onClick={reloadFromOtherTab}>
+              再読み込み（別タブの内容を読む）
+            </button>
+            <button type="button" className="btn btn--small" onClick={openBackup}>
+              作業データを書き出す
+            </button>
+            <button type="button" className="btn btn--small" onClick={keepThisTab}>
+              このタブの内容で続ける（上書き）
+            </button>
+          </div>
+        </div>
+      ) : saveFailed ? (
         <div className="save-error" role="alert">
           <span>
             ブラウザに保存できませんでした（容量がいっぱいの可能性があります）。

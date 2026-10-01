@@ -1037,8 +1037,8 @@ export function useGitHubImport(options: GitHubImportOptions = {}): GitHubImport
       removePendingAuth();
       dispatch({
         type: 'disconnect',
-        // 書き出しの案内は、同時に出る保存失敗の警告（saveFailed）に任せる。
-        notice: 'ブラウザへの保存に失敗したため、GitHub への接続を中止しました。',
+        // 書き出しの案内は、同時に出る保存失敗・別タブとの食い違いの警告に任せる。
+        notice: 'ブラウザへ保存できなかったため、GitHub への接続を中止しました。',
       });
       return;
     }

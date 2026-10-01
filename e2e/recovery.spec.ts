@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { STORAGE_KEY } from '../src/lib/storage';
 import { openApp, seedRawWorkspace } from './fixtures';
@@ -76,6 +77,65 @@ test('復旧画面で退避したファイルは、保存データを消した�
   await confirmBlock.getByRole('button', { name: '現在のデータを置き換える' }).click();
   await expect(fresh.locator('.input-card__title')).toHaveValue('a.txt');
   await expect(fresh.locator('.input-card__preview').first()).toContainText('あ');
+});
+
+test('保存に失敗している間に落ちたら、保存データに無い最新の作業を退避して読み戻せる', async ({
+  page,
+  context,
+}) => {
+  await openApp(page);
+  // 以降の保存を失敗させる（容量超過の代わり）。
+  await page.evaluate(() => {
+    Storage.prototype.setItem = () => {
+      throw new DOMException('容量超過のテスト', 'QuotaExceededError');
+    };
+  });
+  await page.locator('.input-card__title').fill('unsaved.md');
+  await expect(
+    page.getByRole('alert').filter({ hasText: 'ブラウザに保存できませんでした' }),
+  ).toBeVisible();
+
+  // 保存できないまま編集を続け、その描画で落ちる。
+  await page.evaluate(() => {
+    Number.prototype.toLocaleString = () => {
+      throw new Error('描画テスト用の例外');
+    };
+  });
+  await page.locator('.input-card__title').fill('latest.md');
+  const recovery = page.locator('.recovery');
+  await expect(recovery).toBeVisible();
+  await expect(recovery).toContainText('ブラウザに保存できていない作業があります');
+
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: '最新の作業内容をダウンロード' }).click(),
+  ]);
+  expect(download.suggestedFilename()).toMatch(/^bulk-replace-latest-.*\.json$/);
+  const backupPath = await download.path();
+  const backup = JSON.parse(await readFile(backupPath, 'utf8'));
+  expect(backup.workspace.inputs[0].title).toBe('latest.md');
+  // 保存データの方は、最後に保存できた古い内容のまま。
+  const saved = await page.evaluate((key) => localStorage.getItem(key), STORAGE_KEY);
+  expect(saved).toContain('a.txt');
+  expect(saved).not.toContain('latest.md');
+
+  // 退避したファイルは、通常の作業データの読み込みで戻せる。
+  const fresh = await context.newPage();
+  await openApp(fresh);
+  await fresh.getByRole('button', { name: '作業データ' }).click();
+  await fresh
+    .locator('dialog[aria-label="作業データ"] input[type="file"]')
+    .setInputFiles(backupPath);
+  const confirmBlock = fresh.getByRole('region', { name: '読み込む内容の確認' });
+  await confirmBlock.getByRole('button', { name: '現在のデータを置き換える' }).click();
+  await expect(fresh.locator('.input-card__title')).toHaveValue('latest.md');
+});
+
+test('保存済みの内容で落ちたときは、最新の作業内容の退避を出さない', async ({ page }) => {
+  await breakRendering(page);
+  await page.goto('/');
+  await expect(page.locator('.recovery')).toBeVisible();
+  await expect(page.getByRole('button', { name: '最新の作業内容をダウンロード' })).toHaveCount(0);
 });
 
 test('復旧画面から保存データを消せる', async ({ page }) => {

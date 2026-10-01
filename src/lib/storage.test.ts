@@ -4,12 +4,14 @@ import { STORAGE_CONFIRM_CODE_UNITS } from './inputLimits';
 import { runConversion } from './replace';
 import {
   clearWorkspace,
+  isForeignWorkspaceChange,
   loadWorkspace,
   mayExceedStorage,
   preferredTheme,
   readRawWorkspace,
   STORAGE_KEY,
   saveWorkspace,
+  writeWorkspace,
 } from './storage';
 
 /** localStorage を差し替える。`fail` を指定すると各操作が例外を投げる。 */
@@ -323,6 +325,54 @@ describe('saveWorkspace', () => {
     expect(() =>
       saveWorkspace({ inputs: [], groups: [], rules: [], theme: 'light', isSample: false }),
     ).not.toThrow();
+  });
+});
+
+describe('writeWorkspace', () => {
+  const workspace = {
+    inputs: [{ id: 'i1', title: 'a.md', text: 'x' }],
+    groups: [{ id: 'g1', name: 'A' }],
+    rules: [],
+    theme: 'light' as const,
+    isSample: false,
+  };
+
+  it('書いた文字列そのものを返す（storage イベントの値と比べられる）', () => {
+    const store = stubStorage();
+    const raw = writeWorkspace(workspace);
+    expect(raw).not.toBeNull();
+    expect(raw).toBe(store[STORAGE_KEY]);
+  });
+
+  it('書けなければ null を返す', () => {
+    stubStorage({}, true);
+    expect(writeWorkspace(workspace)).toBeNull();
+    expect(saveWorkspace(workspace)).toBe(false);
+  });
+});
+
+describe('isForeignWorkspaceChange', () => {
+  it('作業データのキーに、このタブが最後に書いたものと違う値が来たら他のタブの書き換え', () => {
+    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: 'b' }, 'a')).toBe(true);
+    // このタブがまだ何も書いていなくても、届いた値があれば食い違っている。
+    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: 'b' }, null)).toBe(true);
+  });
+
+  it('同じ内容が書かれただけなら数えない（読み込んだ内容の書き戻しで警告を出さない）', () => {
+    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: 'a' }, 'a')).toBe(false);
+  });
+
+  it('作業データが消されたら（removeItem / clear）他のタブの書き換えとして数える', () => {
+    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: null }, 'a')).toBe(true);
+    expect(isForeignWorkspaceChange({ key: null, newValue: null }, 'a')).toBe(true);
+  });
+
+  it('このタブも何も書いていないなら、clear() は食い違いにならない', () => {
+    expect(isForeignWorkspaceChange({ key: null, newValue: null }, null)).toBe(false);
+  });
+
+  it('作業データ以外のキーは見ない', () => {
+    expect(isForeignWorkspaceChange({ key: 'other', newValue: 'b' }, 'a')).toBe(false);
   });
 });
 

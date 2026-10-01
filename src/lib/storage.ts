@@ -184,8 +184,11 @@ export function loadWorkspace(): PersistedWorkspace | null {
   return normalizeWorkspace(parsed);
 }
 
-/** 保存する形。容量の見込み（`mayExceedStorage`）と実際の保存で同じものを使う。 */
-function serializeWorkspace(workspace: PersistedWorkspace): string {
+/**
+ * 保存する形。容量の見込み（`mayExceedStorage`）と実際の保存で同じものを使う。
+ * `storage` イベントの値と比べるときも、この形どうしで比べる。
+ */
+export function serializeWorkspace(workspace: PersistedWorkspace): string {
   return JSON.stringify(workspace);
 }
 
@@ -202,6 +205,22 @@ export function mayExceedStorage(workspace: PersistedWorkspace): boolean {
 }
 
 /**
+ * 保存する。書けたら書いた文字列を、書けなければ null を返す。
+ *
+ * 書いた文字列は、`storage` イベントで届いた値が自分の書いたものか（他のタブが書いたか）を
+ * 見分けるのに使う（`isForeignWorkspaceChange`）。
+ */
+export function writeWorkspace(workspace: PersistedWorkspace): string | null {
+  try {
+    const raw = serializeWorkspace(workspace);
+    localStorage.setItem(STORAGE_KEY, raw);
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 保存する。書けたかどうかを返す。
  *
  * 以前は失敗を握り潰していた。容量超過（localStorage は数MBで打ち止め）に達しても
@@ -209,12 +228,32 @@ export function mayExceedStorage(workspace: PersistedWorkspace): boolean {
  * 消える。呼び出し側が気づけるように結果を返す。
  */
 export function saveWorkspace(workspace: PersistedWorkspace): boolean {
-  try {
-    localStorage.setItem(STORAGE_KEY, serializeWorkspace(workspace));
-    return true;
-  } catch {
-    return false;
-  }
+  return writeWorkspace(workspace) !== null;
+}
+
+/** `storage` イベントのうち、判定に使う部分。 */
+export interface StorageChange {
+  /** 変わったキー。`localStorage.clear()` なら null。 */
+  key: string | null;
+  newValue: string | null;
+}
+
+/**
+ * `storage` イベントが、他のタブによる作業データの書き換えか。
+ *
+ * `storage` イベントは書いたタブ自身には届かず、同じオリジンの他のタブにだけ届く。
+ * 届いた値がこのタブの最後に書いた（読んだ）文字列と同じなら、中身は食い違っていない
+ * （別のタブが同じ内容を書いただけ）ので数えない。数えると、片方のタブが読み込んだ内容を
+ * そのまま書き戻しただけで、もう片方に「更新されました」が出続ける。
+ * `clear()`（キーが null）は作業データも消すので、消えた値（null）として比べる。
+ */
+export function isForeignWorkspaceChange(
+  change: StorageChange,
+  lastWritten: string | null,
+): boolean {
+  if (change.key !== null && change.key !== STORAGE_KEY) return false;
+  const value = change.key === null ? null : change.newValue;
+  return value !== lastWritten;
 }
 
 /** OS のダークモード設定を初期テーマとして使う。 */

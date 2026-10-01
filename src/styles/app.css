@@ -1236,6 +1236,12 @@ a.btn {
   box-shadow: var(--shadow-overlay);
 }
 
+.save-error__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .dialog--cell {
   width: min(560px, calc(100% - 32px));
   max-width: min(560px, calc(100% - 32px));
