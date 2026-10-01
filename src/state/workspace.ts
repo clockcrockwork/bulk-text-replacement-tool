@@ -246,6 +246,19 @@ function patchById<T extends { id: string }>(
  * 自動で片付けてよいのは**まだ誰も触っていないサンプル**だけ。1文字でも直したら
  * ユーザーの作業なので、勝手に消さず手動の「サンプルを片付ける」に任せる。
  */
+/**
+ * 入力を追加したあとも残る既存の入力。手つかずの空欄が1つだけなら、取り込んだもので
+ * 置き換わるので残らない。
+ *
+ * reducer（`inputs/addMany` / `inputs/applyGitHubBatch`）と、取り込む前の同名・同じ取り込み元の
+ * 判定の両方で使う。判定だけが消える入力を含めると、置き換わる空欄との衝突を警告したり、
+ * 消える入力を更新先に選ばせたりする。
+ */
+export function inputsKeptOnAdd(inputs: readonly InputText[]): readonly InputText[] {
+  const first = inputs[0];
+  return inputs.length === 1 && first && !first.text.trim() ? [] : inputs;
+}
+
 const TOUCHES_CONTENT = new Set<WorkspaceAction['type']>([
   'inputs/add',
   'inputs/addMany',
@@ -285,10 +298,11 @@ function reduce(state: WorkspaceState, action: WorkspaceAction): WorkspaceState 
 
     case 'inputs/addMany': {
       if (action.inputs.length === 0) return state;
-      // 手つかずの空欄が1つだけ残っている状態なら、それを取り込んだファイルで置き換える。
-      const first = state.inputs[0];
-      const base = state.inputs.length === 1 && first && !first.text.trim() ? [] : state.inputs;
-      return { ...state, inputs: [...base, ...action.inputs], tab: 'input' };
+      return {
+        ...state,
+        inputs: [...inputsKeptOnAdd(state.inputs), ...action.inputs],
+        tab: 'input',
+      };
     }
 
     case 'inputs/applyGitHubBatch': {
@@ -297,8 +311,15 @@ function reduce(state: WorkspaceState, action: WorkspaceAction): WorkspaceState 
       // 手つかずのサンプルなら、入力だけでなくサンプルのルール・グループも同じ action で
       // 片付ける（途中の状態を作らない）。
       const sampleReset = state.isSample ? clearedSample(action.sampleReset) : {};
-      const base = state.isSample ? [] : state.inputs;
       const updates = new Map(action.updates.map((update) => [update.id, update]));
+      const existing = state.isSample ? [] : state.inputs;
+      // 追加するものがあれば、通常の取り込み（`inputs/addMany`）と同じく空欄1つだけの入力は
+      // 置き換える。更新先に選ばれていたら消さない（画面側の判定は `inputsKeptOnAdd` で揃えて
+      // いるので起きないはずだが、更新を黙って落とさない）。
+      const base =
+        action.adds.length > 0 && !existing.some((input) => updates.has(input.id))
+          ? inputsKeptOnAdd(existing)
+          : existing;
       const replaced = base.map((input) => {
         const update = updates.get(input.id);
         return update ? { ...input, text: update.text, source: update.source } : input;

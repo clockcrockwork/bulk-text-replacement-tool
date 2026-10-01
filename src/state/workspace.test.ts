@@ -6,6 +6,7 @@ import {
   createInput,
   createSampleReset,
   initWorkspace,
+  inputsKeptOnAdd,
   toPersisted,
   type WorkspaceState,
   workspaceReducer,
@@ -162,6 +163,54 @@ describe('workspaceReducer', () => {
     expect(next.inputs.map((item) => item.id)).toEqual(['mine', 'new']);
     expect(next.groups).toBe(before.groups);
     expect(next.rules).toBe(before.rules);
+  });
+
+  it('GitHub batch も、空のテキスト欄が1つだけなら取り込んだファイルで置き換える', () => {
+    const added: InputText = { ...input('new', 'real text'), source: source('chapter.md') };
+    const next = workspaceReducer(state({ inputs: [input('blank', ' \n')] }), {
+      type: 'inputs/applyGitHubBatch',
+      updates: [],
+      adds: [added],
+      sampleReset: RESET,
+    });
+    expect(next.inputs).toEqual([added]);
+  });
+
+  it('GitHub batch は、空欄1つだけの入力でも更新先なら消さない', () => {
+    const blank: InputText = { ...input('blank', ''), source: source('empty.md') };
+    const added: InputText = { ...input('new', 'real text'), source: source('chapter.md') };
+    const next = workspaceReducer(state({ inputs: [blank] }), {
+      type: 'inputs/applyGitHubBatch',
+      updates: [{ id: 'blank', text: 'filled', source: source('empty.md') }],
+      adds: [added],
+      sampleReset: RESET,
+    });
+    expect(next.inputs.map((item) => [item.id, item.text])).toEqual([
+      ['blank', 'filled'],
+      ['new', 'real text'],
+    ]);
+  });
+
+  it('GitHub batch は、空欄が2つ以上あれば置き換えない（通常の取り込みと同じ）', () => {
+    const added: InputText = { ...input('new', 'real text'), source: source('chapter.md') };
+    const next = workspaceReducer(state({ inputs: [input('a', ''), input('b', '')] }), {
+      type: 'inputs/applyGitHubBatch',
+      updates: [],
+      adds: [added],
+      sampleReset: RESET,
+    });
+    expect(next.inputs.map((item) => item.id)).toEqual(['a', 'b', 'new']);
+  });
+
+  it('取り込んだあとに残る入力: 空欄1つだけなら残らず、それ以外はそのまま', () => {
+    const blank = input('blank', '  ');
+    const filled = input('filled', 'x');
+    expect(inputsKeptOnAdd([blank])).toEqual([]);
+    const two = [blank, input('blank2', '')];
+    expect(inputsKeptOnAdd(two)).toBe(two);
+    const one = [filled];
+    expect(inputsKeptOnAdd(one)).toBe(one);
+    expect(inputsKeptOnAdd([])).toEqual([]);
   });
 
   it('GitHub batch は反映するものが無ければ、サンプルの中身を片付けない', () => {

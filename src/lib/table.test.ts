@@ -89,6 +89,36 @@ describe('parseTable', () => {
 
   it('空入力は kind が null', () => {
     expect(parseTable('   ')).toEqual({ rows: [], kind: null });
+    expect(parseTable('\n \t\n')).toEqual({ rows: [], kind: null });
+  });
+
+  // 以前は全文を trimAscii してから解析していたので、先頭のタブ（左上の空セル）や
+  // 末尾のタブ（最後の空セル）が落ち、その行だけ列がずれていた。
+  it('左上のセルが空の TSV でも、先頭のタブを落とさず列を保つ', () => {
+    expect(parseTable('\tA用\tB用\nアリス\tあー\tびー').rows).toEqual([
+      ['', 'A用', 'B用'],
+      ['アリス', 'あー', 'びー'],
+    ]);
+  });
+
+  it('最後のセルが空の行でも、末尾のタブを落とさない', () => {
+    expect(parseTable('元テキスト\tA用\tB用\nアリス\tあー\t\n').rows).toEqual([
+      ['元テキスト', 'A用', 'B用'],
+      ['アリス', 'あー', ''],
+    ]);
+  });
+
+  it('前後の空白だけの行は落とし、セルの前後の空白は他の行と同じく残す', () => {
+    expect(parseTable('\n  \n 元テキスト,A用\n アリス,あー\n \t\n\n').rows).toEqual([
+      [' 元テキスト', 'A用'],
+      [' アリス', 'あー'],
+    ]);
+  });
+
+  // 行ごとに走査し直す実装だと二乗になり、ここで終わらなくなる。
+  it('前後に空白だけの行が大量にあっても落とせる', () => {
+    const text = `${'\n'.repeat(200_000)}a,b${'\n \t'.repeat(200_000)}`;
+    expect(parseTable(text).rows).toEqual([['a', 'b']]);
   });
 });
 

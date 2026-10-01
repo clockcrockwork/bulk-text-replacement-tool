@@ -27,12 +27,19 @@ export function trimAscii(text: string): string {
   return text.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '');
 }
 
-/** 読み取りに使った文字コード。 */
-export type TextEncoding = 'utf-8' | 'shift_jis';
+/** 読み取りに使った文字コード。UTF-16 は BOM で明示されたときだけ使う（推測しない）。 */
+export type TextEncoding = 'utf-8' | 'shift_jis' | 'utf-16le' | 'utf-16be';
 
 export interface DecodedText {
   text: string;
   encoding: TextEncoding;
+}
+
+/** 先頭2バイトの BOM から UTF-16 のバイト順を決める。BOM でなければ null。 */
+function utf16ByBom(head: Uint8Array): 'utf-16le' | 'utf-16be' | null {
+  if (head[0] === 0xff && head[1] === 0xfe) return 'utf-16le';
+  if (head[0] === 0xfe && head[1] === 0xff) return 'utf-16be';
+  return null;
 }
 
 /**
@@ -47,6 +54,13 @@ export interface DecodedText {
  * 原稿がそのまま置換対象になる。画面で知らせて、目で確かめてもらう。
  */
 export function decodeText(buffer: ArrayBuffer): DecodedText {
+  // UTF-16 は BOM が付いていれば、そう書かれているので推測しない（Excel の「Unicode テキスト」
+  // など）。以前は UTF-8 として読めずに Shift_JIS へ回り、文字化けしていた。
+  // BOM の無い UTF-16 は推測の手がかりが弱いので扱わない（従来どおり UTF-8 → Shift_JIS）。
+  const utf16 = utf16ByBom(new Uint8Array(buffer, 0, Math.min(2, buffer.byteLength)));
+  if (utf16) {
+    return { text: stripBom(new TextDecoder(utf16).decode(buffer)), encoding: utf16 };
+  }
   try {
     return {
       text: stripBom(new TextDecoder('utf-8', { fatal: true }).decode(buffer)),
