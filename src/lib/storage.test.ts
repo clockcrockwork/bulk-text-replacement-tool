@@ -263,6 +263,28 @@ describe('loadWorkspace の使えない ID（__proto__ など）', () => {
     ).toEqual([1, 1]);
   });
 
+  // 以前の ID 生成は空文字を作り得たので、空の group ID と `values['']` の保存データは実在し得る。
+  it('空の group ID も振り直し、`values[""]` の置換先を新しい ID へ付け替える', () => {
+    stubStorage(
+      saved({
+        inputs: [{ id: '', title: 'a.md', text: 'アリス' }],
+        groups: [{ id: '', name: 'A' }],
+        rules: [{ id: '', src: 'アリス', values: { '': 'あー' } }],
+        theme: 'light',
+      }),
+    );
+    const loaded = loadWorkspace();
+    if (!loaded) throw new Error('読み込めませんでした');
+    const [group] = loaded.groups;
+    const [rule] = loaded.rules;
+    if (!group || !rule) throw new Error('要素がありません');
+    for (const id of [group.id, rule.id, loaded.inputs[0]?.id ?? '']) {
+      expect(isUsableId(id)).toBe(true);
+    }
+    expect(rule.values).toEqual({ [group.id]: 'あー' });
+    expect(runConversion(loaded).groups[0]?.files[0]?.text).toBe('あー');
+  });
+
   it('使えない ID が重複していたら、最初のものだけ置換先を引き継ぐ', () => {
     stubStorage(
       saved({

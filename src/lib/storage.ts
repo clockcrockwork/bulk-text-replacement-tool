@@ -46,7 +46,8 @@ function normalizeValues(
 function normalizeInput(value: unknown): InputText | null {
   if (!isRecord(value)) return null;
   const input: InputText = {
-    id: asString(value.id) || createId(),
+    // 空の ID は normalizeList が振り直す（ここで振ると、置換先の付け替えに記録されない）。
+    id: asString(value.id),
     title: asString(value.title),
     text: asString(value.text),
   };
@@ -59,14 +60,17 @@ function normalizeInput(value: unknown): InputText | null {
 
 function normalizeGroup(value: unknown): Group | null {
   if (!isRecord(value)) return null;
-  return { id: asString(value.id) || createGroupId(), name: asString(value.name) };
+  // 空の ID もここでは振り直さず、normalizeList に任せる。以前の ID 生成は空文字を作り得たので、
+  // `rule.values['']` に置換先が残っていることがある。ここで振ると対応（renamed）に記録されず失う。
+  return { id: asString(value.id), name: asString(value.name) };
 }
 
 function normalizeRule(value: unknown, renamed: ReadonlyMap<string, string>): Rule | null {
   if (!isRecord(value)) return null;
   const order: RuleOrder = value.order === 'seq' ? 'seq' : 'sim';
   return {
-    id: asString(value.id) || createId(),
+    // 空の ID は normalizeList が振り直す（ここで振ると、置換先の付け替えに記録されない）。
+    id: asString(value.id),
     src: asString(value.src),
     regex: asBoolean(value.regex, false),
     cs: asBoolean(value.cs, true),
