@@ -92,7 +92,7 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   新しいデータ消失の経路になる。検証は `storage.ts` の `normalizeWorkspace` を共有する
   （取り込み側で緩めると、保存データ経由では防いだ壊れ方をファイル経由で作れる）。
 - **取り込む大きさの上限**（`src/lib/inputLimits.ts`、根拠は `docs/resource-policy.md`）:
-  1ファイル 5MiB と1回の取り込みの合計 5MiB は **hard cap**。ローカルと GitHub で同じ定数を使い、
+  1ファイル 5MiB と1回の取り込みの合計 5MiB は **hard cap**。ローカル・GitHub・表のファイルで同じ定数を使い、
   decode する前のバイト数で判定する（`planFileImport` は読む前に `File.size` で外す。GitHub は
   一覧の `size`、`size === null` なら `getBlob` が読みながら数えて `reader.cancel()` で打ち切る）。
   一括の合計は並行する取得で**共有する予算を届いた分ずつ差し引く**（`BlobReadLimit.take`）。読み終えて
@@ -124,6 +124,10 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   true のときだけで、1文字でも直したらユーザーの作業なので勝手に消さない。
   片付けは取り消せるようトーストに「元に戻す」を添える。**トーストは1つしか出ないので、
   片付けと本来の通知を別々に flash しない**（後から出た方が前を消す）。
+- **表の読み込み**（`parseTable`）: 「実質空か」の判定と「データから削るもの」を分ける。削るのは
+  前後の空白だけの行だけで、全文を trim しない（左上の空セル・最後の空セルのタブが落ちて列がずれる）。
+  表のダイアログの知らせ（ファイルの上限・読めない・Shift_JIS）はダイアログの中に出す（トーストは
+  モーダルの背後に隠れる）。
 - **表の書き出し**（`src/lib/table.ts`）: CSV / TSV とも、区切り・改行・引用符を含むセルを
   クォートする。TSV だけ空白へ潰す実装に戻さない（自分で書き出したものを読み戻すと
   値が変わる状態になる）。列数が見出しと食い違う表は `findRaggedRows` で検出し、
@@ -280,7 +284,8 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   無効化する。古いルールの結果を取り違えて持ち出す事故の方が重い。
 - **イベントハンドラの例外**は `App.tsx` の `guard` で受ける。React のエラー境界は
   描画中の例外しか拾わないので、onClick から同期で呼ぶ処理は自前で受け皿が要る。
-- **文字コード**: 取り込みは `decodeText`（UTF-8 → 失敗したら Shift_JIS）。`File.text()` を
+- **文字コード**: 取り込みは `decodeText`（UTF-16 の BOM があればそれに従う → UTF-8 → 失敗したら Shift_JIS）。
+  BOM の無い UTF-16 は推測しない。`File.text()` を
   直接使わない。書き出しの BOM は `withBom`。出力は常に UTF-8 で、入力の文字コードは
   持ち回らない。Shift_JIS は**推測**なので、そう読んだことは画面で知らせる
   （`decodeText` が `encoding` を返す）。黙って取り込むと、文字化けした原稿が

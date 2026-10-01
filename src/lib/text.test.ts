@@ -72,4 +72,32 @@ describe('decodeText', () => {
   it('空のバイト列でも落ちない（UTF-8 として読めるので推測にならない）', () => {
     expect(decodeText(new ArrayBuffer(0))).toEqual({ text: '', encoding: 'utf-8' });
   });
+
+  /** UTF-16 のバイト列（BOM 付き）。Excel の「Unicode テキスト」はこの LE 版。 */
+  const utf16 = (text: string, littleEndian: boolean): ArrayBuffer => {
+    const bytes = new Uint8Array(2 + text.length * 2);
+    const view = new DataView(bytes.buffer);
+    view.setUint16(0, 0xfeff, littleEndian);
+    for (let i = 0; i < text.length; i++)
+      view.setUint16(2 + i * 2, text.charCodeAt(i), littleEndian);
+    return bytes.buffer;
+  };
+
+  it('BOM 付きの UTF-16LE は、推測せずに UTF-16LE として読む', () => {
+    expect(decodeText(utf16('元テキスト\tA用\n𠮷\tx', true))).toEqual({
+      text: '元テキスト\tA用\n𠮷\tx',
+      encoding: 'utf-16le',
+    });
+  });
+
+  it('BOM 付きの UTF-16BE は、推測せずに UTF-16BE として読む', () => {
+    expect(decodeText(utf16('名前,太郎', false))).toEqual({
+      text: '名前,太郎',
+      encoding: 'utf-16be',
+    });
+  });
+
+  it('BOM の片割れ（1バイト）だけでは UTF-16 とみなさない', () => {
+    expect(decodeText(new Uint8Array([0xff]).buffer).encoding).toBe('shift_jis');
+  });
 });

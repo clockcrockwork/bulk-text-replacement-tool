@@ -93,14 +93,34 @@ function detectDelimiter(text: string): Delimiter {
 }
 
 /**
+ * 前後の「半角空白とタブだけの行」を落とす。行の中身（先頭の空セルを表すタブや、
+ * セルの値の空白）には触れない。
+ */
+function trimBlankLines(text: string): string {
+  const blank = /^[ \t]*$/;
+  // 末尾側は正規表現 1 本（`(?:\n[ \t]*)+$`）で書くと、空行が大量に続いたあとに中身がある
+  // 入力で開始位置ごとに走査し直して二乗になる。行単位で後ろから見る。
+  let end = text.length;
+  for (let nl = text.lastIndexOf('\n', end - 1); nl >= 0; nl = text.lastIndexOf('\n', end - 1)) {
+    if (!blank.test(text.slice(nl + 1, end))) break;
+    end = nl;
+  }
+  return text.slice(0, end).replace(/^(?:[ \t]*\n)+/, '');
+}
+
+/**
  * 貼り付けられたテキストから表を推測して解析する。
  * 全行が `|` 始まりなら Markdown 表、先頭行にクォート外のタブがあれば TSV、
  * それ以外は CSV とみなす。
  */
 export function parseTable(text: string): ParsedTable {
-  // trim ではなく trimAscii。全角空白は字下げの指定として意味を持つので落とさない。
-  const normalized = trimAscii(stripBom(text || '').replace(/\r\n?/g, '\n'));
-  if (!normalized) return { rows: [], kind: null };
+  const unified = stripBom(text || '').replace(/\r\n?/g, '\n');
+  // 実質空かの判定と、表のデータから削るものは分ける。全文を trimAscii してから解析すると、
+  // 左上のセルが空の TSV（`\tA用` で始まる）の先頭のタブや、最後のセルが空の行の末尾の
+  // タブまで落ち、列がずれる。データから落とすのは前後の「空白だけの行」だけにする。
+  // trim ではなく trimAscii。全角空白は字下げの指定として意味を持つので、それだけの入力は空ではない。
+  if (!trimAscii(unified)) return { rows: [], kind: null };
+  const normalized = trimBlankLines(unified);
 
   const lines = normalized.split('\n').filter((line) => line.trim());
   if (lines.every((line) => line.trim().startsWith('|'))) {

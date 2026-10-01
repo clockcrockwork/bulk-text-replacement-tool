@@ -20,7 +20,7 @@ import {
   GitHubImportDialog,
   type SameSourceInput,
 } from './components/GitHubImportDialog';
-import { ImportDialog } from './components/ImportDialog';
+import { ImportDialog, type ImportNotice } from './components/ImportDialog';
 import { InputPanel } from './components/InputPanel';
 import { OutputPanel } from './components/OutputPanel';
 import { RulesPanel } from './components/RulesPanel';
@@ -43,7 +43,7 @@ import { collectRuleErrors, findUnmatchedRules } from './lib/diagnostics';
 import { formatFallbackTitle, formatIndex, timestampForFileName } from './lib/format';
 import { formatBytes } from './lib/githubApi';
 import { describeTooLargeFiles, readInputFiles } from './lib/inputFiles';
-import { describeImportTotalTooLarge } from './lib/inputLimits';
+import { describeImportTotalTooLarge, MAX_INPUT_BYTES } from './lib/inputLimits';
 import { matchBatchSources, sourceIdentity } from './lib/inputSource';
 import { runConversion } from './lib/replace';
 import { revealUnsafeChars } from './lib/revealText';
@@ -55,7 +55,7 @@ import {
   parseTable,
   rulesToDelimited,
 } from './lib/table';
-import { decodeText, withBom } from './lib/text';
+import { decodeText, type TextEncoding, withBom } from './lib/text';
 import { createZip } from './lib/zip';
 import {
   createEmptyRule,
@@ -362,7 +362,7 @@ export function App(): JSX.Element {
     : [];
 
   /** Shift_JIS は推測なので、黙って取り込まず知らせる（ローカルのファイルと同じ扱い）。 */
-  const shiftJisNote = (encoding: 'utf-8' | 'shift_jis'): string =>
+  const shiftJisNote = (encoding: TextEncoding): string =>
     encoding === 'shift_jis'
       ? ' · Shift_JIS として読み込みました（文字化けが無いか確認してください）'
       : '';
@@ -633,6 +633,9 @@ export function App(): JSX.Element {
 
   // ---- 表インポート --------------------------------------------------------
 
+  /** 表のダイアログの中に出す知らせ（ファイルを読めなかった、Shift_JIS と推測した、など）。 */
+  const [importNotice, setImportNotice] = useState<ImportNotice | null>(null);
+
   const parsedImport = useMemo(
     () => (state.importOpen ? parseTable(state.importText) : { rows: [], kind: null }),
     [state.importOpen, state.importText],
@@ -646,7 +649,7 @@ export function App(): JSX.Element {
       currentRules: state.rules,
     });
     if (!built) {
-      flash('見出し行＋1行以上の表が必要です');
+      setImportNotice({ tone: 'error', message: '見出し行＋1行以上の表が必要です' });
       return;
     }
 
@@ -761,11 +764,35 @@ export function App(): JSX.Element {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    const { text, encoding } = decodeText(await file.arrayBuffer());
-    dispatch({ type: 'import/setText', text });
-    if (encoding === 'shift_jis') {
-      flash(`${file.name} を Shift_JIS として読み込みました。文字化けが無いか確かめてください`);
+    // 原稿と同じ上限を、読む前に大きさで掛ける。表は全文を入力欄に載せて打鍵のたびに
+    // 解析し直すので、読んでから断ると断る前にタブが止まる（docs/resource-policy.md）。
+    const tooLarge = file.size > MAX_INPUT_BYTES ? describeTooLargeFiles([file.name]) : null;
+    if (tooLarge) {
+      setImportNotice({ tone: 'error', message: tooLarge });
+      return;
     }
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await file.arrayBuffer();
+    } catch (error) {
+      console.error('表のファイルを読めませんでした', error);
+      setImportNotice({
+        tone: 'error',
+        message: `${revealUnsafeChars(file.name)} を読み込めませんでした。端末に保存されているか確かめて、選び直してください`,
+      });
+      return;
+    }
+    const { text, encoding } = decodeText(buffer);
+    dispatch({ type: 'import/setText', text });
+    // ダイアログの中に出す。トーストはモーダルの背後に隠れて見えない。
+    setImportNotice(
+      encoding === 'shift_jis'
+        ? {
+            tone: 'info',
+            message: `${revealUnsafeChars(file.name)} を Shift_JIS として読み込みました。文字化けが無いか確かめてください`,
+          }
+        : null,
+    );
   };
 
   /**
@@ -872,7 +899,10 @@ export function App(): JSX.Element {
             onAddRule={() => dispatch({ type: 'rules/add', rule: createEmptyRule() })}
             ruleHandlers={ruleHandlers}
             groupHandlers={groupHandlers}
-            onOpenImport={() => dispatch({ type: 'import/open' })}
+            onOpenImport={() => {
+              setImportNotice(null);
+              dispatch({ type: 'import/open' });
+            }}
             onExportCsv={() => exportRules(',')}
             onExportTsv={() => exportRules('\t')}
           />
@@ -927,11 +957,19 @@ export function App(): JSX.Element {
           mode={state.importMode}
           parsed={parsedImport}
           fileInputRef={tableFileInputRef}
-          onChangeText={(text) => dispatch({ type: 'import/setText', text })}
+          onChangeText={(text) => {
+            // 知らせは直前の操作についてのもの。書き換えたら古くなる。
+            setImportNotice(null);
+            dispatch({ type: 'import/setText', text });
+          }}
           onChangeMode={(mode) => dispatch({ type: 'import/setMode', mode })}
           onPickFile={() => tableFileInputRef.current?.click()}
           onFileSelected={(event) => void onTableFileSelected(event)}
-          onClose={() => dispatch({ type: 'import/close' })}
+          notice={importNotice}
+          onClose={() => {
+            setImportNotice(null);
+            dispatch({ type: 'import/close' });
+          }}
           onApply={() => void applyImport()}
         />
       ) : null}
