@@ -49,6 +49,10 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   TypeScript 7 は従来の JS API を持たず、Vercel が `.ts` を変換できない恐れがあるので、
   **JSDoc 付きの JavaScript** で書き `checkJs` で型検査する。本体は `api/_lib/`
   （`_` 始まりは Function にならない）に置き、Vitest で直接テストする。
+- `src/workers/` — 変換の Web Worker（`conversion.worker.ts`）と、それを動かすクライアント
+  （`conversionClient.ts`、Worker を差し替えてテストする）、Worker の中で通信の API を塞ぐ
+  `blockNetwork.ts`。メッセージの形と止まった理由の文は `src/lib/conversionProtocol.ts` の
+  純粋関数に置く。
 - `e2e/` — Playwright。本番ビルドを `npm run preview` で配信して検証する。
 
 データの流れ: `App.tsx` が state を持ち、`src/lib/` の関数を呼んで結果を reducer に渡し、
@@ -80,6 +84,22 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   置換結果を再走査しないので連鎖しない。「順次」は単独パスなので、前のパスの結果と周囲に
   またがる一致も拾う。この挙動を変えると利用者の出力が変わるので、変更時は
   `replace.test.ts` のケースを先に見直すこと。
+- **変換は Web Worker で走らせる**（issue #31、`useConversion`）。メインスレッドで `runConversion` を
+  呼び直さない（破滅的なバックトラックでタブが固まり、始まったら止められない）。止めるのは常に
+  `terminate` で、変換ごとに Worker を作り直す。時間切れは**パス単位**（`CONVERSION_STALL_TIMEOUT_MS`、
+  進みが届くたびに数え直す）、結果の大きさは `MAX_CONVERSION_OUTPUT_CODE_UNITS` で `applyBatch` が
+  膨らむ途中で止める（参照の展開も `expandReplacement` に残りの予算を渡し、展開の途中で止める）。
+  一致候補は全部ためて並べ替えず、ルールごとの「次の一致」をヒープで併合する
+  （`createCandidateStream`。採用順は並べ替えと同じで、`replace.test.ts` が旧実装と比べて固定）。
+  上限を超えさせたルールの判定は、置換を足したときと、置換のあとの元の部分を足したときの両方で
+  行う（後者を見ないと、次の候補のルールのせいにする）。
+  止まった理由はルールの行と置換元を添えて出したままにする（消えるトーストにしない）。
+  変換中に入力・ルールが変わったら取り消し、その知らせも変換の帯に出す（トーストにすると、
+  変えた操作が出した「元に戻す」付きのトーストを上書きする）。正規表現の構文・エンジンは変えない。
+  同一オリジンの Worker にはページの `<meta>` CSP が引き継がれない。Worker のスクリプトには
+  `vercel.json` のヘッダで `default-src 'none'` の CSP を付け（`vite preview` も
+  `workerHeadersInPreview` で同じ値を返す）、Worker の中でも通信の API を塞ぐ（`blockNetworkApis`）。
+  ページの CSP には `worker-src 'self'` を明示している。
 - **置換先が空の行**は「削除」ではなく「そのグループでは適用しない」。ただし
   **正規表現モードでは、展開後に空文字になる置換先を書けば削除できる**
   （`applyBatch` の `if (replaced)` が偽になり、一致範囲が出力に積まれない）。
@@ -93,6 +113,10 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   （取り込み側で緩めると、保存データ経由では防いだ壊れ方をファイル経由で作れる）。
   復旧画面（`ErrorBoundary`）が退避するファイルも同じ封筒（`buildRecoveryBackup`）にして、
   通常の読み込みで戻せるようにする。中身は正規化せずに入れる（手で直す材料を残す）。
+  復旧画面は保存データに加えて、**保存データに入っていない最新の作業**も退避できる
+  （`workspaceRecovery`、issue #32）。控えは `usePersistedWorkspace` が**レンダー中に**更新する
+  （落ちた状態は commit されないので、effect だと落ちる原因の操作が入らない）。保存に成功した値・
+  起動時の値と同じなら出さない。
 - **取り込む大きさの上限**（`src/lib/inputLimits.ts`、根拠は `docs/resource-policy.md`）:
   1ファイル 5MiB と1回の取り込みの合計 5MiB は **hard cap**。ローカル・GitHub・表のファイルで同じ定数を使い、
   decode する前のバイト数で判定する（`planFileImport` は読む前に `File.size` で外す。GitHub は
@@ -111,6 +135,21 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   iOS の実測のあと。
 - **保存の失敗**は握り潰さない。`saveWorkspace` は成否を返し、失敗は消えるトーストでは
   なく出したままの警告にする（見落としたときに失う設計にしない）。
+- **複数タブ**（issue #30）: どのタブも同じキーへ保存するので、他のタブの書き込みを検知したら
+  このタブの保存を**すべて**止める（デバウンス・離れるときの保険・`flush`）。検知は2か所:
+  `storage` イベント（`isForeignWorkspaceChange`）と、**通常の保存の直前の読み直し**
+  （`detectForeignWrite`。イベントは非同期なので、届く前に保存すると相手を黙って上書きする）。
+  どちらも「このタブが知っている値」（最後に書いた文字列、起動時は生の値と今の形の値）と比べる。
+  読み直しと書き込みはタブをまたいで原子的ではないが、その隙間で同時に書いた場合も互いの
+  `storage` イベントで両方のタブが警告になる（黙って負ける側を作らない）。保証はそこまで。
+  確認ダイアログなどを await したあとの確定は、描画時の `saveBlocked` ではなく `canSave()` で
+  最新の可否を見る。利用者が選んだ「上書き」だけは読み直さずに書く（書く前に相手の値を
+  「知っている値」にし、書けなかったときに食い違いの警告へ戻らないようにする）。
+  書く内容が「知っている値」と同じなら書かない（保存データが空のまま2つのタブを開くと、
+  ID の違う手つかずのサンプル同士で互いを食い違いにしていた）。出したままの警告で
+  「再読み込み」「作業データを書き出す」「このタブの内容で続ける（上書き）」を選んでもらう
+  （前と後ろは取り返しがつかないので確認を挟む）。自動で merge しない・どちらかを勝手に正にしない。
+  食い違いの間は保存失敗と同じく GitHub の取り込みの確定と接続を止める（`saveBlocked`）。
 - **永続化**（`src/lib/storage.ts`）: キーは `bt-bulk-replace-v1`。読み込み時に各要素を検証・
   正規化しており、ここを緩めると壊れた保存データで起動時に落ち、リロードしても直らない
   （復旧不能）状態を作れる。入力の出自（`source`）は `normalizeInputSource` で検証し、
@@ -233,6 +272,10 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   - tree の一覧は項目にパスを焼き込んでいる。中身が同じディレクトリは別の場所でも同じ
     tree SHA になるので、一覧のキャッシュや照合は **SHA とパスの組**で行う（SHA だけだと
     別のフォルダのパスで取り込み、出自と同一性が別ファイルに結び付く）。
+  - 一括の列挙は再帰 tree を fast path にする。`truncated` なら途中までの一覧を捨てて非再帰で辿る。
+    要求そのものの失敗は `canFallBackFromRecursiveTree`（時間切れ・5xx）だけ非再帰へ逃がし、その下も
+    1階層ずつ辿る（階層ごとに 60 秒待たせない）。権限・rate limit・404・オフラインなどは非再帰でも
+    同じ結果なので逃がさず、`recoveryFor` に任せる（issue #33）。
   - 一覧のページ送りは上限（`MAX_PAGES`）で止めるが、続きが残っていれば途中までの一覧を
     返さずに失敗させる（「無い」と「上限で見えていない」を取り違えさせない）。
   - 取り込み元の同一性は `repositoryId + ref + path`（`sourceIdentity`）。タイトルでは判定しない。
@@ -266,6 +309,10 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   `Permissions-Policy`）。COOP の下でも OAuth の往復で sessionStorage が残ることは E2E が
   見るが、実機の Safari は手で確かめる（docs §5）。`vite preview` も同じ値を返すので、E2E は
   このヘッダの下で走る（共有するのは値だけで、`/api/` を除くパス条件は Preview で確かめる）。
+  変換の Worker のスクリプト（`/assets/conversion.worker-*.js`）には別の規則で
+  `default-src 'none'; frame-ancestors 'none'` の CSP を足している。アプリの規則にも当たるので、
+  どちらの値が残っても、両方が届いても塞ぐ向きにしかならない値にしてある（Worker 用の規則が
+  後勝ちになることは Preview の実物の応答ヘッダで確かめる）。
   `Referrer-Policy` は `strict-origin` から動かさない。既定の `strict-origin-when-cross-origin`
   は同一オリジンの要求に URL 全体を送るので、認可から戻った直後の `/assets/*.js` の Referer に
   code / state が載る。`no-referrer` は Origin ヘッダにも効き、`null` になる経路がある

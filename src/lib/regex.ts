@@ -39,20 +39,52 @@ export function compileRule(rule: Pick<Rule, 'src' | 'regex' | 'cs'>): CompiledR
   }
 }
 
+/** 置換先の中の参照（`$$` `$&` `$1` `$<name>`）。 */
+const REPLACEMENT_TOKEN = /\$(\$|&|\d{1,2}|<[^>]+>)/g;
+
+/** 参照1つを、一致から取り出した文字列にする。 */
+function resolveToken(all: string, token: string, match: RegExpExecArray): string {
+  if (token === '$') return '$';
+  if (token === '&') return match[0];
+  if (token.startsWith('<')) return match.groups?.[token.slice(1, -1)] ?? '';
+  const index = Number(token);
+  // $0 はキャプチャ番号ではない（全体一致は $&）。native と同じくそのまま残す。
+  if (index === 0) return all;
+  return index < match.length ? (match[index] ?? '') : all;
+}
+
 /**
  * 置換先文字列の `$&` `$1` `$<name>` `$$` を展開する。
  * `String.prototype.replace` と違い、存在しない番号の参照はそのまま残す
  * （`$9` と書いて 9 番が無いとき、消えるより見えている方が直しやすい）。
  * `$0` は `String.prototype.replace` と同じくグループ参照ではなくそのままの文字列。
+ *
+ * `maxLength` を超える長さになるなら、組み立てずに null を返す（issue #31）。参照は一致を
+ * 何度でも複製できる（大きな一致に `$&` を200回）ので、展開しきってから測ると、測る前に
+ * 上限の何倍もの文字列を作ってしまう。足す前に毎回測り、超えた時点でやめる。
  */
-export function expandReplacement(replacement: string, match: RegExpExecArray): string {
-  return replacement.replace(/\$(\$|&|\d{1,2}|<[^>]+>)/g, (all, token: string) => {
-    if (token === '$') return '$';
-    if (token === '&') return match[0];
-    if (token.startsWith('<')) return match.groups?.[token.slice(1, -1)] ?? '';
-    const index = Number(token);
-    // $0 はキャプチャ番号ではない（全体一致は $&）。native と同じくそのまま残す。
-    if (index === 0) return all;
-    return index < match.length ? (match[index] ?? '') : all;
-  });
+export function expandReplacement(
+  replacement: string,
+  match: RegExpExecArray,
+  maxLength = Number.POSITIVE_INFINITY,
+): string | null {
+  const parts: string[] = [];
+  let length = 0;
+  const push = (part: string): boolean => {
+    length += part.length;
+    if (length > maxLength) return false;
+    parts.push(part);
+    return true;
+  };
+
+  const tokens = new RegExp(REPLACEMENT_TOKEN.source, 'g');
+  let pos = 0;
+  for (let token = tokens.exec(replacement); token !== null; token = tokens.exec(replacement)) {
+    const [all, name = ''] = token;
+    if (!push(replacement.slice(pos, token.index))) return null;
+    if (!push(resolveToken(all, name, match))) return null;
+    pos = token.index + all.length;
+  }
+  if (!push(replacement.slice(pos))) return null;
+  return parts.join('');
 }

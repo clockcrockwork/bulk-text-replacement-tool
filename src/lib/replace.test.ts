@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { Group, InputText, Rule, RuleOrder } from '../types';
-import { advanceStringIndex, createMarkedText, runConversion, toSegments } from './replace';
+import { MAX_CONVERSION_OUTPUT_CODE_UNITS } from './inputLimits';
+import { compileRule, expandReplacement } from './regex';
+import {
+  advanceStringIndex,
+  ConversionOutputLimitError,
+  type ConversionProgress,
+  createMarkedText,
+  runConversion,
+  toSegments,
+} from './replace';
 
 const GROUP_A: Group = { id: 'ga', name: 'A用' };
 
@@ -336,5 +345,255 @@ describe('advanceStringIndex', () => {
     expect(advanceStringIndex(`${loneHigh}a`, 0)).toBe(1);
     expect(advanceStringIndex(`${loneLow}a`, 0)).toBe(1);
     expect(advanceStringIndex(`a${loneHigh}`, 1)).toBe(2);
+  });
+});
+
+describe('変換結果の上限（issue #31）', () => {
+  const groups: Group[] = [GROUP_A, { id: 'gb', name: 'B用' }];
+
+  it('上限以内なら、上限を渡さないときと同じ結果になる', () => {
+    const rules = [rule('r1', 'a', { ga: 'xyz', gb: 'b' })];
+    const inputs = [input('a.txt', 'aaa')];
+    const limited = runConversion({ inputs, groups, rules }, { maxOutputCodeUnits: 12 });
+    const free = runConversion({ inputs, groups, rules });
+    expect(limited.groups.map((g) => g.files[0]?.text)).toEqual(
+      free.groups.map((g) => g.files[0]?.text),
+    );
+  });
+
+  it('置換で膨らんで上限を超えたら、どのルール・グループ・ファイルかを添えて止める', () => {
+    // 順次適用で毎回2倍になる（$& の繰り返し）。
+    const rules = [
+      rule('r1', '.+', { ga: '$&$&' }, { regex: true, order: 'seq' }),
+      rule('r2', '.+', { ga: '$&$&' }, { regex: true, order: 'seq' }),
+      rule('r3', '.+', { ga: '$&$&' }, { regex: true, order: 'seq' }),
+    ];
+    const inputs = [input('a.txt', 'ab'), input('b.txt', 'abcd')];
+    let error: unknown;
+    try {
+      runConversion({ inputs, groups: [GROUP_A], rules }, { maxOutputCodeUnits: 40 });
+    } catch (caught) {
+      error = caught;
+    }
+    // a.txt は 2 → 16 で収まり（残り 24）、b.txt は 4 → 8 → 16 → 32 の3回目で超える。
+    expect(error).toBeInstanceOf(ConversionOutputLimitError);
+    expect(error).toMatchObject({ ruleId: 'r3', groupId: 'ga', inputIndex: 1 });
+  });
+
+  it('置換が無くても、グループへ複製した合計が上限を超えたら止める', () => {
+    const inputs = [input('a.txt', 'abcdef')];
+    expect(() => runConversion({ inputs, groups, rules: [] }, { maxOutputCodeUnits: 10 })).toThrow(
+      expect.objectContaining({ ruleId: null, groupId: 'gb', inputIndex: 0 }),
+    );
+  });
+
+  it('同じパスの後ろの置換で縮んで収まるなら、途中で止めない', () => {
+    // 先頭の x で 1 増え、後ろの a×8 で 7 減る。残りを見込みで足すと途中で超えて見える。
+    const rules = [rule('r1', 'x', { ga: 'yy' }), rule('r2', 'aaaaaaaa', { ga: 'a' })];
+    const { groups: out } = runConversion(
+      { inputs: [input('a.txt', 'xaaaaaaaa')], groups: [GROUP_A], rules },
+      { maxOutputCodeUnits: 9 },
+    );
+    expect(out[0]?.files[0]?.text).toBe('yya');
+  });
+
+  it('パスの最後の複写で超えたら、そのパスで置換したルールを示す', () => {
+    // 先頭の置換は上限内に収まり、後ろの未置換の部分を足したところで超える。
+    const rules = [rule('r1', 'x', { ga: 'yyyy' })];
+    expect(() =>
+      runConversion(
+        { inputs: [input('a.txt', 'xabcd')], groups: [GROUP_A], rules },
+        { maxOutputCodeUnits: 6 },
+      ),
+    ).toThrow(expect.objectContaining({ ruleId: 'r1', groupId: 'ga', inputIndex: 0 }));
+  });
+
+  it('置換のあとの元の部分で超えたら、次の候補ではなく膨らませたルールを示す', () => {
+    // A で 1 → 3 に伸び、そのあと元の x×8 を足した時点で 11 > 10。B は長さを変えない。
+    const rules = [rule('A', 'a', { ga: 'AAA' }), rule('B', 'b', { ga: 'B' })];
+    expect(() =>
+      runConversion(
+        { inputs: [input('a.txt', `a${'x'.repeat(8)}b`)], groups: [GROUP_A], rules },
+        { maxOutputCodeUnits: 10 },
+      ),
+    ).toThrow(expect.objectContaining({ ruleId: 'A' }));
+  });
+
+  it('置換の前から上限を超えている入力は、ルールのせいにしない', () => {
+    const rules = [rule('r1', 'x', { ga: 'y' })];
+    expect(() =>
+      runConversion(
+        { inputs: [input('a.txt', 'xabcdef')], groups: [GROUP_A], rules },
+        { maxOutputCodeUnits: 3 },
+      ),
+    ).toThrow(expect.objectContaining({ ruleId: null }));
+  });
+
+  it('上限ちょうどは超えていない', () => {
+    const rules = [rule('r1', 'a', { ga: 'bb' })];
+    const { groups: out } = runConversion(
+      { inputs: [input('a.txt', 'aa')], groups: [GROUP_A], rules },
+      { maxOutputCodeUnits: 4 },
+    );
+    expect(out[0]?.files[0]?.text).toBe('bbbb');
+  });
+});
+
+describe('変換の進み（onPass）', () => {
+  it('各パスを当てる直前に、グループ・ファイル・パスのルールを知らせる', () => {
+    const rules = [
+      rule('r1', 'a', { ga: 'b' }),
+      rule('r2', 'c', { ga: 'd' }),
+      rule('r3', 'e', { ga: 'f' }, { order: 'seq' }),
+      rule('r4', 'g', {}),
+    ];
+    const seen: ConversionProgress[] = [];
+    runConversion(
+      { inputs: [input('a.txt', 'x'), input('b.txt', 'y')], groups: [GROUP_A], rules },
+      { onPass: (progress) => seen.push(progress) },
+    );
+    expect(seen).toEqual([
+      { groupIndex: 0, inputIndex: 0, ruleIds: ['r1', 'r2'] },
+      { groupIndex: 0, inputIndex: 0, ruleIds: ['r3'] },
+      { groupIndex: 0, inputIndex: 1, ruleIds: ['r1', 'r2'] },
+      { groupIndex: 0, inputIndex: 1, ruleIds: ['r3'] },
+    ]);
+  });
+});
+
+describe('参照の展開での上限（issue #31 レビュー R2）', () => {
+  it('大きな一致を $& で何度も複製する置換は、展開しきる前に止める', () => {
+    // 1Mi の一致 × 200 回 = 200Mi。上限（32Mi）を判定する前に組み立てると端末のメモリが尽きる。
+    const rules = [rule('dup', '.+', { ga: '$&'.repeat(200) }, { regex: true })];
+    const started = performance.now();
+    expect(() =>
+      runConversion(
+        { inputs: [input('big.txt', 'a'.repeat(1024 * 1024))], groups: [GROUP_A], rules },
+        { maxOutputCodeUnits: MAX_CONVERSION_OUTPUT_CODE_UNITS },
+      ),
+    ).toThrow(expect.objectContaining({ ruleId: 'dup' }));
+    // 200Mi を組み立てていれば数秒かかる。
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  it('リテラルの置換先が残りの予算より長いときも止める', () => {
+    const rules = [rule('r1', 'a', { ga: 'xxxxxx' })];
+    expect(() =>
+      runConversion(
+        { inputs: [input('a.txt', 'a')], groups: [GROUP_A], rules },
+        { maxOutputCodeUnits: 5 },
+      ),
+    ).toThrow(expect.objectContaining({ ruleId: 'r1' }));
+  });
+});
+
+describe('一致候補の併合（issue #31 レビュー R4）', () => {
+  /**
+   * 以前の実装そのもの: 全ルールの全一致を集めて並べ替え、重ならないものを採用する。
+   * 併合（ヒープ）に変えても、採用する一致・出力・件数が変わらないことをこれと比べて固定する。
+   */
+  function reference(text: string, rules: Rule[], groupId: string) {
+    const candidates: {
+      start: number;
+      end: number;
+      order: number;
+      rule: Rule;
+      match: RegExpExecArray;
+    }[] = [];
+    rules.forEach((item, order) => {
+      const compiled = compileRule(item);
+      if (compiled.kind !== 'ok') return;
+      const re = compiled.re;
+      re.lastIndex = 0;
+      for (let match = re.exec(text); match !== null; match = re.exec(text)) {
+        if (match[0].length === 0) {
+          re.lastIndex = advanceStringIndex(text, re.lastIndex);
+          continue;
+        }
+        candidates.push({
+          start: match.index,
+          end: match.index + match[0].length,
+          order,
+          rule: item,
+          match,
+        });
+      }
+    });
+    candidates.sort(
+      (a, b) => a.start - b.start || b.end - b.start - (a.end - a.start) || a.order - b.order,
+    );
+    let out = '';
+    let pos = 0;
+    const hits: Record<string, number> = {};
+    for (const candidate of candidates) {
+      if (candidate.start < pos) continue;
+      out += text.slice(pos, candidate.start);
+      const value = candidate.rule.values[groupId] ?? '';
+      out += candidate.rule.regex ? (expandReplacement(value, candidate.match) ?? '') : value;
+      hits[candidate.rule.id] = (hits[candidate.rule.id] ?? 0) + 1;
+      pos = candidate.end;
+    }
+    return { text: out + text.slice(pos), hits };
+  }
+
+  /** 再現できる疑似乱数（失敗したときに同じ入力で調べ直せるように）。 */
+  function random(seed: number): () => number {
+    let state = seed;
+    return () => {
+      state = (state * 1103515245 + 12345) % 2 ** 31;
+      return state / 2 ** 31;
+    };
+  }
+
+  const ALPHABET = ['a', 'b', 'c', '😀', '\n'];
+  const PATTERNS: Array<{ src: string; regex: boolean }> = [
+    { src: 'a', regex: false },
+    { src: 'ab', regex: false },
+    { src: 'abc', regex: false },
+    { src: 'b', regex: false },
+    { src: '😀', regex: false },
+    { src: 'a+', regex: true },
+    { src: '[ab]{2}', regex: true },
+    { src: 'b|ca', regex: true },
+    { src: '.', regex: true },
+    { src: '(?:)', regex: true },
+    { src: '^', regex: true },
+    { src: '(a)(b)?', regex: true },
+    { src: '😀.', regex: true },
+  ];
+  const VALUES = ['X', '', 'YY', '$&$&', '[$1]', 'z'];
+
+  it('ランダムな原稿とルールで、以前の並べ替えと同じ結果になる', () => {
+    const next = random(20261001);
+    const pick = <T>(items: readonly T[]): T => {
+      const item = items[Math.floor(next() * items.length)];
+      if (item === undefined) throw new Error('空の候補');
+      return item;
+    };
+    for (let round = 0; round < 400; round++) {
+      const length = Math.floor(next() * 30);
+      const text = Array.from({ length }, () => pick(ALPHABET)).join('');
+      const count = 1 + Math.floor(next() * 5);
+      const rules = Array.from({ length: count }, (_, index) => {
+        const pattern = pick(PATTERNS);
+        return rule(`r${index}`, pattern.src, { ga: pick(VALUES) }, { regex: pattern.regex });
+      }).filter((item) => item.values.ga !== '');
+      const expected = reference(text, rules, 'ga');
+      const { file, result } = convertOne(text, rules);
+      expect(file.text, JSON.stringify({ text, rules })).toBe(expected.text);
+      for (const item of rules) {
+        expect(result.hitsByGroupRule.ga?.[item.id] ?? 0).toBe(expected.hits[item.id] ?? 0);
+      }
+    }
+  });
+
+  it('1文字ごとに一致するルールが複数あっても、定義順と長さの優先が保たれる', () => {
+    const rules = [
+      rule('one', '.', { ga: '1' }, { regex: true }),
+      rule('two', '..', { ga: '2' }, { regex: true }),
+      rule('also', '.', { ga: '!' }, { regex: true }),
+    ];
+    // 長い一致（two）が先に採用され、残った1文字は定義順で one が勝つ。
+    expect(convertOne('abcde', rules).file.text).toBe('221');
   });
 });

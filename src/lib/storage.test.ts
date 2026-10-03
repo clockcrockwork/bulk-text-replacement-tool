@@ -4,12 +4,17 @@ import { STORAGE_CONFIRM_CODE_UNITS } from './inputLimits';
 import { runConversion } from './replace';
 import {
   clearWorkspace,
+  isForeignWorkspaceChange,
+  isForeignWorkspaceValue,
   loadWorkspace,
   mayExceedStorage,
+  peekWorkspace,
   preferredTheme,
   readRawWorkspace,
   STORAGE_KEY,
   saveWorkspace,
+  writeSerializedWorkspace,
+  writeWorkspace,
 } from './storage';
 
 /** localStorage を差し替える。`fail` を指定すると各操作が例外を投げる。 */
@@ -323,6 +328,88 @@ describe('saveWorkspace', () => {
     expect(() =>
       saveWorkspace({ inputs: [], groups: [], rules: [], theme: 'light', isSample: false }),
     ).not.toThrow();
+  });
+});
+
+describe('writeWorkspace', () => {
+  const workspace = {
+    inputs: [{ id: 'i1', title: 'a.md', text: 'x' }],
+    groups: [{ id: 'g1', name: 'A' }],
+    rules: [],
+    theme: 'light' as const,
+    isSample: false,
+  };
+
+  it('書いた文字列そのものを返す（storage イベントの値と比べられる）', () => {
+    const store = stubStorage();
+    const raw = writeWorkspace(workspace);
+    expect(raw).not.toBeNull();
+    expect(raw).toBe(store[STORAGE_KEY]);
+  });
+
+  it('書けなければ null を返す', () => {
+    stubStorage({}, true);
+    expect(writeWorkspace(workspace)).toBeNull();
+    expect(saveWorkspace(workspace)).toBe(false);
+  });
+});
+
+describe('writeSerializedWorkspace', () => {
+  it('渡した文字列をそのまま書き、書けなければ false', () => {
+    const store = stubStorage();
+    expect(writeSerializedWorkspace('{"a":1}')).toBe(true);
+    expect(store[STORAGE_KEY]).toBe('{"a":1}');
+    stubStorage({}, true);
+    expect(writeSerializedWorkspace('{"a":1}')).toBe(false);
+  });
+});
+
+describe('isForeignWorkspaceChange', () => {
+  it('作業データのキーに、このタブの知らない値が来たら他のタブの書き換え', () => {
+    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: 'b' }, ['a'])).toBe(true);
+    // このタブがまだ何も書いていなくても、届いた値が知らないものなら食い違っている。
+    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: 'b' }, [null])).toBe(true);
+  });
+
+  it('知っている値が書かれただけなら数えない（読み込んだ内容の書き戻しで警告を出さない）', () => {
+    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: 'a' }, ['a'])).toBe(false);
+    // 起動時は、読んだ生の値と今の形で書き直した値のどちらも知っている値。
+    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: 'a2' }, ['a1', 'a2'])).toBe(
+      false,
+    );
+  });
+
+  it('作業データが消されたら（removeItem / clear）他のタブの書き換えとして数える', () => {
+    expect(isForeignWorkspaceChange({ key: STORAGE_KEY, newValue: null }, ['a'])).toBe(true);
+    expect(isForeignWorkspaceChange({ key: null, newValue: null }, ['a'])).toBe(true);
+  });
+
+  it('このタブも保存データが無いと知っているなら、clear() は食い違いにならない', () => {
+    expect(isForeignWorkspaceChange({ key: null, newValue: null }, [null, 'x'])).toBe(false);
+  });
+
+  it('作業データ以外のキーは見ない', () => {
+    expect(isForeignWorkspaceChange({ key: 'other', newValue: 'b' }, ['a'])).toBe(false);
+  });
+});
+
+describe('peekWorkspace / isForeignWorkspaceValue', () => {
+  it('保存データの今の値を読む。無ければ raw が null', () => {
+    stubStorage(saved({ a: 1 }));
+    expect(peekWorkspace()).toEqual({ raw: JSON.stringify({ a: 1 }) });
+    stubStorage();
+    expect(peekWorkspace()).toEqual({ raw: null });
+  });
+
+  it('読めない環境では null（「無い」と取り違えない）', () => {
+    stubStorage({}, true);
+    expect(peekWorkspace()).toBeNull();
+  });
+
+  it('知っている値かどうかで判定する', () => {
+    expect(isForeignWorkspaceValue('a', ['a'])).toBe(false);
+    expect(isForeignWorkspaceValue('b', ['a'])).toBe(true);
+    expect(isForeignWorkspaceValue(null, ['a'])).toBe(true);
   });
 });
 

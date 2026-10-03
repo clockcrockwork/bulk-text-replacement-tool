@@ -267,7 +267,20 @@ For each effective include root:
 2. if it is a directory, request `?recursive=1` as a fast path
 3. if `truncated === false`, normalize descendants, apply include/exclude rules, and keep only supported files
 4. if `truncated === true`, discard that partial recursive result and traverse the directory non-recursively until complete
-5. deduplicate final files by repository path before blob fetch
+5. if the recursive request itself fails with `timeout` or `server` (5xx), also traverse the directory non-recursively (issue #33). Descendants of that directory are then listed non-recursively too, so a slow recursive endpoint does not cost one 60 s wait per level. After a truncation, child directories try the recursive fast path again, because their subtrees are smaller.
+6. deduplicate final files by repository path before blob fetch
+
+Only failures specific to the recursive request or the size of its response fall back (`canFallBackFromRecursiveTree`). Every other failure would be the same for a non-recursive request, which would only spend more of the rate limit, so it fails the preparation as before and `recoveryFor` decides the next step:
+
+| Recursive tree failure | Falls back to non-recursive |
+| --- | --- |
+| `timeout` | yes |
+| `server` (5xx) | yes |
+| `unauthorized`, `rateLimited`, `sso`, `forbidden`, `notFound`, `offline` | no |
+| `emptyRepository`, `invalidResponse`, `listTooLong` | no |
+| `network` (generic) | no |
+
+Non-recursive traversal costs one request per directory instead of one per selected root. Each request still goes through the same rate-limit handling, and a rate limit hit during the fallback fails the preparation instead of continuing with a partial list. While the fallback runs, the busy line shows how many directories have been listed; each new count is visible progress and restarts the slow notice.
 
 Never merge a truncated recursive result with fallback results and call it complete. The fallback traversal may use bounded concurrency, but it shares the same global GitHub-request concurrency budget as blob fetching and starts at 4 or fewer concurrent requests. More-specific exclusions and re-inclusions are applied after enumeration according to the longest-path-rule semantics.
 
@@ -334,7 +347,7 @@ The resolved multi-file plan is applied with **one workspace reducer action**, i
 
 The plan step is always shown, even for a small selection. An unopened directory's contents are unknown until enumeration, so this is the first point where the real count and size can be shown, and fetching costs rate limit.
 
-What the plan step guarantees: **no file content (blob) is fetched in bulk before the user has seen the exact target count**. Enumeration itself reads tree metadata from GitHub and does use API requests before the plan is shown. That cannot be avoided, because the count and paths are only known after enumeration. The number of requests cannot be predicted in advance either: a successful recursive tree takes one request per selected root, and a truncated one falls back to one or two requests per directory. The status message while enumerating says that file contents have not been fetched yet.
+What the plan step guarantees: **no file content (blob) is fetched in bulk before the user has seen the exact target count**. Enumeration itself reads tree metadata from GitHub and does use API requests before the plan is shown. That cannot be avoided, because the count and paths are only known after enumeration. The number of requests cannot be predicted in advance either: a successful recursive tree takes one request per selected root, and a truncated, timed-out, or 5xx recursive one falls back to one or two requests per directory. The status message while enumerating says that file contents have not been fetched yet.
 
 Neither list renders more than 100 rows at a time. There is no hard cap on the selection, so without this the screen that shows the warnings could itself become too large to render.
 
@@ -359,7 +372,7 @@ A batch in progress lives in memory only (private repository contents are not pe
 
 While blobs are being fetched, the status shows how many have completed (「選択したファイルを取得しています（37 / 500）」). A static message during a long fetch reads as a hang, and a user who closes or retries at that point throws the work away.
 
-If saving to the browser is already failing, the plan step's fetch button, the confirmation step's commit button, and the single-file **入力に追加** / **別の入力として追加** / **更新する** buttons are disabled, with a notice that offers 「作業データを書き出す」 inside the dialog. The app-level warning sits behind the modal and cannot be used from there, and an import applied while saving fails is lost on reload together with the earlier unsaved edits.
+If saving to the browser is already failing, the plan step's fetch button, the confirmation step's commit button, and the single-file **入力に追加** / **別の入力として追加** / **更新する** buttons are disabled, with a notice that offers 「作業データを書き出す」 inside the dialog. The app-level warning sits behind the modal and cannot be used from there, and an import applied while saving fails is lost on reload together with the earlier unsaved edits. The same applies while another tab has changed the saved workspace (issue #30): this tab stops saving until the user chooses which content wins, so the dialog shows the same block with a notice that names the other tab instead of a full storage, and connecting (which navigates away) is refused.
 
 The backdrop closes a dialog only when the pointer was also pressed on the backdrop. `click` fires on the common ancestor of the press and release targets, so selecting text inside the dialog and releasing outside would otherwise count as a backdrop click (`useBackdropClose`, shared by every dialog in the app). Choices are rechecked against the current workspace when shown: an update choice whose target input no longer has the same source is dropped and must be made again (never guessed).
 
@@ -587,7 +600,7 @@ The values are conservative initial policy values (`src/lib/githubApi.ts`, `src/
   - The status and readable headers alone decide 401, 404, 409, 429, 5xx, and a 403 with `x-ratelimit-remaining: 0`. These keep their classification even if the body stalls. A 401 still disconnects (it is not turned into a retryable timeout), and a primary rate limit still blocks requests until the reset time.
   - Any other 403 needs the body `message` to tell a secondary rate limit, SAML SSO, and a plain 403 apart. If that body stalls, the response is not classified and becomes a `timeout` (or `network` / `offline` if the body read fails for another reason). Guessing "plain 403" would hide a rate limit or an SSO requirement.
 - The blob limit is a transport policy: it looks at stalls, not total time, because the normal duration depends on the file size. How large a file the app accepts is a separate resource policy (issue #19). The stall timer shares the reader that already counts received bytes against those limits (`GitHubBlobTooLargeError`, no retry). A response without a body stream falls back to `arrayBuffer()`, where the stall limit acts as a total limit.
-- **Slow notice**: when nothing visible to the user has changed for 8 s, the busy line gets "時間がかかっています。閉じると中断できます（作業データはそのまま残ります）。" The notice does not assume the user knows that closing cancels. Only progress the user can see (the `n / total` counter in multi-file import) restarts the 8 s. Blob chunks restart only the transport stall timer, so a download that trickles but looks frozen still gets the notice.
+- **Slow notice**: when nothing visible to the user has changed for 8 s, the busy line gets "時間がかかっています。閉じると中断できます（作業データはそのまま残ります）。" The notice does not assume the user knows that closing cancels. Only progress the user can see (the `n / total` counter in multi-file import, and the directory count while enumeration falls back to non-recursive traversal) restarts the 8 s. Blob chunks restart only the transport stall timer, so a download that trickles but looks frozen still gets the notice.
 - **Hidden pages**: while `document.hidden` is true, the user cannot watch the wait, so that time does not count towards any limit. When the page becomes visible again, counting starts over. This is product policy. It does not depend on how a browser throttles background timers or networking.
 - `AbortSignal.timeout` and `AbortSignal.any` are not used. `AbortSignal.any` needs Safari 17.4. `AbortSignal.timeout` would be available, but the stall reset, the slow notice, and the hidden-page rule need our own timer. Controllers are chained by hand (`src/github/deadline.ts`).
 - A timeout aborts a **per-request child controller**, never the controller of `run` in `useGitHubImport`. `run` silently drops results when its own controller is aborted (the dialog was closed or a newer fetch replaced it). Aborting it on timeout would leave a screen that is neither loading nor showing an error.

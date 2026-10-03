@@ -506,6 +506,27 @@ test('recursive tree が truncated なら partial list を捨て、非再帰 tra
   expect(batchTreeCalls.some((request) => !request.url.includes('recursive=1'))).toBe(true);
 });
 
+test('recursive tree が 5xx なら、失敗にせず非再帰 traversal で完全列挙する', async ({ page }) => {
+  const mock = new GitHubMock([REPO]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+
+  await dialog(page).getByRole('checkbox', { name: 'chapters フォルダを選択' }).check();
+  mock.recursiveTreeServerErrors = 1;
+  const before = mock.requests.length;
+  const batch = await fetchSelection(page, 2);
+  await expect(batch).toContainText('chapters/ch1.md');
+  await expect(batch).toContainText('chapters/ch2.txt');
+
+  const batchTreeCalls = mock.requests
+    .slice(before)
+    .filter((request) => request.url.includes('/git/trees/'));
+  // 再帰は最初の1回だけ。以降は1階層ずつ辿る。
+  expect(batchTreeCalls.filter((request) => request.url.includes('recursive=1'))).toHaveLength(1);
+  expect(batchTreeCalls.some((request) => !request.url.includes('recursive=1'))).toBe(true);
+});
+
 test('複数取得の途中でblobが1件でも失敗したら入力を1件も変更せず、再試行後にまとめて反映する', async ({
   page,
 }) => {
@@ -2319,6 +2340,35 @@ test('ブラウザへの保存に失敗している間は、画面遷移する�
   expect(mock.authorizeCalls).toEqual([]);
 });
 
+test('別のタブと食い違っている間は、画面遷移する接続を始めさせない', async ({ page, context }) => {
+  const mock = new GitHubMock([REPO]);
+  await mock.install(page);
+  await seed(page);
+  await openApp(page);
+  // 別のタブが作業データを保存する。
+  const other = await context.newPage();
+  await other.goto('/');
+  await other.evaluate((key) => {
+    const saved = JSON.parse(localStorage.getItem(key) ?? '{}');
+    saved.inputs = [{ id: 'other', title: 'from-other.md', text: '別のタブ' }];
+    localStorage.setItem(key, JSON.stringify(saved));
+  }, STORAGE_KEY);
+  await expect(
+    page.getByRole('alert').filter({ hasText: '別のタブで作業データが更新されました' }),
+  ).toBeVisible();
+
+  await page.getByRole('button', { name: 'GitHubから追加' }).click();
+  await expect(dialog(page).getByRole('alert')).toContainText(
+    '別のタブで作業データが更新されたため、このタブからは保存していません',
+  );
+  await expect(dialog(page).getByRole('button', { name: 'GitHubに接続' })).toBeDisabled();
+  expect(mock.authorizeCalls).toEqual([]);
+  // 別のタブの保存はそのまま残っている。
+  expect(await page.evaluate((key) => localStorage.getItem(key), STORAGE_KEY)).toContain(
+    'from-other.md',
+  );
+});
+
 test('保存の直前（デバウンス中）に接続しても、書き出せなければ画面遷移しない', async ({ page }) => {
   const mock = new GitHubMock([REPO]);
   await mock.install(page);
@@ -2655,6 +2705,44 @@ test.describe('取り込む大きさの上限（5MiB）', () => {
       'octo/novel · large.md',
     );
   });
+});
+
+test('確認ダイアログを待つ間に別のタブが保存したら、取り込みを確定しない', async ({
+  page,
+  context,
+}) => {
+  const MiB = 1024 * 1024;
+  const mock = new GitHubMock([
+    novelRepository({
+      branches: { main: [{ path: 'large.md', content: 'a'.repeat(4.5 * MiB) }] },
+    }),
+  ]);
+  await start(page, mock);
+  await connect(page);
+  await openRepository(page);
+  await entry(page, 'large.md').click();
+  const confirm = dialog(page).getByRole('region', { name: '取り込む内容の確認' });
+  await confirm.getByRole('button', { name: '入力に追加' }).click();
+  const storage = page.getByRole('dialog', { name: 'ブラウザに保存できない可能性があります' });
+  await expect(storage).toBeVisible();
+
+  // 確認を待っている間に、別のタブが作業データを保存する。
+  const other = await context.newPage();
+  await other.goto('/');
+  await other.evaluate((key) => {
+    const saved = JSON.parse(localStorage.getItem(key) ?? '{}');
+    saved.inputs = [{ id: 'other', title: 'from-other.md', text: '別のタブ' }];
+    localStorage.setItem(key, JSON.stringify(saved));
+  }, STORAGE_KEY);
+
+  await storage.getByRole('button', { name: '取り込む' }).click();
+  await expect(dialog(page).getByRole('alert')).toContainText(
+    '別のタブで作業データが更新されたため',
+  );
+  await expect(page.locator('.input-card')).toHaveCount(1);
+  // 別のタブの保存はそのまま残っている。
+  const saved = await page.evaluate((key) => localStorage.getItem(key), STORAGE_KEY);
+  expect(saved).toContain('from-other.md');
 });
 
 // ---- 通信が止まったとき（issue #20） ----------------------------------------------

@@ -107,4 +107,27 @@ describe('expandReplacement', () => {
   it('存在しない名前付きキャプチャは空になる', () => {
     expect(expandReplacement('[$<z>]', exec('(?<y>a)', 'a'))).toBe('[]');
   });
+
+  it('上限を超えるなら、展開しきる前にやめて null を返す', () => {
+    const match = exec('a+', 'a'.repeat(1000));
+    // 一致そのものを読んだ回数で、どこまで組み立てたかを見る。
+    let reads = 0;
+    const whole = match[0];
+    Object.defineProperty(match, 0, {
+      get: () => {
+        reads += 1;
+        return whole;
+      },
+    });
+    expect(expandReplacement('$&'.repeat(200), match, 10_500)).toBeNull();
+    // 11 回目で 10,500 を超える。200 回ぶん組み立ててから測っていない。
+    expect(reads).toBe(11);
+  });
+
+  it('上限ちょうどまでは展開する', () => {
+    expect(expandReplacement('[$&]', exec('b+', 'abbc'), 4)).toBe('[bb]');
+    expect(expandReplacement('[$&]', exec('b+', 'abbc'), 3)).toBeNull();
+    // 参照の無い部分だけで超えても止める。
+    expect(expandReplacement('abcdef', exec('b', 'b'), 5)).toBeNull();
+  });
 });

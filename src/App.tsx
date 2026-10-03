@@ -12,6 +12,7 @@ import { AppHeader } from './components/AppHeader';
 import { type BackupCandidate, BackupDialog } from './components/BackupDialog';
 import { CellEditor } from './components/CellEditor';
 import { type ConfirmChoice, ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog';
+import { ConversionStatus } from './components/ConversionStatus';
 import { DropOverlay } from './components/DropOverlay';
 import { EditorOverlay } from './components/EditorOverlay';
 import {
@@ -19,6 +20,7 @@ import {
   type GitHubBatchMatch,
   GitHubImportDialog,
   type SameSourceInput,
+  type SaveBlock,
 } from './components/GitHubImportDialog';
 import { ImportDialog, type ImportNotice } from './components/ImportDialog';
 import { InputPanel } from './components/InputPanel';
@@ -33,19 +35,20 @@ import {
 import { TabBar, type TabDescriptor } from './components/TabBar';
 import { Toast } from './components/Toast';
 import { useConfirm } from './hooks/useConfirm';
+import { useConversion } from './hooks/useConversion';
 import { useGitHubImport } from './hooks/useGitHubImport';
 import { useNarrowScreen } from './hooks/useNarrowScreen';
 import { usePersistedWorkspace } from './hooks/usePersistedWorkspace';
 import { type ToastAction, useToast } from './hooks/useToast';
 import { buildBackup, parseBackup } from './lib/backup';
 import { copyText, downloadBlob } from './lib/browser';
+import { describeConversionStop } from './lib/conversionProtocol';
 import { collectRuleErrors, findUnmatchedRules } from './lib/diagnostics';
 import { formatFallbackTitle, formatIndex, timestampForFileName } from './lib/format';
 import { formatBytes } from './lib/githubApi';
 import { describeTooLargeFiles, describeUnreadableFiles, readInputFiles } from './lib/inputFiles';
 import { describeImportTotalTooLarge, MAX_INPUT_BYTES } from './lib/inputLimits';
 import { matchBatchSources, sourceIdentity } from './lib/inputSource';
-import { runConversion } from './lib/replace';
 import { revealUnsafeChars } from './lib/revealText';
 import { mayExceedStorage } from './lib/storage';
 import {
@@ -91,9 +94,26 @@ export function App(): JSX.Element {
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
 
-  const { saveFailed, flush: flushWorkspace } = usePersistedWorkspace(state);
+  const {
+    saveFailed,
+    conflict: storageConflict,
+    flush: flushWorkspace,
+    overwrite: overwriteWorkspace,
+    // 確認ダイアログを待ったあと、確定する直前に呼ぶ（レビュー R3）。入口で見た `saveBlocked` は
+    // そのレンダーの値なので、待っている間に別のタブが保存したり保存に失敗したりしても変わらない。
+    // 保存できなければ確定しない。ダイアログは開いたままで、再描画で保存できない理由が出る。
+    canSave: canSaveWorkspace,
+  } = usePersistedWorkspace(state);
+  /**
+   * いまブラウザへ保存できない理由。別のタブとの食い違いを先に見る（このタブからは書いて
+   * いないので、`saveFailed` は直前の結果のまま古い）。取り込みは保存できる状態でだけ確定する。
+   */
+  const saveBlocked: SaveBlock | null = storageConflict ? 'conflict' : saveFailed ? 'failed' : null;
   // GitHub の認可で画面を離れる直前に、保留中の編集も含めて書き出す（書けなければ離れない）。
   const github = useGitHubImport({ beforeNavigate: flushWorkspace });
+  const conversion = useConversion();
+  /** 変換が止まった理由。次の変換か「閉じる」まで出したままにする。 */
+  const [conversionNotice, setConversionNotice] = useState<string | null>(null);
 
   // ---- 作業データ（バックアップ） --------------------------------------------
   const [backupOpen, setBackupOpen] = useState(false);
@@ -132,6 +152,40 @@ export function App(): JSX.Element {
       );
       flash('作業データを書き出しました');
     });
+  };
+
+  // ---- 別のタブとの食い違い（issue #30） --------------------------------------
+  // どちらも取り返しがつかない（このタブの作業か、別のタブの作業が消える）ので確認を挟む。
+  // 書き出しは `openBackup`（保存失敗の警告と同じ入口）。
+
+  const reloadFromOtherTab = (): void => {
+    void confirmThen(
+      {
+        title: '別のタブの内容を読み込む',
+        message:
+          'ページを読み込み直し、別のタブが保存した作業データに切り替えます。このタブで保存していない変更は失われます。',
+        details: [
+          '別のタブで更新されたあとの、このタブでの変更',
+          'GitHub との接続（読み込み直すと接続し直しになります）',
+        ],
+        confirmLabel: '再読み込みする',
+      },
+      () => location.reload(),
+    );
+  };
+
+  const keepThisTab = (): void => {
+    void confirmThen(
+      {
+        title: 'このタブの内容で上書きする',
+        message:
+          '別のタブが保存した作業データを、このタブの内容で上書きして保存を再開します。別のタブでの変更は失われます。',
+        details: ['別のタブで保存された作業データ（原稿・ルール表）'],
+        confirmLabel: '上書きして続ける',
+      },
+      // 書けなければ保存失敗の警告（出したまま）に切り替わるので、ここでは何も足さない。
+      () => void overwriteWorkspace(),
+    );
   };
 
   const selectBackupFile = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
@@ -187,6 +241,19 @@ export function App(): JSX.Element {
     [state.inputs, state.groups, state.rules],
   );
   const stale = state.result !== null && signature !== state.lastSignature;
+
+  // 変換中に入力・ルールが変わったら取り消す。終わっても古い内容の結果にしかならない。
+  // 知らせはトーストにせず変換の帯に出す。変えた操作のハンドラが出したトースト（GitHub の
+  // 一括取り込みの「元に戻す」など）のあとにこの effect が走るので、トーストにすると上書きして
+  // 取り消す手段を消してしまう（トーストは1つしか出ない）。
+  const runningSignature = conversion.activity?.signature ?? null;
+  useEffect(() => {
+    if (runningSignature === null || runningSignature === signature) return;
+    conversion.cancel();
+    setConversionNotice(
+      '入力かルールが変わったため、変換を中止しました。もう一度変換してください。',
+    );
+  }, [runningSignature, signature, conversion.cancel]);
   const cards = state.ruleView === 'auto' ? narrow : state.ruleView === 'card';
 
   const tabs: TabDescriptor[] = [
@@ -390,7 +457,7 @@ export function App(): JSX.Element {
   const addFromGitHub = async (): Promise<void> => {
     const candidate = githubCandidate;
     // 保存できない間は取り込まない（ボタンも止めている。一括の確定と同じ扱い）。
-    if (!candidate || saveFailed) return;
+    if (!candidate || saveBlocked) return;
     const action: WorkspaceAction = {
       type: 'inputs/addMany',
       inputs: [{ ...createInput(candidate.title, candidate.text), source: candidate.source }],
@@ -398,6 +465,7 @@ export function App(): JSX.Element {
     if (!(await confirmStorage(withSampleClear([action]), [revealUnsafeChars(candidate.title)]))) {
       return;
     }
+    if (!canSaveWorkspace()) return;
     guard('GitHub からの取り込み', () => {
       const undoSample = clearSampleBeforeAdding();
       dispatch(action);
@@ -413,7 +481,7 @@ export function App(): JSX.Element {
 
   const updateFromGitHub = async (inputId: string): Promise<void> => {
     const candidate = githubCandidate;
-    if (!candidate || saveFailed) return;
+    if (!candidate || saveBlocked) return;
     const target = state.inputs.find((input) => input.id === inputId);
     if (!target) return;
     // タイトルは利用者が付け直した出力名かもしれないので残し、本文と出自だけ差し替える。
@@ -425,6 +493,7 @@ export function App(): JSX.Element {
     if (!(await confirmStorage([action], [revealUnsafeChars(target.title || candidate.title)]))) {
       return;
     }
+    if (!canSaveWorkspace()) return;
     guard('GitHub からの取り込み', () => {
       dispatch(action);
       github.finish();
@@ -437,7 +506,7 @@ export function App(): JSX.Element {
 
   const applyGitHubBatch = async (decisions: readonly GitHubBatchDecision[]): Promise<void> => {
     const candidates = github.state.batchCandidates;
-    if (!candidates || candidates.length === 0 || saveFailed) return;
+    if (!candidates || candidates.length === 0 || saveBlocked) return;
     const byPath = new Map(decisions.map((decision) => [decision.path, decision]));
     const updates: Array<{
       id: string;
@@ -477,6 +546,7 @@ export function App(): JSX.Element {
       sampleReset: createSampleReset(),
     };
     if (!(await confirmStorage([action], [`取り込むファイル ${candidates.length}件`]))) return;
+    if (!canSaveWorkspace()) return;
 
     guard('GitHub からの一括取り込み', () => {
       // 「元に戻す」は、取り込む前の内容（片付けたサンプルを含む）へ戻し、一括の確認画面も
@@ -597,14 +667,24 @@ export function App(): JSX.Element {
       dispatch({ type: 'tab/set', tab: 'rules' });
       return;
     }
-    guard('変換', () => {
-      const result = runConversion(state);
-      dispatch({ type: 'result/set', result, signature });
-      const unmatched = findUnmatchedRules(state.rules, state.groups, result);
-      // 0件そのものは異常ではないので止めない。打ち間違いや表記違いに気づけるようにだけする。
-      if (unmatched.length > 0) {
-        flash(`変換しました（1件も置換されなかったルールが${unmatched.length}件あります）`);
-      }
+    setConversionNotice(null);
+    // 変換に渡した内容。止まった理由（どのルール・どのファイルか）もこれで組み立てる。
+    const input = { inputs: state.inputs, groups: state.groups, rules: state.rules };
+    const runSignature = signature;
+    void conversion.start(input, runSignature).then((outcome) => {
+      guard('変換', () => {
+        if (outcome.kind === 'cancelled') return;
+        if (outcome.kind === 'stopped') {
+          setConversionNotice(describeConversionStop(outcome.stop, input));
+          return;
+        }
+        dispatch({ type: 'result/set', result: outcome.result, signature: runSignature });
+        const unmatched = findUnmatchedRules(input.rules, input.groups, outcome.result);
+        // 0件そのものは異常ではないので止めない。打ち間違いや表記違いに気づけるようにだけする。
+        if (unmatched.length > 0) {
+          flash(`変換しました（1件も置換されなかったルールが${unmatched.length}件あります）`);
+        }
+      });
     });
   };
 
@@ -870,6 +950,15 @@ export function App(): JSX.Element {
           current={state.tab}
           onSelect={(tab) => dispatch({ type: 'tab/set', tab })}
         />
+        <ConversionStatus
+          activity={conversion.activity}
+          notice={conversionNotice}
+          onCancel={() => {
+            conversion.cancel();
+            flash('変換を中止しました');
+          }}
+          onDismiss={() => setConversionNotice(null)}
+        />
       </div>
 
       <main className="app__main">
@@ -1001,7 +1090,7 @@ export function App(): JSX.Element {
           installUrl={github.installUrl}
           canonicalUrl={github.canonicalUrl}
           onExportBackup={exportBackup}
-          saveFailed={saveFailed}
+          saveBlocked={saveBlocked}
           sameSource={githubSameSource}
           titleCollision={githubTitleCollision}
           batchMatches={githubBatchMatches}
@@ -1011,7 +1100,24 @@ export function App(): JSX.Element {
         />
       ) : null}
 
-      {saveFailed ? (
+      {storageConflict ? (
+        <div className="save-error" role="alert">
+          <span>
+            別のタブで作業データが更新されました。上書きし合わないよう、このタブからの保存を止めています。
+          </span>
+          <div className="save-error__actions">
+            <button type="button" className="btn btn--small" onClick={reloadFromOtherTab}>
+              再読み込み（別タブの内容を読む）
+            </button>
+            <button type="button" className="btn btn--small" onClick={openBackup}>
+              作業データを書き出す
+            </button>
+            <button type="button" className="btn btn--small" onClick={keepThisTab}>
+              このタブの内容で続ける（上書き）
+            </button>
+          </div>
+        </div>
+      ) : saveFailed ? (
         <div className="save-error" role="alert">
           <span>
             ブラウザに保存できませんでした（容量がいっぱいの可能性があります）。
