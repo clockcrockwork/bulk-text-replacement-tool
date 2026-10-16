@@ -1033,10 +1033,16 @@ export function App(): JSX.Element {
         ) : null}
       </main>
 
-      <footer className="app__legal" aria-label="公開情報">
+      <footer className="app__legal">
         <a href="/privacy.html">データの取扱い</a>
         <a href="/licenses.html">第三者ライセンス</a>
-        <a href="https://github.com/clockcrockwork/bulk-text-replacement-tool/issues" target="_blank" rel="noopener noreferrer">お問い合わせ・不具合報告</a>
+        <a
+          href="https://github.com/clockcrockwork/bulk-text-replacement-tool/issues"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          お問い合わせ・不具合報告
+        </a>
       </footer>
 
       {dragging ? <DropOverlay /> : null}
