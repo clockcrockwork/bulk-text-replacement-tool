@@ -326,3 +326,9 @@ Copyright (c) 2026 clockcrockwork / All rights reserved（[LICENSE](LICENSE)）�
 
 公開されている Web 版をブラウザで使うこと自体は自由です。上記はソースコードに
 対する条件です。
+
+## 公開向けの説明・第三者ライセンス（Vercel V2）
+
+- 公開画面のフッターから `/privacy.html`（データの取扱い）と `/licenses.html`（第三者ライセンス）へアクセスできます。記載のライセンス本文は `public/third-party-notices.txt` が正本です。
+- React / React DOM (MIT)、`src/components/Icon.tsx` にコピー・調整した Lucide (ISC) および一部の Feather (MIT) 由来アイコン、Google Fonts配信のArchivo (SIL OFL 1.1) を区別しています。リポジトリの `LICENSE` は**独自コードの権利**であり第三者ライセンスの上書きではありません。
+- V1のコンテスト提出用 `release/lolipop-v1` は本ドキュメントの対象外です。変更する場合は `RELEASE_POLICY.md` の選択的バックポート規則に従います。

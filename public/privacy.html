@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="strict-origin">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>データの取扱い | 一括置換ツール</title>
+  <style>body{max-width:720px;margin:0 auto;padding:24px 18px 64px;line-height:1.85;font-family:system-ui,sans-serif;color:#272727}h1{font-size:1.8rem}h2{margin-top:2rem;font-size:1.2rem}a{color:#174f96}li{margin:8px 0}small{color:#555}nav{margin-top:2rem}</style>
+</head>
+<body>
+  <main>
+    <h1>データの取扱い</h1>
+    <p><small>確認日：2026年10月16日／運営：clockcrockwork</small></p>
+    <p>この説明はGitHub取り込み機能を備えるVercel V2向けです。文字の置換そのものにはアカウント登録は必要ありません。</p>
+    <h2>入力した原稿・ルール</h2>
+    <p>入力した文章、ルール、変換結果はブラウザ内で処理し、作業データをこのブラウザのlocalStorageへ保存します。本サービスのサーバーへ原稿本文を送信する機能はありません。ブラウザのサイトデータ削除などで失われる場合がありますので、必要な作業データはJSONバックアップを保存してください。</p>
+    <h2>GitHubからの取り込み（任意）</h2>
+    <p>「GitHubから追加」を選んだ場合、GitHub Appへの認可と、指定したリポジトリの読取要求を行います。選択したリポジトリのファイル本文は、ブラウザからGitHub APIへ直接取得し、本サービスのサーバーを経由しません。GitHub Appの権限と認可済みリポジトリはGitHub側の設定から変更できます。</p>
+    <p>ログイン認可コード等の交換にはVercel Function（/api/github/token）を使用し、コード、PKCE検証情報、コールバックURLを処理します。アクセストークンはブラウザのメモリにのみ保持し、再読込で失われます。GitHub上の秘密データをサーバー側に保存・解析する機能はありません。</p>
+    <h2>外部通信とログ</h2>
+    <p>フォント表示のため、ブラウザからGoogle Fonts（fonts.googleapis.com / fonts.gstatic.com）へ接続します。GitHub取り込みを選んだ場合はapi.github.com等のGitHubサービスへ通信します。配信基盤Vercelや外部提供者が通常の接続情報・アクセスログを取り扱う場合があります。本サービスは広告・マーケティングの追跡機能を設けていません。</p>
+    <h2>問い合わせ</h2>
+    <p>サービスの不具合・著作権等に関するお問い合わせは、<a href="https://github.com/clockcrockwork/bulk-text-replacement-tool/issues">GitHub Issues</a>をご利用ください。<strong>原稿本文、認証コード、トークン等の秘密情報はIssueに掲載しないでください。</strong>個人情報を含む相談は公開Issueへ投稿しないでください。</p>
+    <p>サービスの機能や外部提供者の変更により本説明を更新することがあります。</p>
+  </main>
+  <nav aria-label="公開文書"><a href="/">ツールに戻る</a> · <a href="/privacy.html">データの取扱い</a> · <a href="/licenses.html">ライセンス</a></nav>
+</body>
+</html>
