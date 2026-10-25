@@ -238,6 +238,9 @@ describe('handleTokenExchange', () => {
     const response = await handleTokenExchange(request(null, { method: 'GET' }), CONFIG, fetchImpl);
     expect(response.status).toBe(405);
     expect(response.headers.get('allow')).toBe('POST');
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(await body(response)).toEqual({ error: 'method_not_allowed' });
     expect(calls).toHaveLength(0);
   });
 

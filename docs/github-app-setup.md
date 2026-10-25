@@ -256,9 +256,20 @@ Preview で試すつもりでも本番に同時に効く。Preview で試すと�
 5. App の権限画面に write 権限が無いこと
 6. 再読み込みすると、もう一度接続が必要になること
 7. Vercel の Function ログ（`/api/github/token`）に、本文・コード・トークンが出ていないこと
-8. `curl -sI https://bulk-text-replacement-tool.vercel.app/` で §4 のヘッダが返ること。
-   `curl -sI https://bulk-text-replacement-tool.vercel.app/api/github/token` には §4 の
-   `frame-ancestors` が付かず、Function 自身の `Referrer-Policy: no-referrer` が返ること
+8. 通常ページは `curl -sI https://bulk-text-replacement-tool.vercel.app/` で §4 のヘッダを確認する。
+   API は `-I`（HEAD）でなく、明示的に実装済みの **GET** で確認する。HEAD の応答から
+   GET/POST の配信ヘッダを推測しない。
+
+   ```sh
+   curl -sS -i --max-time 10 https://bulk-text-replacement-tool.vercel.app/api/github/token
+   ```
+
+   GET はトークン交換を実行せず 405 を返す。実環境で `Allow: POST`、
+   `Cache-Control: no-store`、`Referrer-Policy: no-referrer`、
+   `{"error":"method_not_allowed"}` を確認する。§4 の通常ページ用
+   `frame-ancestors` が API 応答に意図せず適用されていないことも確認する。
+   `Server-Timing` などの診断ヘッダを見つけたら内容・必要性を確認し、
+   **存在だけを脆弱性と判定しない**。自動リダイレクト追跡や認証情報の送信は行わない
 9. Firewall のルールが Publish 済みで、次の3つがすべて 429 になること。
    Origin を付けていないので、制限に掛かるまでは 403（`.js` と末尾 `/` も同じ Function）が返る
 
