@@ -6,12 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": [
-      "**",
-      "!dist",
-      "!design",
-      "!node_modules"
-    ]
+    "includes": ["**", "!dist", "!design", "!node_modules"]
   },
   "formatter": {
     "enabled": true,
@@ -39,10 +34,7 @@
         "useFilenamingConvention": {
           "level": "error",
           "options": {
-            "filenameCases": [
-              "camelCase",
-              "PascalCase"
-            ]
+            "filenameCases": ["camelCase", "PascalCase"]
           }
         }
       },
@@ -53,10 +45,7 @@
         "noConsole": {
           "level": "error",
           "options": {
-            "allow": [
-              "error",
-              "warn"
-            ]
+            "allow": ["error", "warn"]
           }
         }
       },
