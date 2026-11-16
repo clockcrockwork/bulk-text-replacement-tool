@@ -17,7 +17,7 @@ const IMPORT_MODE_OPTIONS: readonly ToggleOption<ImportMode>[] = [
 ];
 
 /** 解析結果を1行の説明文にする。 */
-function describe(parsed: ParsedTable): string {
+function describeParsedTable(parsed: ParsedTable): string {
   if (!parsed.kind || parsed.rows.length === 0) return '未入力';
   const columns = Math.max(0, (parsed.rows[0]?.length ?? 0) - 1);
   return `${TABLE_KIND_LABEL[parsed.kind]} · 見出し＋${parsed.rows.length - 1}行 · ${columns}列`;
@@ -113,7 +113,7 @@ export function ImportDialog({
             accept=".csv,.tsv,.md,.txt"
             onChange={onFileSelected}
           />
-          <span className="dialog__detect">{describe(parsed)}</span>
+          <span className="dialog__detect">{describeParsedTable(parsed)}</span>
         </div>
         {notice ? (
           <p

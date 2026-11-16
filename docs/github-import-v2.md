@@ -272,13 +272,13 @@ For each effective include root:
 
 Only failures specific to the recursive request or the size of its response fall back (`canFallBackFromRecursiveTree`). Every other failure would be the same for a non-recursive request, which would only spend more of the rate limit, so it fails the preparation as before and `recoveryFor` decides the next step:
 
-| Recursive tree failure | Falls back to non-recursive |
-| --- | --- |
-| `timeout` | yes |
-| `server` (5xx) | yes |
-| `unauthorized`, `rateLimited`, `sso`, `forbidden`, `notFound`, `offline` | no |
-| `emptyRepository`, `invalidResponse`, `listTooLong` | no |
-| `network` (generic) | no |
+| Recursive tree failure                                                   | Falls back to non-recursive |
+| ------------------------------------------------------------------------ | --------------------------- |
+| `timeout`                                                                | yes                         |
+| `server` (5xx)                                                           | yes                         |
+| `unauthorized`, `rateLimited`, `sso`, `forbidden`, `notFound`, `offline` | no                          |
+| `emptyRepository`, `invalidResponse`, `listTooLong`                      | no                          |
+| `network` (generic)                                                      | no                          |
 
 Non-recursive traversal costs one request per directory instead of one per selected root. Each request still goes through the same rate-limit handling, and a rate limit hit during the fallback fails the preparation instead of continuing with a partial list. While the fallback runs, the busy line shows how many directories have been listed; each new count is visible progress and restarts the slow notice.
 
@@ -587,12 +587,12 @@ Decided in issue #20. No request may leave the user looking at a busy state inde
 
 The values are conservative initial policy values (`src/lib/githubApi.ts`, `src/lib/githubAuth.ts`). They are not derived from averages of normal requests. Real-device and Vercel measurements are used afterwards to check that normal use is not being cut off, not as a gate before implementing.
 
-| Request | What is measured | Abort after |
-| --- | --- | --- |
-| Token exchange (`POST /api/github/token`) | whole request, including the response body | 25 s |
-| Installations, repositories, and branches (per page), ref, commit, non-recursive tree | whole request, including the response body | 30 s |
-| Recursive tree | whole request, including the response body | 60 s |
-| Blob | time without receiving any byte (stall), including the wait for headers | 30 s without data |
+| Request                                                                               | What is measured                                                        | Abort after       |
+| ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ----------------- |
+| Token exchange (`POST /api/github/token`)                                             | whole request, including the response body                              | 25 s              |
+| Installations, repositories, and branches (per page), ref, commit, non-recursive tree | whole request, including the response body                              | 30 s              |
+| Recursive tree                                                                        | whole request, including the response body                              | 60 s              |
+| Blob                                                                                  | time without receiving any byte (stall), including the wait for headers | 30 s without data |
 
 - Every limit applies to **one request**, not to one user action. Pagination is limited per page, and multi-file import per blob, so long lists and large selections are not cut off.
 - The limit lasts until the response body has been read, not only until the headers arrive. A body that stalls after the headers must hit the same limit. The Function's upstream limit (10 s, `UPSTREAM_TIMEOUT_MS`) already covers the body, because a fetch signal also aborts body reads.
@@ -607,24 +607,24 @@ The values are conservative initial policy values (`src/lib/githubApi.ts`, `src/
 
 After a timeout:
 
-| Situation | Next step |
-| --- | --- |
+| Situation                           | Next step                                                                                                                                                                |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | GitHub REST API timeout (`timeout`) | **Retry** at every stage. Retrying is safe because the request is a GET on a pinned commit. In multi-file import, blobs that were already fetched are not fetched again. |
-| Token exchange timeout | **Reconnect only**: authorization starts again with a new state, verifier, and code. The same code is never sent again, and nothing is retried automatically. |
-| Close | Aborts the running fetch. For the exchange, the result is discarded (`superseded()`: `attempt` and `pageLeft`). |
+| Token exchange timeout              | **Reconnect only**: authorization starts again with a new state, verifier, and code. The same code is never sent again, and nothing is retried automatically.            |
+| Close                               | Aborts the running fetch. For the exchange, the result is discarded (`superseded()`: `attempt` and `pageLeft`).                                                          |
 
 After the browser gives up on the exchange, the exchange may still succeed at the Function and at GitHub. The code is then consumed, and an expiring token remains that nobody received. It is not revoked. It never reached the browser and is not logged, and it expires on its own (8 h). Revoking it would need a second GitHub call made with the client secret, triggered by a disconnect that Vercel does not reliably pass to the Function. It would also widen the "the backend only exchanges" boundary.
 
 How failures are shown:
 
-| Kind | Detected by | Next step |
-| --- | --- | --- |
-| offline | fetch rejects and `navigator.onLine === false` (only `false` is trusted) | retry / reconnect |
-| network | fetch rejects otherwise | retry / reconnect |
-| timeout | our own limits above | retry (REST) / reconnect (exchange) |
-| server | 5xx | retry |
-| rate limit | `x-ratelimit-*` or the body `message` | retry after the reset time |
-| too large | received bytes over the input limits (`src/lib/inputLimits.ts`) | close only |
+| Kind       | Detected by                                                              | Next step                           |
+| ---------- | ------------------------------------------------------------------------ | ----------------------------------- |
+| offline    | fetch rejects and `navigator.onLine === false` (only `false` is trusted) | retry / reconnect                   |
+| network    | fetch rejects otherwise                                                  | retry / reconnect                   |
+| timeout    | our own limits above                                                     | retry (REST) / reconnect (exchange) |
+| server     | 5xx                                                                      | retry                               |
+| rate limit | `x-ratelimit-*` or the body `message`                                    | retry after the reset time          |
+| too large  | received bytes over the input limits (`src/lib/inputLimits.ts`)          | close only                          |
 
 The Function reports its own upstream timeout as `504 upstream_timeout`, whether the stall happens before the headers or in the middle of the body. This keeps it apart from `502 upstream_invalid` (a broken response) and `502 upstream_unreachable`.
 

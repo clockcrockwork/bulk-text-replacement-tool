@@ -8,10 +8,10 @@ V1 以降、同じコードを2つの配信先で同じ速度で育てない。
 
 ## 系統
 
-| 系統 | Branch | 配信先 | 状態 |
-| --- | --- | --- | --- |
-| Active product | `main` | Vercel production | 継続開発 |
-| Contest maintenance | `release/lolipop-v1` | ロリポップ | V1 固定・最低限保守 |
+| 系統                | Branch               | 配信先            | 状態                |
+| ------------------- | -------------------- | ----------------- | ------------------- |
+| Active product      | `main`               | Vercel production | 継続開発            |
+| Contest maintenance | `release/lolipop-v1` | ロリポップ        | V1 固定・最低限保守 |
 
 V1 baseline は tag `v1.0.0` が指す commit（V1 freeze prep PR #10 の squash merge）。
 `release/lolipop-v1` の分岐点は PR #6 の squash merge `221c2331a21a6f39e3d0c93642a73fe8b042dfa8` で、
