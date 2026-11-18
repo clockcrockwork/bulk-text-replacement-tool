@@ -13,3 +13,4 @@ blob-report/
 # コミットされないように）。見本の .env.example だけは残す。
 .env*
 !.env.example
+.mutator/
