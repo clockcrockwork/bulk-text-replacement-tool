@@ -370,6 +370,7 @@ E2E をブラウザ1つに絞るときは `npx playwright test --project=chromiu
   検証（カード表示か表か、断片の数）はクラスセレクタでよい。同じラベルのボタンが複数ある
   場合は `.toolbar` などでスコープを絞る。
 - 新しい振る舞いを足したら、ロジックならユニットテスト、画面の流れなら E2E を必ず1本足す。
+- **Mutation audit（任意）**: テストがロジックの故障を検出できるかを、`docs/mutation-audit.md` のPoCに基づき必要時だけ確認する。Node 24専用の手動GitHub Actionsジョブで実行し、通常CI・Node 22・リリースを変更しない。Survivedの件数やスコアだけでテスト追加を要求しない。
 
 ## リリース系統
 
@@ -405,7 +406,7 @@ Vercel は `main`、ロリポップは `release/lolipop-v1` の build artifact �
 
 ## CI
 
-`.github/workflows/ci.yml` の2ジョブ（`Lint / Types / Unit tests / Build` と `E2E (Playwright)`）。
+`.github/workflows/ci.yml` は通常のPR/pushで2ジョブ（`Lint / Types / Unit tests / Build` と `E2E (Playwright)`）を実行し、手動起動時だけ独立した任意の `Mutation audit (optional)` を実行する。
 `push` は `main` のみ、他は `pull_request` で走る（同じコミットに同名チェックが2系統
 報告されると required status checks が不安定になるため）。失敗時だけレポートを回収する。
 

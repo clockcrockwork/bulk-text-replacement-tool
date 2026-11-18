@@ -20,14 +20,14 @@ permissions:
 # 中身が変わる。検査は scripts/checkActionsPinned.mjs（npm run lint に含まれる）。
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && 'mutation' || 'standard' }}
   cancel-in-progress: true
 
 jobs:
-  # 初回PoCのブランチのみPRで実行し、検証後は手動実行だけに戻す。
+  # 任意の監査。通常PRでは実行せず、手動起動時だけNode 24で実行する。
   mutation-audit:
     name: Mutation audit (optional)
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.head_ref == 'experiment/mutation-audit-replace-20261118')
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 7
     steps:
@@ -57,6 +57,7 @@ jobs:
 
   check:
     name: Lint / Types / Unit tests / Build
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,6 +83,7 @@ jobs:
 
   e2e:
     name: E2E (Playwright)
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
