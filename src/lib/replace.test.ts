@@ -201,6 +201,43 @@ describe('runConversion', () => {
     expect(file.hits).toBe(3);
   });
 
+  it('グループの合計ヒット数はファイルごとのヒット数の合算になる', () => {
+    const result = runConversion({
+      inputs: [input('a.txt', 'aa'), input('b.txt', 'a')],
+      groups: [GROUP_A],
+      rules: [rule('r1', 'a', { ga: 'X' })],
+    });
+    expect(result.groups[0]?.files.map((file) => file.hits)).toEqual([2, 1]);
+    expect(result.groups[0]?.hits).toBe(3);
+  });
+
+  it('後続パスで前半を伸ばしても、後半のハイライト位置を保つ', () => {
+    const { file } = convertOne('xzBy', [
+      rule('r1', 'B', { ga: 'b' }),
+      rule('r2', 'x', { ga: 'XXX' }, { order: 'seq' }),
+    ]);
+    expect(file.text).toBe('XXXzby');
+    expect(file.segments).toEqual([
+      { text: 'XXX', hit: true },
+      { text: 'z', hit: false },
+      { text: 'b', hit: true },
+      { text: 'y', hit: false },
+    ]);
+  });
+
+  it('後続パスが既存ハイライトの内側を置換しても、周囲のハイライトを保つ', () => {
+    const { file } = convertOne('zabcq', [
+      rule('r1', 'abc', { ga: 'ABC' }),
+      rule('r2', 'B', { ga: 'X' }, { order: 'seq' }),
+    ]);
+    expect(file.text).toBe('zAXCq');
+    expect(file.segments).toEqual([
+      { text: 'z', hit: false },
+      { text: 'AXC', hit: true },
+      { text: 'q', hit: false },
+    ]);
+  });
+
   it('断片を連結すると本文と一致し、置換部分だけ hit になる', () => {
     const { file } = convertOne('xAy', [rule('r1', 'A', { ga: 'B' })]);
     expect(file.segments.map((segment) => segment.text).join('')).toBe(file.text);
