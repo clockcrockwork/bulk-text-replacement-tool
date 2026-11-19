@@ -8,7 +8,7 @@ updates:
     schedule:
       interval: weekly
       day: monday
-      time: '09:00'
+      time: "09:00"
       timezone: Asia/Tokyo
     open-pull-requests-limit: 5
     labels:
@@ -18,7 +18,7 @@ updates:
     ignore:
       # @types/node は .nvmrc / engines の Node 22 に合わせて固定する。
       # major が上がると、実行する Node に無い API が型として通ってしまう。
-      - dependency-name: '@types/node'
+      - dependency-name: "@types/node"
         update-types:
           - version-update:semver-major
     groups:
@@ -37,7 +37,7 @@ updates:
     schedule:
       interval: weekly
       day: monday
-      time: '09:00'
+      time: "09:00"
       timezone: Asia/Tokyo
     labels:
       - dependencies

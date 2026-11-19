@@ -7,12 +7,12 @@
 
 ## 決まっている値
 
-| 項目 | 値 |
-| --- | --- |
-| 本番オリジン | `https://bulk-text-replacement-tool.vercel.app` |
-| Callback URL（完全一致） | `https://bulk-text-replacement-tool.vercel.app/` （末尾の `/` まで一致させる） |
-| トークン交換 | `POST /api/github/token`（`api/github/token.js`） |
-| GitHub REST API の版 | 指定しない（GitHub の既定版。現在 `2022-11-28`）。`X-GitHub-Api-Version` は GitHub の CORS が許可していないため、ブラウザからは付けられない（`docs/github-import-v2.md` §6） |
+| 項目                     | 値                                                                                                                                                                           |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 本番オリジン             | `https://bulk-text-replacement-tool.vercel.app`                                                                                                                              |
+| Callback URL（完全一致） | `https://bulk-text-replacement-tool.vercel.app/` （末尾の `/` まで一致させる）                                                                                               |
+| トークン交換             | `POST /api/github/token`（`api/github/token.js`）                                                                                                                            |
+| GitHub REST API の版     | 指定しない（GitHub の既定版。現在 `2022-11-28`）。`X-GitHub-Api-Version` は GitHub の CORS が許可していないため、ブラウザからは付けられない（`docs/github-import-v2.md` §6） |
 
 callback をオリジン直下にしているのは、ビルドが相対パス（vite の `base: './'`）で、
 下位のパスで開くと JS / CSS の参照が壊れるため。Vercel の一時的な Preview URL は
@@ -50,14 +50,14 @@ secret を作る（secret は一度しか表示されない）。
 Project `bulk-text-replacement-tool` → Settings → Environment Variables。
 Environment は **Production** にだけ設定する（Preview の URL は callback に登録しないため）。
 
-| 名前 | 値 | 使う場所 |
-| --- | --- | --- |
-| `VITE_GITHUB_APP_CLIENT_ID` | App の Client ID | ブラウザ（ビルド時に埋め込み）と Function |
-| `VITE_GITHUB_APP_SLUG` | App の slug | ブラウザ（インストール画面への案内） |
-| `VITE_GITHUB_APP_ORIGIN` | `https://bulk-text-replacement-tool.vercel.app` | ブラウザ（正規のオリジンの判定） |
-| `GITHUB_APP_CLIENT_SECRET` | App の client secret（**Sensitive** にする） | Function だけ |
-| `GITHUB_OAUTH_ALLOWED_ORIGINS` | `https://bulk-text-replacement-tool.vercel.app` | Function だけ |
-| `GITHUB_OAUTH_REDIRECT_URIS` | `https://bulk-text-replacement-tool.vercel.app/` | Function だけ |
+| 名前                           | 値                                               | 使う場所                                  |
+| ------------------------------ | ------------------------------------------------ | ----------------------------------------- |
+| `VITE_GITHUB_APP_CLIENT_ID`    | App の Client ID                                 | ブラウザ（ビルド時に埋め込み）と Function |
+| `VITE_GITHUB_APP_SLUG`         | App の slug                                      | ブラウザ（インストール画面への案内）      |
+| `VITE_GITHUB_APP_ORIGIN`       | `https://bulk-text-replacement-tool.vercel.app`  | ブラウザ（正規のオリジンの判定）          |
+| `GITHUB_APP_CLIENT_SECRET`     | App の client secret（**Sensitive** にする）     | Function だけ                             |
+| `GITHUB_OAUTH_ALLOWED_ORIGINS` | `https://bulk-text-replacement-tool.vercel.app`  | Function だけ                             |
+| `GITHUB_OAUTH_REDIRECT_URIS`   | `https://bulk-text-replacement-tool.vercel.app/` | Function だけ                             |
 
 - `VITE_` で始まる3つは公開値で、ビルドに埋め込まれる。Client ID と slug が未設定のビルドでは
   「GitHubから追加」ボタンが無効になる
@@ -102,17 +102,17 @@ Environment は **Production** にだけ設定する（Preview の URL は callb
 
 画面の「トークンの交換に失敗: <状態コード> <理由コード>」と、Function のログで切り分ける。
 
-| 画面に出るもの | 主な原因 | 直し方 |
-| --- | --- | --- |
-| `503 not_configured` | 環境変数が無い・形が崩れている・変えたあと再デプロイしていない | Function のログに出る変数名を見て直し、再デプロイする |
-| `403 origin_not_allowed` | 許可していないオリジン（Production の別名など）から開いている | 正規の URL で開く。独自ドメインなら両方の許可リストに足す |
-| `400 redirect_uri_not_allowed` | 開いたオリジンの callback が許可リストに無い | `GITHUB_OAUTH_REDIRECT_URIS` に `https://<そのオリジン>/` を足す |
-| `400 exchange_rejected` | コードの期限切れ・使い回し、または secret の不一致 | もう一度接続する。全員が失敗するなら secret と再デプロイを確かめる |
-| `502 upstream_invalid` | GitHub App の「Expire user authorization tokens」がオフ（期限の無いトークンは受け付けない） | App の設定でオンに戻す |
-| `502 upstream_unreachable` / `upstream_error` | GitHub 側の障害・遅延 | 時間をおいて接続し直す |
-| `504 upstream_timeout` | GitHub が 10 秒以内に応答を返し終えなかった（ヘッダ待ちでも本文の途中でも同じ） | 時間をおいて接続し直す。続くなら GitHub の障害を確かめる |
-| 「応答がありませんでした」（状態コードなし） | ブラウザが 25 秒待っても Function から返らなかった（Function に届かない・起動しない） | もう一度接続する（認可からやり直す）。続くなら Function のログと Vercel の障害を確かめる |
-| `429`（一時的に制限） | Firewall のレート制限（§3） | 1 分ほど待つ。同じ IP の利用者が続けて試していないかも確かめる |
+| 画面に出るもの                                | 主な原因                                                                                    | 直し方                                                                                   |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `503 not_configured`                          | 環境変数が無い・形が崩れている・変えたあと再デプロイしていない                              | Function のログに出る変数名を見て直し、再デプロイする                                    |
+| `403 origin_not_allowed`                      | 許可していないオリジン（Production の別名など）から開いている                               | 正規の URL で開く。独自ドメインなら両方の許可リストに足す                                |
+| `400 redirect_uri_not_allowed`                | 開いたオリジンの callback が許可リストに無い                                                | `GITHUB_OAUTH_REDIRECT_URIS` に `https://<そのオリジン>/` を足す                         |
+| `400 exchange_rejected`                       | コードの期限切れ・使い回し、または secret の不一致                                          | もう一度接続する。全員が失敗するなら secret と再デプロイを確かめる                       |
+| `502 upstream_invalid`                        | GitHub App の「Expire user authorization tokens」がオフ（期限の無いトークンは受け付けない） | App の設定でオンに戻す                                                                   |
+| `502 upstream_unreachable` / `upstream_error` | GitHub 側の障害・遅延                                                                       | 時間をおいて接続し直す                                                                   |
+| `504 upstream_timeout`                        | GitHub が 10 秒以内に応答を返し終えなかった（ヘッダ待ちでも本文の途中でも同じ）             | 時間をおいて接続し直す。続くなら GitHub の障害を確かめる                                 |
+| 「応答がありませんでした」（状態コードなし）  | ブラウザが 25 秒待っても Function から返らなかった（Function に届かない・起動しない）       | もう一度接続する（認可からやり直す）。続くなら Function のログと Vercel の障害を確かめる |
+| `429`（一時的に制限）                         | Firewall のレート制限（§3）                                                                 | 1 分ほど待つ。同じ IP の利用者が続けて試していないかも確かめる                           |
 - client secret は `VITE_` を付けない（付けるとブラウザに配られる）
 
 ブラウザが交換を諦めたあと（「応答がありませんでした」）も、Function と GitHub の側では交換が
@@ -133,16 +133,16 @@ GitHub 側で App の client_id ごと絞られるおそれがある。
 
 Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule**（Custom Rule）:
 
-| 項目 | 値 |
-| --- | --- |
-| Name | `github-token-exchange-rate-limit` |
-| If | **Request Path** — **Starts with** — `/api/` |
-| Then | **Rate Limit** |
-| Algorithm | Fixed Window |
-| Window | 60 秒 |
-| Limit | 10 リクエスト |
-| Key | IP Address |
-| Action（超過時） | Too Many Requests（429） |
+| 項目             | 値                                           |
+| ---------------- | -------------------------------------------- |
+| Name             | `github-token-exchange-rate-limit`           |
+| If               | **Request Path** — **Starts with** — `/api/` |
+| Then             | **Rate Limit**                               |
+| Algorithm        | Fixed Window                                 |
+| Window           | 60 秒                                        |
+| Limit            | 10 リクエスト                                |
+| Key              | IP Address                                   |
+| Action（超過時） | Too Many Requests（429）                     |
 
 - **完全一致（Equals `/api/github/token`）にしない。** 同じ Function には
   `/api/github/token/`（末尾の `/`）や `/api/github/token.js`（拡張子付き）でも届き、
@@ -178,10 +178,10 @@ Project `bulk-text-replacement-tool` → Firewall → Configure → **+ New Rule
 Preview で試すつもりでも本番に同時に効く。Preview で試すときは、環境で絞った**別のルール**を
 一時的に作る。
 
-| ルール | 条件 | Then | 役割 |
-| --- | --- | --- | --- |
-| A（本番用） | Request Path — Starts with — `/api/` | Log → 最後に Rate Limit | 本番の観測と、最終的な制限 |
-| B（検証用・一時） | Request Path — Starts with — `/api/` **かつ Environment — Equals — Preview** | Rate Limit | Preview で 429 を確かめるだけ |
+| ルール            | 条件                                                                         | Then                    | 役割                          |
+| ----------------- | ---------------------------------------------------------------------------- | ----------------------- | ----------------------------- |
+| A（本番用）       | Request Path — Starts with — `/api/`                                         | Log → 最後に Rate Limit | 本番の観測と、最終的な制限    |
+| B（検証用・一時） | Request Path — Starts with — `/api/` **かつ Environment — Equals — Preview** | Rate Limit              | Preview で 429 を確かめるだけ |
 
 1. ルール A を Then **Log** で Publish する
 2. 本番で正規の接続を1回行い、Firewall のログで、その交換が A に1件だけ一致していることを
@@ -204,14 +204,14 @@ Preview で試すつもりでも本番に同時に効く。Preview で試すと�
 
 `vercel.json` の `headers` が、`/api/` 以外のすべての応答に次を付ける。
 
-| ヘッダ | 値 | 理由 |
-| --- | --- | --- |
-| `Content-Security-Policy` | `frame-ancestors 'none'` | 他サイトの iframe に埋め込ませない（クリックジャッキング）。meta の CSP では `frame-ancestors` を指定できないためヘッダで送る |
-| `X-Frame-Options` | `DENY` | `frame-ancestors` を解さない古いブラウザ向け |
-| `X-Content-Type-Options` | `nosniff` | 配信物を宣言と違う型として解釈させない |
-| `Cross-Origin-Opener-Policy` | `same-origin` | 他サイトが `window.open` でこのページを開いても、ウィンドウ参照（`opener`）を持たせない |
-| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=(), usb=(), display-capture=()` | 使っていない強い機能を閉じる（多層防御）。クリップボードはコピーで使うので閉じない |
-| `Referrer-Policy` | `strict-origin` | Referer をオリジンまでに絞る。認可から戻った直後は `/?code=…&state=…` のまま HTML が開き、`history.replaceState` を走らせる JS 自体と Google Fonts はその前に読まれる。ブラウザ既定の `strict-origin-when-cross-origin` は**同一オリジンの要求には URL 全体を送る**ので、`/assets/*.js` の Referer に code と state が載り、配信側のログに残り得る |
+| ヘッダ                       | 値                                                                                 | 理由                                                                                                                                                                                                                                                                                                                                               |
+| ---------------------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Content-Security-Policy`    | `frame-ancestors 'none'`                                                           | 他サイトの iframe に埋め込ませない（クリックジャッキング）。meta の CSP では `frame-ancestors` を指定できないためヘッダで送る                                                                                                                                                                                                                      |
+| `X-Frame-Options`            | `DENY`                                                                             | `frame-ancestors` を解さない古いブラウザ向け                                                                                                                                                                                                                                                                                                       |
+| `X-Content-Type-Options`     | `nosniff`                                                                          | 配信物を宣言と違う型として解釈させない                                                                                                                                                                                                                                                                                                             |
+| `Cross-Origin-Opener-Policy` | `same-origin`                                                                      | 他サイトが `window.open` でこのページを開いても、ウィンドウ参照（`opener`）を持たせない                                                                                                                                                                                                                                                            |
+| `Permissions-Policy`         | `camera=(), microphone=(), geolocation=(), payment=(), usb=(), display-capture=()` | 使っていない強い機能を閉じる（多層防御）。クリップボードはコピーで使うので閉じない                                                                                                                                                                                                                                                                 |
+| `Referrer-Policy`            | `strict-origin`                                                                    | Referer をオリジンまでに絞る。認可から戻った直後は `/?code=…&state=…` のまま HTML が開き、`history.replaceState` を走らせる JS 自体と Google Fonts はその前に読まれる。ブラウザ既定の `strict-origin-when-cross-origin` は**同一オリジンの要求には URL 全体を送る**ので、`/assets/*.js` の Referer に code と state が載り、配信側のログに残り得る |
 
 - 本体の CSP（`connect-src` など）は `index.html` の meta にあり、ヘッダの CSP はそれに
   `frame-ancestors` を足すだけ。両方があると、ブラウザは両方を満たすものだけを許す
